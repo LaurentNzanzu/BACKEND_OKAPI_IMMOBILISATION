@@ -1,0 +1,127 @@
+# ============================================================
+# BACKEND - Python / FastAPI
+# ============================================================
+
+# ------------------------------------
+# Environnement virtuel
+# ------------------------------------
+venv/
+env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ------------------------------------
+# Fichiers Python compilés
+# ------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# ------------------------------------
+# Distributions / packages
+# ------------------------------------
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+parts/
+bin/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# ------------------------------------
+# Tests et couverture
+# ------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+*.cover
+*.log
+nosetests.xml
+coverage.xml
+*.pytest_cache
+
+# ------------------------------------
+# Base de données (SQLite, etc.)
+# ------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# ------------------------------------
+# Fichiers de logs
+# ------------------------------------
+logs/
+*.log
+*.pid
+
+# ------------------------------------
+# Variables d'environnement
+# ------------------------------------
+.env
+.env.local
+.env.*.local
+*.env
+*.env.local
+
+# ------------------------------------
+# Fichiers d'IDE / éditeurs
+# ------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ------------------------------------
+# Fichiers d'upload / médias
+# ------------------------------------
+media/
+uploads/
+staticfiles/
+static/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# ------------------------------------
+# Fichiers générés par Alembic (migrations)
+# ------------------------------------
+alembic/versions/*.pyc
+alembic/versions/__pycache__/
+
+# ------------------------------------
+# Fichiers de configuration locaux
+# ------------------------------------
+*.local.py
+*.local.ini
+config.local.yaml
+
+# ------------------------------------
+# Fichiers de rapport (PDF, Excel export)
+# ------------------------------------
+reports/
+export/
+*.xlsx
+*.csv
+
+# ------------------------------------
+# Fichiers temporaires système
+# ------------------------------------
+*.tmp
+*.temp
+*.bak
