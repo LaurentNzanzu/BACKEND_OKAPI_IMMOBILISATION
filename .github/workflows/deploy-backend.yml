@@ -15,11 +15,12 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
 
           script: |
             set -e
 
-            echo "🚀 Starting deployment..."
+            echo "🚀 Starting backend deployment..."
 
             cd /var/www/BACKEND_OKAPI_IMMOBILISATION
 
@@ -32,13 +33,13 @@ jobs:
             echo "📦 Install dependencies..."
             pip install -r requirements.txt
 
-            echo "🔄 Restart backend service..."
-            pm2 restart backend || pm2 restart all
+            echo "🔄 Restart backend (PM2)..."
+            pm2 reload okapi-backend || pm2 restart okapi-backend
 
-            echo "⏳ Waiting backend startup..."
-            sleep 3
+            echo "⏳ Waiting for server startup..."
+            sleep 5
 
-            echo "🧪 Health check API..."
-            curl -f http://localhost:8000/docs
+            echo "🧪 Health check..."
+            curl -f http://127.0.0.1:8000/docs
 
             echo "✅ Deployment successful!"
