@@ -2,8 +2,7 @@ name: Deploy Backend to VPS
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   deploy:
@@ -19,19 +18,18 @@ jobs:
           script: |
             set -e
 
-            echo "Go to backend folder..."
             cd /var/www/BACKEND_OKAPI_IMMOBILISATION
 
-            echo "Pull latest backend code..."
+            echo "Pull latest code..."
             git pull origin main
 
-            echo "Activate virtual environment..."
-            source venv/bin/activate
+            echo "Activate venv..."
+            source venv/bin/activate || true
 
-            echo "Install backend dependencies..."
+            echo "Install dependencies..."
             pip install -r requirements.txt
 
             echo "Restart backend..."
-            pm2 restart all
+            pm2 restart backend || pm2 restart all
 
             echo "Backend deployed successfully."
