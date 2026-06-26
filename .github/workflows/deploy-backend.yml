@@ -15,21 +15,30 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+
           script: |
             set -e
 
+            echo "🚀 Starting deployment..."
+
             cd /var/www/BACKEND_OKAPI_IMMOBILISATION
 
-            echo "Pull latest code..."
+            echo "📥 Pull latest code..."
             git pull origin main
 
-            echo "Activate venv..."
-            source venv/bin/activate || true
+            echo "🐍 Activate virtual environment..."
+            source venv/bin/activate
 
-            echo "Install dependencies..."
+            echo "📦 Install dependencies..."
             pip install -r requirements.txt
 
-            echo "Restart backend..."
+            echo "🔄 Restart backend service..."
             pm2 restart backend || pm2 restart all
 
-            echo "Backend deployed successfully."
+            echo "⏳ Waiting backend startup..."
+            sleep 3
+
+            echo "🧪 Health check API..."
+            curl -f http://localhost:8000/docs
+
+            echo "✅ Deployment successful!"
