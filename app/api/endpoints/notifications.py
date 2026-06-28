@@ -16,7 +16,8 @@ router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 
 @router.get("/", response_model=List[NotificationResponse])
-async def get_notifications(
+def get_notifications(
+    skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     est_lu: Optional[bool] = Query(None, description="True=lues, False=non lues"),
     priorite: Optional[PrioriteNotificationEnum] = Query(
@@ -41,6 +42,7 @@ async def get_notifications(
         notifications = service.get_all_notifications_for_admin(
             current_user.id,
             limit,
+            skip=skip,
             est_lu=est_lu,
             priorite=priorite_value,
             include_archivees=include_archivees,
@@ -49,6 +51,7 @@ async def get_notifications(
         notifications = service.get_notifications_by_user(
             current_user.id,
             limit,
+            skip=skip,
             est_lu=est_lu,
             priorite=priorite_value,
             include_archivees=include_archivees,
@@ -58,7 +61,7 @@ async def get_notifications(
 
 
 @router.get("/non-lues/count")
-async def get_unread_count(
+def get_unread_count(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
@@ -67,7 +70,7 @@ async def get_unread_count(
 
 
 @router.patch("/{id_notification}/lu")
-async def mark_as_read(
+def mark_as_read(
     id_notification: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
@@ -82,7 +85,7 @@ async def mark_as_read(
 
 
 @router.patch("/{id_notification}/archiver")
-async def archive_notification(
+def archive_notification(
     id_notification: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
@@ -101,7 +104,7 @@ async def archive_notification(
 
 
 @router.post("/tout-marquer-lu")
-async def mark_all_read(
+def mark_all_read(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):

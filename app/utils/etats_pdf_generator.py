@@ -668,7 +668,6 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
-
 def generate_etat_besoin_pdf(data: Dict[str, Any]) -> bytes:
     """Génère le PDF de l'état de sortie pour une demande de besoin."""
     buffer = io.BytesIO()
@@ -848,6 +847,104 @@ def generate_etat_besoin_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     elements.append(sig_table)
 
+    _add_footer(elements, doc)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+def generate_fiche_panne_pdf(data: Dict[str, Any]) -> bytes:
+    """Génère le PDF de la fiche de panne"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            rightMargin=1.8*cm, leftMargin=1.8*cm,
+                            topMargin=1.5*cm, bottomMargin=1.5*cm)
+    styles = _get_styles()
+    elements = []
+    
+    panne = data['panne']
+    bien = data.get('bien', {})
+    
+    titre = "FICHE DE PANNE"
+    sous_titre = f"Panne #{panne.get('id_panne', '')}"
+    _add_header(elements, doc, titre, sous_titre, f"PANNE-{panne.get('id_panne', '')}")
+    
+    # 1. INFORMATIONS GENERALES
+    elements.append(Paragraph("1. INFORMATIONS GENERALES", styles['OkapiSection']))
+    
+    statut_colors = {
+        'DECLAREE': colors.HexColor('#fef3c7'),
+        'DIAGNOSTIQUEE': colors.HexColor('#dbeafe'),
+        'EN_ATTENTE_PIECES': colors.HexColor('#ffedd5'),
+        'EN_VALIDATION': colors.HexColor('#f3e8ff'),
+        'EN_COURS': colors.HexColor('#e0e7ff'),
+        'EN_TEST': colors.HexColor('#cffafe'),
+        'TERMINEE': colors.HexColor('#dcfce7'),
+        'ANNULEE': colors.HexColor('#f3f4f6')
+    }
+    
+    info_data = [
+        [Paragraph("N° Panne:", styles['OkapiLabel']), Paragraph(f"#{panne.get('id_panne', '')}", styles['OkapiValue']),
+         Paragraph("Date déclaration:", styles['OkapiLabel']), Paragraph(panne.get('date_declaration', '-'), styles['OkapiValue'])],
+        [Paragraph("Statut:", styles['OkapiLabel']), Paragraph(panne.get('statut', '-'), styles['OkapiValue']),
+         Paragraph("Priorité:", styles['OkapiLabel']), Paragraph(panne.get('priorite', '-'), styles['OkapiValue'])],
+        [Paragraph("Type:", styles['OkapiLabel']), Paragraph(panne.get('type_panne_personnalise') or panne.get('type_panne', '-'), styles['OkapiValue']),
+         Paragraph("Technicien:", styles['OkapiLabel']), Paragraph(panne.get('technicien_nom', '-'), styles['OkapiValue'])],
+    ]
+    
+    info_table = _create_info_table(info_data, [doc.width*0.22, doc.width*0.28, doc.width*0.22, doc.width*0.28])
+    elements.append(info_table)
+    elements.append(Spacer(1, 10))
+    
+    # 2. BIEN CONCERNE
+    if bien:
+        elements.append(Paragraph("2. BIEN CONCERNE", styles['OkapiSection']))
+        bien_data = [
+            [Paragraph("Désignation:", styles['OkapiLabel']), Paragraph(f"{bien.get('marque_fabricant', '')} {bien.get('modele', '')}".strip() or '-', styles['OkapiValue']),
+             Paragraph("Type:", styles['OkapiLabel']), Paragraph(bien.get('type_bien', '-'), styles['OkapiValue'])],
+            [Paragraph("N° Série:", styles['OkapiLabel']), Paragraph(bien.get('numero_serie', '-'), styles['OkapiValue']),
+             Paragraph("Localisation:", styles['OkapiLabel']), Paragraph(bien.get('localisation', '-'), styles['OkapiValue'])],
+        ]
+        bien_table = _create_info_table(bien_data, [doc.width*0.22, doc.width*0.28, doc.width*0.22, doc.width*0.28])
+        elements.append(bien_table)
+        elements.append(Spacer(1, 10))
+    
+    # 3. DIAGNOSTIC
+    elements.append(Paragraph("3. DIAGNOSTIC DU TECHNICIEN", styles['OkapiSection']))
+    elements.append(Paragraph(panne.get('diagnostic', 'Aucun diagnostic enregistré'), styles['OkapiValue']))
+    elements.append(Spacer(1, 10))
+    
+    # 4. SOLUTION
+    if panne.get('solution_apportee'):
+        elements.append(Paragraph("4. SOLUTION APPORTEE", styles['OkapiSection']))
+        elements.append(Paragraph(panne['solution_apportee'], styles['OkapiValue']))
+        elements.append(Spacer(1, 10))
+    
+    # 5. COUT
+    if panne.get('cout_total_reparation', 0) > 0:
+        elements.append(Paragraph("5. COUT DE REPARATION", styles['OkapiSection']))
+        elements.append(Paragraph(f"{panne['cout_total_reparation']:,.0f} USD", styles['OkapiValue']))
+        elements.append(Spacer(1, 10))
+    
+    # 6. SIGNATURES
+    elements.append(Spacer(1, 25))
+    sig_data = [
+        ["Le Technicien", "Le Responsable", "Date"],
+        [" ", " ", " "],
+        ["(Signature)", "(Cachet et signature)", "____ / ____ / ______"]
+    ]
+    sig_table = Table(sig_data, colWidths=[doc.width/3, doc.width/3, doc.width/3])
+    sig_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#4b5563')),
+        ('FONTSIZE', (0, 2), (-1, 2), 7),
+        ('TEXTCOLOR', (0, 2), (-1, 2), colors.HexColor('#9ca3af')),
+        ('TOPPADDING', (0, 1), (-1, 1), 40),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 10),
+    ]))
+    elements.append(sig_table)
+    
     _add_footer(elements, doc)
     doc.build(elements)
     buffer.seek(0)

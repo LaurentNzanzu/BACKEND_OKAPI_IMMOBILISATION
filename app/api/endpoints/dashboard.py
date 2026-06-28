@@ -10,7 +10,7 @@ from ...schemas.dashboard import WidgetCreate, WidgetUpdate, WidgetResponse, Das
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
-async def get_dashboard_summary(
+def get_dashboard_summary(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
@@ -18,7 +18,7 @@ async def get_dashboard_summary(
     return service.get_global_summary()
 
 @router.get("/widgets", response_model=List[WidgetResponse])
-async def get_user_widgets(
+def get_user_widgets(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
@@ -26,7 +26,7 @@ async def get_user_widgets(
     return service.get_widgets(current_user.id)
 
 @router.post("/widgets", response_model=WidgetResponse)
-async def create_widget(
+def create_widget(
     widget_data: WidgetCreate,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
@@ -35,7 +35,7 @@ async def create_widget(
     return service.create_widget(current_user.id, widget_data)
 
 @router.put("/widgets/{id_widget}", response_model=WidgetResponse)
-async def update_widget(
+def update_widget(
     id_widget: int,
     data: WidgetUpdate,
     db: Session = Depends(get_db),
@@ -48,7 +48,7 @@ async def update_widget(
         raise HTTPException(status_code=404, detail="Widget non trouvé")
 
 @router.delete("/widgets/{id_widget}")
-async def delete_widget(
+def delete_widget(
     id_widget: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
@@ -60,7 +60,7 @@ async def delete_widget(
     return {"message": "Widget supprimé"}
 
 @router.get("/data/{type_widget}")
-async def get_widget_data(
+def get_widget_data(
     type_widget: str,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)

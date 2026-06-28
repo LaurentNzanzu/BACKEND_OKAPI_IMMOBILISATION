@@ -1,3 +1,4 @@
+# backend/app/models/__init__.py
 from .permission import Permission, role_permissions
 from .role import Role
 from .utilisateur import Utilisateur
@@ -6,17 +7,17 @@ from .bien import Bien, EtatBien
 from .vehicule import Vehicule
 from .machine import Machine
 from .ordinateur import Ordinateur
-#from .dashboard_widget import DashboardWidget
 from .composant import Composant
+from .localisation import Localisation
 from .panne import Panne, PrioritePanne, StatutPanne, TypePanne
 from .piece_rechange import PieceRechange
 from .besoin import Besoin, StatutBesoin
 from .ligne_besoin import LigneBesoin
-from .validation import Validation, OrdreValidation, DecisionValidation
-from .maintenance import Maintenance, TypeMaintenance, StatutMaintenance
+from .validation import Validation, OrdreValidation, DecisionValidation, TypeValidation  # MODIFIÉ
+from .maintenance import Maintenance, TypeMaintenance, StatutMaintenance, TypeOrigineMaintenance  # MODIFIÉ
 from .fourniture_piece import FourniturePiece, StatutFourniture
 from .amortissement import Amortissement, MethodeAmortissement, StatutAmortissement
-from .ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture
+from .ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture  # MODIFIÉ
 from .plan_comptable import PlanComptable
 from .regles_amortissement import RegleAmortissement, RegleHistorique
 from .mouvement_bien import MouvementBien, TypeMouvementEnum
@@ -24,7 +25,15 @@ from .notification import Notification
 from .audit_log import AuditLog
 from .decision_ia import DecisionIA, TypeDecisionEnum
 from .fournisseur import Fournisseur
+from .budget import Budget  # NOUVEAU
+from .caisse import Caisse
+from .centre_cout import CentreCout
 
+# === NOUVEAUX IMPORTATIONS TÂCHE 3 ===
+from .journal_evenements_immobilisation import JournalEvenementImmobilisation, TypeEvenementImmobilisation
+from .alerte_vnc import AlerteVNC, StatutAlerteVNC
+from .projection_investissement import ProjectionInvestissement, StatutProjection
+from .ordre_remplacement import OrdreRemplacement, StatutOrdreRemplacement
 
 
 __all__ = [
@@ -41,8 +50,8 @@ __all__ = [
     "Vehicule",
     "Machine",
     "Ordinateur",
-    "DashboardWidget",
     "Composant",
+    "Localisation",
     
     # Gestion des pannes et maintenances
     "Panne",
@@ -56,18 +65,20 @@ __all__ = [
     "Validation",
     "OrdreValidation",
     "DecisionValidation",
+    "TypeValidation",  # NOUVEAU
     "Maintenance",
     "TypeMaintenance",
     "StatutMaintenance",
+    "TypeOrigineMaintenance",  # NOUVEAU TÂCHE 3
     "FourniturePiece",
     "StatutFourniture",
     
-    # Amortissements et règles configurables (RDC/SYSCOHADA)
+    # Amortissements et règles configurables
     "Amortissement",
     "MethodeAmortissement",
     "StatutAmortissement",
-    "RegleAmortissement",      # Configuration dynamique des règles
-    "RegleHistorique",          # Historique des modifications des règles
+    "RegleAmortissement",
+    "RegleHistorique",
     
     # Écritures comptables
     "EcritureComptable",
@@ -76,16 +87,35 @@ __all__ = [
     "PlanComptable",
     "MouvementBien",
     "TypeMouvementEnum",
-    # notifications
+    
+    # Notifications et audit
     "Notification",
-    # audit
-    "AuditLog"
-    #decision ia
-    "DecisionIA", 
+    "AuditLog",
+    
+    # Décision IA
+    "DecisionIA",
     "TypeDecisionEnum",
-    #fournisseur
-    "Fournisseur"
-   
-
-   
+    
+    # Fournisseur
+    "Fournisseur",
+    
+    # Budget (NOUVEAU)
+    "Budget",
+    
+    # === NOUVEAUX MODÈLES TÂCHE 3 ===
+    # Journal des événements d'immobilisation
+    "JournalEvenementImmobilisation",
+    "TypeEvenementImmobilisation",
+    
+    # Alertes VNC (Valeur Nette Comptable)
+    "AlerteVNC",
+    "StatutAlerteVNC",
+    
+    # Projections d'investissement
+    "ProjectionInvestissement",
+    "StatutProjection",
+    
+    # Ordres de remplacement
+    "OrdreRemplacement",
+    "StatutOrdreRemplacement",
 ]

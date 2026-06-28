@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from ...core.database import get_db
-from ...schemas.besoin import BesoinCreate, BesoinUpdate, BesoinResponse, AjoutLigneRequest
+from ...schemas.besoin import (
+    BesoinCreate,
+    BesoinUpdate,
+    BesoinResponse,
+    AjoutLigneRequest,
+    AjoutLigneHorsCatalogueRequest
+)
 from ...services.besoin_service import BesoinService
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
@@ -10,19 +16,21 @@ from ...models.besoin import Besoin
 
 router = APIRouter(prefix="/besoins", tags=["Besoins"])
 
+
 def check_besoin_permission(user: Utilisateur, action: str) -> bool:
-    if not user: 
+    if not user:
         return False
     role = user.role.nom.upper() if user.role else "USER"
-    if role in ["ADMIN"]: 
+    if role in ["ADMIN"]:
         return True
-    if action == "view": 
+    if action == "view":
         return True
-    if action == "create" and role in ["TECHNICIEN", "COMPTABLE"]: 
+    if action == "create" and role in ["TECHNICIEN", "COMPTABLE"]:
         return True
-    if action == "validate" and role in ["DG", "COMPTABLE", "CAISSE"]: 
+    if action == "validate" and role in ["DG", "COMPTABLE", "CAISSE"]:
         return True
     return False
+
 
 @router.post("/", response_model=BesoinResponse, status_code=status.HTTP_201_CREATED)
 async def create_besoin(
@@ -37,6 +45,7 @@ async def create_besoin(
         return service.create_besoin(data)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
 
 @router.get("/attente-stock", response_model=List[BesoinResponse])
 async def get_besoins_attente_stock(
@@ -54,6 +63,7 @@ async def get_besoins_attente_stock(
         .all()
     )
 
+
 @router.get("/panne/{panne_id}", response_model=List[BesoinResponse])
 async def get_besoins_by_panne(
     panne_id: int,
@@ -65,6 +75,7 @@ async def get_besoins_by_panne(
     service = BesoinService(db)
     return service.get_besoins_by_panne(panne_id)
 
+
 @router.get("/a-valider", response_model=List[BesoinResponse])
 async def get_besoins_a_valider(
     db: Session = Depends(get_db),
@@ -75,6 +86,7 @@ async def get_besoins_a_valider(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes pour valider")
     service = BesoinService(db)
     return service.get_besoins_a_valider(role)
+
 
 @router.post("/{besoin_id}/valider")
 async def valider_besoin(
@@ -96,6 +108,7 @@ async def valider_besoin(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.get("/", response_model=List[BesoinResponse])
 async def get_all_besoins(
     skip: int = Query(0, ge=0),
@@ -105,9 +118,9 @@ async def get_all_besoins(
 ):
     if not check_besoin_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    
     query = db.query(Besoin).order_by(Besoin.date_creation.desc())
     return query.offset(skip).limit(limit).all()
+
 
 @router.get("/{besoin_id}", response_model=BesoinResponse)
 async def get_besoin(
@@ -123,7 +136,7 @@ async def get_besoin(
         raise HTTPException(status_code=404, detail="Besoin non trouvé")
     return besoin
 
-# ✅ NOUVEAU ENDPOINT POUR LA PHASE 2
+
 @router.post("/{besoin_id}/lignes", response_model=BesoinResponse)
 async def ajouter_ligne_besoin(
     besoin_id: int,
@@ -131,16 +144,8 @@ async def ajouter_ligne_besoin(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """
-    Ajoute une ligne à un besoin existant (BROUILLON uniquement).
-    
-    - Vérifie les permissions (create)
-    - Appelle BesoinService.ajouter_ligne()
-    - Retourne le besoin mis à jour
-    """
     if not check_besoin_permission(current_user, "create"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    
     service = BesoinService(db)
     try:
         besoin = service.ajouter_ligne(besoin_id, data.id_piece, data.quantite)
@@ -149,4 +154,51 @@ async def ajouter_ligne_besoin(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Erreur API ajout ligne: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@router.post("/{besoin_id}/lignes/hors-catalogue", response_model=BesoinResponse)
+async def ajouter_ligne_hors_catalogue(
+    besoin_id: int,
+    data: AjoutLigneHorsCatalogueRequest,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    if not check_besoin_permission(current_user, "create"):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    service = BesoinService(db)
+    try:
+        besoin = service.ajouter_ligne_hors_catalogue(
+            besoin_id,
+            data.designation,
+            data.prix_unitaire,
+            data.quantite
+        )
+        return besoin
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Erreur API ajout ligne hors catalogue: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@router.delete("/{besoin_id}/lignes/{ligne_id}", response_model=BesoinResponse)
+async def supprimer_ligne_besoin(
+    besoin_id: int,
+    ligne_id: int,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    if not check_besoin_permission(current_user, "create"):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    service = BesoinService(db)
+    try:
+        besoin = service.supprimer_ligne(besoin_id, ligne_id)
+        if not besoin:
+            raise HTTPException(status_code=404, detail="Besoin non trouvé")
+        return besoin
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Erreur API suppression ligne: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")

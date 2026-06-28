@@ -1,10 +1,8 @@
 # backend/app/services/etats_service.py
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from decimal import Decimal
-
-from sqlalchemy.orm import joinedload
 
 from ..models.bien import Bien, EtatBien
 from ..models.composant import Composant
@@ -14,6 +12,7 @@ from ..models.besoin import Besoin
 from ..models.ligne_besoin import LigneBesoin
 from ..models.validation import Validation
 from ..models.utilisateur import Utilisateur
+from ..models.localisation import Localisation
 
 
 class EtatsService:
@@ -57,9 +56,25 @@ class EtatsService:
         else:
             return getattr(bien, 'numero_serie', '') or ''
 
+    def _get_localisation_nom(self, bien: Bien) -> str:
+        """Récupère le nom de la localisation depuis la relation"""
+        if hasattr(bien, 'localisation_ref') and bien.localisation_ref:
+            return bien.localisation_ref.nom_localisation or ''
+        # Fallback: essayer de charger la localisation si elle n'est pas chargée
+        if hasattr(bien, 'id_localisation') and bien.id_localisation:
+            loc = self.db.query(Localisation).filter(
+                Localisation.id_localisation == bien.id_localisation
+            ).first()
+            if loc:
+                return loc.nom_localisation or ''
+        return ''
+
     def get_fiche_bien_data(self, bien_id: int) -> Optional[Dict[str, Any]]:
         """Récupère toutes les données nécessaires pour la fiche d'un bien"""
-        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        bien = self.db.query(Bien).options(
+            joinedload(Bien.localisation_ref)
+        ).filter(Bien.id_bien == bien_id).first()
+        
         if not bien:
             return None
 
@@ -83,7 +98,8 @@ class EtatsService:
         prix_acquisition = float(bien.prix_acquisition) if bien.prix_acquisition else 0
         valeur_structure = prix_acquisition - valeur_composants
 
-        # Construction du dictionnaire de sortie
+        localisation_nom = self._get_localisation_nom(bien)
+
         return {
             "bien": {
                 "id_bien": bien.id_bien,
@@ -95,7 +111,7 @@ class EtatsService:
                 "numero_serie": self._get_numero_serie(bien),
                 "date_acquisition": bien.date_acquisition.strftime("%d/%m/%Y") if bien.date_acquisition else "",
                 "prix_acquisition": prix_acquisition,
-                "localisation": bien.localisation or "",
+                "localisation": localisation_nom,
                 "description": bien.description or "",
                 "age_ans": self._calculer_age_bien(bien.date_acquisition),
                 "specificites": self._get_specificites_bien(bien)
@@ -166,7 +182,6 @@ class EtatsService:
                 "utilisateur_affecte": getattr(bien, 'utilisateur_affecte', None)
             }
         
-        # Filtrer les valeurs None
         return {k: v for k, v in specifics.items() if v is not None}
 
     def get_fiche_amortissement_data(self, bien_id: int) -> Optional[Dict[str, Any]]:
@@ -175,36 +190,35 @@ class EtatsService:
         from ..models.regles_amortissement import RegleAmortissement
         from ..models.ecriture_comptable import EcritureComptable
         
-        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        bien = self.db.query(Bien).options(
+            joinedload(Bien.localisation_ref)
+        ).filter(Bien.id_bien == bien_id).first()
+        
         if not bien:
             return None
         
-        # Récupérer l'amortissement en cours
+        localisation_nom = self._get_localisation_nom(bien)
+        
         amortissement = self.db.query(Amortissement).filter(
             Amortissement.id_bien == bien_id,
             Amortissement.statut == "EN_COURS"
         ).first()
         
         if not amortissement:
-            # Si aucun amortissement en cours, en créer un virtuel pour l'affichage
             amortissement = self._creer_amortissement_virtuel(bien)
         
-        # Récupérer les règles d'amortissement
         regle = self.db.query(RegleAmortissement).filter(
             RegleAmortissement.categorie_bien == bien.type_bien
         ).first()
         
-        # Calcul du plan d'amortissement
         plan_amortissement = self._calculer_plan_amortissement(
             bien, amortissement, regle
         )
         
-        # Récupérer les écritures comptables liées
         ecritures = self.db.query(EcritureComptable).filter(
             EcritureComptable.id_bien == bien_id
         ).order_by(EcritureComptable.date_ecriture.desc()).limit(10).all()
         
-        # Calcul des statistiques avec les bons attributs
         cumul_amorti = amortissement.cumul_comptable if hasattr(amortissement, 'cumul_comptable') else 0
         valeur_origine = amortissement.valeur_origine if hasattr(amortissement, 'valeur_origine') else float(bien.prix_acquisition or 0)
         vnc_actuelle = amortissement.valeur_nette_comptable if hasattr(amortissement, 'valeur_nette_comptable') else valeur_origine
@@ -218,7 +232,7 @@ class EtatsService:
                 "modele": self._get_modele(bien),
                 "date_acquisition": bien.date_acquisition.strftime("%d/%m/%Y") if bien.date_acquisition else "",
                 "prix_acquisition": float(bien.prix_acquisition) if bien.prix_acquisition else 0,
-                "localisation": bien.localisation or "",
+                "localisation": localisation_nom,
                 "etat": bien.etat.value if bien.etat else "INCONNU"
             },
             "amortissement": {
@@ -267,7 +281,7 @@ class EtatsService:
         virtuel.duree_vie_fiscale_ans = 4
         virtuel.valeur_origine = float(bien.prix_acquisition) if bien.prix_acquisition else 0
         virtuel.valeur_residuelle = 0
-        virtuel.cumul_comptable = 0  # ← Correction: cumul_comptable
+        virtuel.cumul_comptable = 0
         virtuel.valeur_nette_comptable = virtuel.valeur_origine
         virtuel.date_debut = bien.date_acquisition
         virtuel.statut = StatutAmortissement.EN_COURS
@@ -282,7 +296,6 @@ class EtatsService:
         valeur_residuelle = amortissement.valeur_residuelle
         base_amortissable = valeur_origine - valeur_residuelle
         
-        # CORRECTION: Vérifier si date_debut existe
         if hasattr(amortissement, 'date_debut') and amortissement.date_debut:
             annee_debut = amortissement.date_debut.year
         else:
@@ -290,20 +303,16 @@ class EtatsService:
         
         duree = amortissement.duree_vie_comptable_ans
         
-        # CORRECTION: Utiliser cumul_comptable au lieu de cumul_amorti
         cumul = amortissement.cumul_comptable if hasattr(amortissement, 'cumul_comptable') else 0
         vnc_debut = amortissement.valeur_nette_comptable if hasattr(amortissement, 'valeur_nette_comptable') else valeur_origine
         
         for i in range(duree):
             annee = annee_debut + i
-            # Calcul de l'annuité de l'année
             if i == duree - 1:
-                # Dernière année : amortir le reste
                 annuite = vnc_debut
             else:
                 annuite = base_amortissable / duree
             
-            # Ajustement pour la première année si acquisition en cours d'année
             if i == 0 and bien.date_acquisition:
                 mois_restants = 12 - (bien.date_acquisition.month)
                 if mois_restants < 12 and mois_restants > 0:
@@ -337,7 +346,6 @@ class EtatsService:
                 annee_courante = p
                 break
         
-        # CORRECTION: Utiliser cumul_comptable au lieu de cumul_amorti
         cumul_amorti = amortissement.cumul_comptable if hasattr(amortissement, 'cumul_comptable') else 0
         valeur_origine = amortissement.valeur_origine if hasattr(amortissement, 'valeur_origine') else 0
         
@@ -451,7 +459,7 @@ class EtatsService:
                 "qr_code": bien.qr_code or "",
                 "designation": self._bien_designation(bien),
                 "type_bien": bien.type_bien or "",
-                "localisation": bien.localisation or "",
+                "localisation": self._get_localisation_nom(bien) if bien else "",
             } if bien else None,
             "technicien": self._format_nom_utilisateur(technicien),
             "lignes": lignes,

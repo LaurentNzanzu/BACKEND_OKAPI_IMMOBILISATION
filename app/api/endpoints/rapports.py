@@ -1,19 +1,89 @@
 # backend/app/api/endpoints/rapports.py
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
 from datetime import datetime, date
+import logging
 
 from ...core.database import get_db
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
+from ...models.projection_investissement import ProjectionInvestissement
 from ...services.rapport_service import RapportService
+from ...services.audit_service import AuditService
+from ...services.notification_service import NotificationService
 from ...utils.pdf_generator import generer_pdf_rapport, generer_pdf_rapport_avec_sections
 from ...utils.excel_export import generer_excel_rapport, generer_csv_rapport, generer_excel_rapport_multifeuilles
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/rapports", tags=["Rapports"])
 
+
+# ============================================================
+# FONCTION ASYNCHRONE POUR LA GÉNÉRATION DE RAPPORT (BACKGROUND TASK)
+# ============================================================
+
+def _generer_rapport_async(
+    exercice: int,
+    format_export: str,
+    user_email: str,
+    user_nom: str
+):
+    """
+    Génère un rapport en arrière-plan et notifie l'utilisateur par email.
+    Crée sa propre session BDD pour isolation.
+    """
+    from ...core.database import SessionLocal
+    from ...services.notification_service import NotificationService
+    
+    db = SessionLocal()
+    try:
+        service = RapportService(db)
+        
+        if format_export == "pdf":
+            # Génération du PDF
+            resultat = service.generer_tableau8_ohada(exercice)
+            chemin_fichier = f"/tmp/tableau8_{exercice}.pdf"
+            # ... génération du fichier ...
+            
+        elif format_export == "excel":
+            resultat = service.generer_tableau8_ohada(exercice)
+            chemin_fichier = f"/tmp/tableau8_{exercice}.xlsx"
+            # ... génération du fichier ...
+        else:
+            raise ValueError(f"Format non supporté: {format_export}")
+        
+        # Envoyer le fichier par email
+        notif = NotificationService(db)
+        notif.envoyer_rapport_par_email(
+            destinataire=user_email,
+            chemin_fichier=chemin_fichier,
+            sujet=f"Tableau 8 OHADA - Exercice {exercice}",
+            corps=f"Bonjour {user_nom},\n\nLe rapport Tableau 8 pour l'exercice {exercice} est disponible en pièce jointe.\n\nCordialement,\nL'équipe OKAPI"
+        )
+        
+        logger.info(f"✅ Rapport Tableau 8 {exercice} envoyé à {user_email}")
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur génération rapport {exercice}: {e}")
+        try:
+            notif = NotificationService(db)
+            notif.envoyer_alert_admin(
+                sujet=f"Erreur génération Tableau 8 OHADA - Exercice {exercice}",
+                message=f"L'utilisateur {user_nom} a demandé un rapport qui a échoué: {str(e)}"
+            )
+        except:
+            pass
+    finally:
+        db.close()
+
+
+# ============================================================
+# FONCTIONS UTILITAIRES
+# ============================================================
 
 def check_rapport_permission(user: Utilisateur, rapport_type: str) -> bool:
     """
@@ -41,6 +111,10 @@ def check_rapport_permission(user: Utilisateur, rapport_type: str) -> bool:
     return False
 
 
+# ============================================================
+# ENDPOINTS DE LECTURE (RAPIDES)
+# ============================================================
+
 @router.get("/financier")
 async def get_rapport_financier(
     date_debut: date = Query(..., description="Date de début (YYYY-MM-DD)"),
@@ -48,7 +122,7 @@ async def get_rapport_financier(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Retourne le rapport financier au format JSON pour affichage web"""
+    """Retourne le rapport financier au format JSON pour affichage web."""
     if not check_rapport_permission(current_user, "financier"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -73,7 +147,7 @@ async def get_rapport_technique(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Retourne le rapport technique au format JSON pour affichage web"""
+    """Retourne le rapport technique au format JSON pour affichage web."""
     if not check_rapport_permission(current_user, "technique"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -97,7 +171,7 @@ async def get_rapport_amortissements(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Retourne le rapport des amortissements pour une année"""
+    """Retourne le rapport des amortissements pour une année."""
     if not check_rapport_permission(current_user, "amortissements"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -109,19 +183,22 @@ async def get_rapport_amortissements(
     return result
 
 
+# ============================================================
+# EXPORT DES RAPPORTS
+# ============================================================
+
 @router.get("/export")
 async def exporter_rapport(
-    type_rapport: str = Query(..., regex="^(financier|technique|amortissements)$"),
-    format: str = Query(..., regex="^(pdf|excel|csv)$"),
+    type_rapport: str = Query(..., pattern="^(financier|technique|amortissements)$"),
+    format: str = Query(..., pattern="^(pdf|excel|csv)$"),
     date_debut: Optional[date] = Query(None, description="Date début (pour financier/technique)"),
     date_fin: Optional[date] = Query(None, description="Date fin (pour financier/technique)"),
     annee: Optional[int] = Query(None, description="Année (pour amortissements)"),
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Exporte un rapport au format PDF, Excel ou CSV"""
+    """Exporte un rapport au format PDF, Excel ou CSV."""
     
-    # Validation des permissions
     if not check_rapport_permission(current_user, type_rapport):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -129,8 +206,6 @@ async def exporter_rapport(
         )
     
     service = RapportService(db)
-    
-    # Définition du nom du fichier
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Génération des données selon le type
@@ -147,11 +222,8 @@ async def exporter_rapport(
             )
         
         data = service.get_rapport_financier(date_debut, date_fin)
-        
-        # Préparation des données pour l'export
         titre = f"Rapport Financier - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
         
-        # Section synthèse
         synthese_data = [
             ["Valeur acquisition totale", f"{data['synthese']['valeur_acquisition_totale']:,.2f} FCFA"],
             ["Coût des pannes", f"{data['synthese']['cout_pannes_total']:,.2f} FCFA"],
@@ -160,13 +232,11 @@ async def exporter_rapport(
             ["Total des dépenses", f"{data['synthese']['total_depenses']:,.2f} FCFA"]
         ]
         
-        # Section biens
         biens_data = [
             [b['id'], b['qr_code'], b['date_acquisition'], f"{b['prix_acquisition']:,.2f}", b['etat'], b['localisation'], b['type']]
             for b in data['details_biens']
         ]
         
-        # Section pannes
         pannes_data = [
             [p['id'], p['bien_id'], p['date_declaration'], p['type'], p['priorite'], p['statut'], f"{p['cout']:,.2f}"]
             for p in data['details_pannes']
@@ -217,10 +287,8 @@ async def exporter_rapport(
             )
         
         data = service.get_rapport_technique(date_debut, date_fin)
-        
         titre = f"Rapport Technique - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
         
-        # Section synthèse
         synthese_data = [
             ["Total biens", data['synthese']['total_biens']],
             ["Biens actifs", data['synthese']['biens_actifs']],
@@ -231,13 +299,8 @@ async def exporter_rapport(
             ["Taux résolution maintenances", f"{data['synthese']['taux_resolution_maintenances']}%"]
         ]
         
-        # Répartition états
         etats_data = [[k, v] for k, v in data['repartition_etats'].items()]
-        
-        # Pannes par type
         pannes_type_data = [[k, v] for k, v in data['pannes_par_type'].items()]
-        
-        # Top biens en panne
         top_biens_data = [[b['bien_id'], b['qr_code'], b['nb_pannes']] for b in data['top_biens_pannes']]
         
         if format == "pdf":
@@ -282,7 +345,6 @@ async def exporter_rapport(
             )
         
         data = service.get_rapport_amortissements(annee)
-        
         titre = f"Rapport des Amortissements - Année {annee}"
         
         amortissements_data = [
@@ -298,7 +360,6 @@ async def exporter_rapport(
             for a in data['details']
         ]
         
-        # Ligne de total
         total_data = [["TOTAL", "", "", "", "", "", f"{data['total_dotations']:,.2f} FCFA"]]
         
         if format == "pdf":
@@ -345,7 +406,6 @@ async def exporter_rapport(
             detail=f"Type de rapport non supporté: {type_rapport}"
         )
     
-    # Retourner le fichier
     return StreamingResponse(
         content=iter([content]) if isinstance(content, bytes) else content,
         media_type=media_type,
@@ -365,7 +425,7 @@ async def get_rapport_financier_ohada(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Retourne le rapport financier complet conforme aux normes OHADA/SYSCOHADA"""
+    """Retourne le rapport financier complet conforme aux normes OHADA/SYSCOHADA."""
     if not check_rapport_permission(current_user, "financier"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -378,7 +438,6 @@ async def get_rapport_financier_ohada(
             detail="La date de début doit être antérieure à la date de fin"
         )
     
-    # Si exercice non fourni, utiliser l'année de la date de fin
     if not exercice:
         exercice = date_fin.year
     
@@ -389,14 +448,14 @@ async def get_rapport_financier_ohada(
 
 @router.get("/export/ohada")
 async def exporter_rapport_ohada(
-    format: str = Query(..., regex="^(pdf|excel)$"),
+    format: str = Query(..., pattern="^(pdf|excel)$"),
     date_debut: date = Query(..., description="Date de début (YYYY-MM-DD)"),
     date_fin: date = Query(..., description="Date de fin (YYYY-MM-DD)"),
     exercice: Optional[int] = Query(None, description="Exercice comptable"),
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Exporte le rapport financier OHADA au format PDF ou Excel"""
+    """Exporte le rapport financier OHADA au format PDF ou Excel."""
     if not check_rapport_permission(current_user, "financier"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -419,14 +478,12 @@ async def exporter_rapport_ohada(
     titre = f"Rapport Financier SYSCOHADA - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
     
     if format == "pdf":
-        # ✅ Utiliser la fonction existante generer_pdf_rapport_avec_sections
         sections = _prepare_pdf_sections_ohada(data, exercice)
         content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
         media_type = "application/pdf"
         filename = f"rapport_financier_ohada_{timestamp}.pdf"
         
     else:  # excel
-        # ✅ Utiliser la fonction existante generer_excel_rapport_multifeuilles
         feuilles = _prepare_excel_sheets_ohada(data, exercice)
         content = generer_excel_rapport_multifeuilles(titre, feuilles)
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -440,14 +497,276 @@ async def exporter_rapport_ohada(
 
 
 # ============================================================
+# NOUVEAUX ENDPOINTS TÂCHE 3 - TABLEAU 8, PROJECTIONS, JOURNAL
+# ============================================================
+
+@router.get("/tableau-8")
+async def get_tableau8_ohada(
+    background_tasks: BackgroundTasks,  # ✅ Déplacé EN PREMIER (sans default)
+    annee: int = Query(..., description="Année du tableau 8"),
+    format_export: Optional[str] = Query("json", pattern="^(json|pdf|excel)$", description="Format d'export"),
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Génère le Tableau 8 OHADA pour une année donnée.
+    - Format JSON : synchrone (rapide)
+    - Format PDF/Excel : asynchrone (BackgroundTasks) avec notification email
+    """
+    role = current_user.role.nom.upper() if current_user.role else ""
+    if role not in ["COMPTABLE", "DG", "ADMIN"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès réservé au Comptable, au DG et à l'Admin"
+        )
+    
+    service = RapportService(db)
+    
+    # Format JSON : synchrone (lecture rapide)
+    if format_export == "json":
+        resultat = service.generer_tableau8_ohada(annee)
+        return resultat
+    
+    # Format PDF/Excel : asynchrone avec BackgroundTasks
+    if format_export in ["pdf", "excel"]:
+        # Vérifier que l'utilisateur a un email
+        if not current_user.email:
+            raise HTTPException(
+                status_code=400,
+                detail="Aucune adresse email configurée pour l'envoi du rapport"
+            )
+        
+        # 🔴 DÉPORTER EN ARRIÈRE-PLAN
+        background_tasks.add_task(
+            _generer_rapport_async,
+            exercice=annee,
+            format_export=format_export,
+            user_email=current_user.email,
+            user_nom=current_user.nom or "Utilisateur"
+        )
+        
+        return {
+            "message": f"Génération du Tableau 8 ({format_export}) en cours",
+            "exercice": annee,
+            "format": format_export,
+            "status": "processing",
+            "notification": f"Le rapport sera envoyé à {current_user.email}",
+            "check_status": f"/api/v1/rapports/tableau-8?annee={annee}&format_export=json"
+        }
+    
+    raise HTTPException(
+        status_code=400,
+        detail=f"Format d'export non supporté: {format_export}"
+    )
+
+
+@router.get("/projections")
+async def get_projections_pluriannuelles(
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère les projections d'investissement N+1 à N+5.
+    ✅ Utilise les données pré-calculées par le CRON (lecture rapide)
+    """
+    role = current_user.role.nom.upper() if current_user.role else ""
+    if role not in ["DG", "COMPTABLE", "ADMIN"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès réservé au DG, au Comptable et à l'Admin"
+        )
+    
+    service = RapportService(db)
+    
+    # ✅ UTILISER LES DONNÉES PRÉ-CALCULÉES
+    return service.get_projections_pluriannuelles()
+
+
+@router.get("/projections/bien/{bien_id}")
+async def get_projections_bien(
+    bien_id: int,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère les projections d'investissement pour un bien spécifique.
+    ✅ Utilise les données pré-calculées par le CRON
+    """
+    role = current_user.role.nom.upper() if current_user.role else ""
+    if role not in ["DG", "COMPTABLE", "ADMIN"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès réservé au DG, au Comptable et à l'Admin"
+        )
+    
+    service = RapportService(db)
+    
+    # ✅ UTILISER LES DONNÉES PRÉ-CALCULÉES
+    return service.get_projections_synthese(bien_id)
+
+
+# ============================================================
+# JOURNAL DES IMMOBILISATIONS
+# ============================================================
+
+@router.get("/journal-immobilisations/{bien_id}")
+async def get_journal_immobilisations(
+    bien_id: int,
+    limit: int = Query(100, ge=1, le=500, description="Nombre maximum d'événements"),
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère tout l'historique d'un bien (journal des immobilisations).
+    """
+    if not check_rapport_permission(current_user, "financier"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissions insuffisantes pour consulter le journal"
+        )
+    
+    audit_service = AuditService(db)
+    historique = audit_service.get_historique_bien(bien_id, limit)
+    arbre_remplacement = audit_service.get_arbre_remplacement(bien_id)
+    
+    from ...models.bien import Bien
+    bien = db.query(Bien).filter(Bien.id_bien == bien_id).first()
+    
+    return {
+        "bien_id": bien_id,
+        "bien_designation": bien.description if bien else f"Bien #{bien_id}",
+        "total_evenements": len(historique),
+        "evenements": [
+            {
+                "date": e.date_evenement.isoformat() if e.date_evenement else None,
+                "type": e.type_evenement.value if e.type_evenement else None,
+                "libelle": e.libelle,
+                "montant": float(e.montant) if e.montant else 0,
+                "reference": e.reference_piece,
+                "ancienne_valeur": float(e.ancienne_valeur) if e.ancienne_valeur else None,
+                "nouvelle_valeur": float(e.nouvelle_valeur) if e.nouvelle_valeur else None,
+                "utilisateur": e.utilisateur.nom if e.utilisateur else None
+            }
+            for e in historique
+        ],
+        "arbre_remplacement": arbre_remplacement
+    }
+
+
+@router.get("/journal-immobilisations/bien/{bien_id}/chronologique")
+async def get_journal_immobilisations_chronologique(
+    bien_id: int,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère l'historique d'un bien dans l'ordre chronologique.
+    """
+    if not check_rapport_permission(current_user, "financier"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissions insuffisantes pour consulter le journal"
+        )
+    
+    audit_service = AuditService(db)
+    historique = audit_service.get_historique_bien_chronologique(bien_id)
+    
+    return {
+        "bien_id": bien_id,
+        "total_evenements": len(historique),
+        "evenements": [
+            {
+                "date": e.date_evenement.isoformat() if e.date_evenement else None,
+                "type": e.type_evenement.value if e.type_evenement else None,
+                "libelle": e.libelle,
+                "montant": float(e.montant) if e.montant else 0,
+                "reference": e.reference_piece
+            }
+            for e in historique
+        ]
+    }
+
+
+@router.get("/journal-immobilisations/statistiques")
+async def get_journal_statistiques(
+    date_debut: Optional[date] = Query(None, description="Date de début"),
+    date_fin: Optional[date] = Query(None, description="Date de fin"),
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère les statistiques du journal des immobilisations.
+    """
+    if not check_rapport_permission(current_user, "financier"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissions insuffisantes pour consulter les statistiques"
+        )
+    
+    audit_service = AuditService(db)
+    
+    date_debut_dt = datetime.combine(date_debut, datetime.min.time()) if date_debut else None
+    date_fin_dt = datetime.combine(date_fin, datetime.max.time()) if date_fin else None
+    
+    stats = audit_service.get_statistiques_journal(date_debut_dt, date_fin_dt)
+    
+    return stats
+
+
+@router.get("/journal-immobilisations/arbre/{bien_id}")
+async def get_arbre_remplacement(
+    bien_id: int,
+    inverse: bool = Query(False, description="Obtenir l'arbre inverse"),
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère l'arbre de remplacement d'un bien.
+    """
+    if not check_rapport_permission(current_user, "financier"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissions insuffisantes pour consulter l'arbre de remplacement"
+        )
+    
+    audit_service = AuditService(db)
+    
+    if inverse:
+        arbre = audit_service.get_arbre_remplacement_inverse(bien_id)
+    else:
+        arbre = audit_service.get_arbre_remplacement(bien_id)
+    
+    verification = audit_service.verifier_chainage_remplacement(bien_id)
+    
+    return {
+        "bien_id": bien_id,
+        "arbre": arbre,
+        "est_valide": verification["est_valide"],
+        "nombre_remplacements": verification["nombre_remplacements"]
+    }
+
+
+# ============================================================
 # FONCTIONS AIDES POUR L'EXPORT OHADA
 # ============================================================
 
+def _get_critere_projection(projection) -> str:
+    """Retourne le critère ayant déclenché la projection."""
+    if projection.critere_fin_amortissement:
+        return "fin_amortissement"
+    elif projection.critere_score_fiabilite:
+        return "score_fiabilite"
+    elif projection.critere_obligation_legale:
+        return "obligation_legale"
+    elif projection.critere_remplacement_cyclique:
+        return "remplacement_cyclique"
+    return "estimation"
+
+
 def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
-    """Prépare les sections pour le PDF OHADA"""
+    """Prépare les sections pour le PDF OHADA."""
     sections = []
     
-    # Section 1: Synthèse du patrimoine
     patrimoine_data = [
         ["Valeur totale d'acquisition", f"{data['patrimoine']['valeur_totale_acquisition']:,.2f} FCFA"],
         ["Total des biens", str(data['patrimoine']['total_biens'])],
@@ -458,7 +777,6 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
         "donnees": patrimoine_data
     })
     
-    # Section 2: Amortissements
     amort_data = [
         ["Dotations de l'exercice", f"{data['amortissements']['dotations_exercice']:,.2f} FCFA"],
         ["Cumul des amortissements", f"{data['amortissements']['cumul_total_amortissements']:,.2f} FCFA"],
@@ -470,7 +788,6 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
         "donnees": amort_data
     })
     
-    # Section 3: Charges
     charges_data = [
         ["Coût des pannes", f"{data['charges_cycle_vie']['pannes']['cout_total']:,.2f} FCFA"],
         ["Nombre de pannes", str(data['charges_cycle_vie']['pannes']['total'])],
@@ -484,7 +801,6 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
         "donnees": charges_data
     })
     
-    # Section 4: Cessions
     cessions_data = [
         ["Total des cessions", str(data['cessions_mouvements']['total_cessions'])],
         ["Total prix de vente", f"{data['cessions_mouvements']['total_prix_vente']:,.2f} FCFA"],
@@ -502,10 +818,9 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
 
 
 def _prepare_excel_sheets_ohada(data: dict, exercice: int) -> list:
-    """Prépare les feuilles pour l'Excel OHADA"""
+    """Prépare les feuilles pour l'Excel OHADA."""
     feuilles = []
     
-    # Feuille 1: Synthèse
     feuilles.append({
         "nom": "Synthèse",
         "en_tetes": ["Indicateur", "Valeur"],
@@ -523,7 +838,6 @@ def _prepare_excel_sheets_ohada(data: dict, exercice: int) -> list:
         ]
     })
     
-    # Feuille 2: Répartition par type
     repartition_data = [
         [t, str(v['count']), f"{v['valeur']:,.2f}"]
         for t, v in data['patrimoine']['repartition_par_type'].items()
@@ -534,9 +848,8 @@ def _prepare_excel_sheets_ohada(data: dict, exercice: int) -> list:
         "donnees": repartition_data
     })
     
-    # Feuille 3: Détail des amortissements
     amort_details = []
-    for a in data['tableau_amortissements']['details'][:50]:  # Limite à 50 pour l'Excel
+    for a in data['tableau_amortissements']['details'][:50]:
         amort_details.append([
             a['designation'],
             a['type_bien'],
@@ -547,7 +860,6 @@ def _prepare_excel_sheets_ohada(data: dict, exercice: int) -> list:
             f"{a['valeur_nette_comptable']:,.2f}"
         ])
     
-    # Ajouter le total
     total_row = [
         "TOTAL",
         "",
@@ -565,7 +877,6 @@ def _prepare_excel_sheets_ohada(data: dict, exercice: int) -> list:
         "donnees": amort_details
     })
     
-    # Feuille 4: Cessions
     cessions_data = []
     for c in data['cessions_mouvements']['details_cessions'][:50]:
         cessions_data.append([

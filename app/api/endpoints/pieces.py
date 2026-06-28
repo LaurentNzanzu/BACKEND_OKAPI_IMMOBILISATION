@@ -7,15 +7,20 @@ from ...schemas.piece_rechange import PieceRechangeCreate, PieceRechangeUpdate, 
 from ...services.piece_service import PieceService
 from ...services.audit_service import AuditService
 from ...core.security import get_current_user
+from ...api.dependencies import deny_comptable_pieces_access
 from ...models.utilisateur import Utilisateur
 
-router = APIRouter(prefix="/pieces", tags=["Pièces de rechange"])
+router = APIRouter(
+    prefix="/pieces-detachees",
+    tags=["Pièces détachées"],
+    dependencies=[Depends(deny_comptable_pieces_access)],
+)
 
 def check_piece_permission(user: Utilisateur, action: str) -> bool:
     if not user:
         return False
     role = user.role.nom.upper() if user.role else "USER"
-    if role in ["ADMIN", "DG", "COMPTABLE","MAGASINIER"]:
+    if role in ["ADMIN", "DG", "MAGASINIER"]:
         return True
     return action == "view"
 

@@ -130,6 +130,19 @@ def require_any_roles(allowed_roles: List[str]):
 BIENS_VIEW_ROLES = ["ADMIN", "DG", "COMPTABLE", "TECHNICIEN", "CAISSE", "MAGASINIER", "GESTIONNAIRE"]
 
 
+def deny_comptable_pieces_access(
+    current_user: Utilisateur = Depends(get_current_user),
+) -> Utilisateur:
+    """Bloque l'accès au module pièces détachées pour le rôle Comptable."""
+    role = current_user.role.nom.upper() if current_user.role else "USER"
+    if role == "COMPTABLE":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissions insuffisantes",
+        )
+    return current_user
+
+
 def is_caisse(current_user: Utilisateur = Depends(get_current_user)) -> Utilisateur:
     """Vérifie que l'utilisateur a le rôle CAISSE ou ADMIN"""
     if not (current_user.has_role("CAISSE") or current_user.has_role("ADMIN")):

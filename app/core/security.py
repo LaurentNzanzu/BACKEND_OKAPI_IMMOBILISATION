@@ -84,6 +84,14 @@ def get_token_subject(token: str) -> Optional[str]:
 
 # === ✅ CORRIGÉ : Dépendance d'authentification pour FastAPI ===
 
+from .redis import CacheService
+from .database import LocalCache
+
+def invalidate_user_cache(user_id: int):
+    """Invalide le cache utilisateur (mémoire + Redis)."""
+    LocalCache.delete(f"user:{user_id}")
+    CacheService.delete(f"user:{user_id}")
+
 def get_current_user(
     request: Request,
     db: Session = Depends(get_db),
@@ -91,7 +99,7 @@ def get_current_user(
 ) -> Utilisateur:
     """
     Dépendance FastAPI pour récupérer l'utilisateur authentifié.
-    Accepte le JWT via header Authorization ou cookie HttpOnly access_token.
+    ZÉRO requête BDD si l'utilisateur est présent dans le cache (optimisé latence réseau).
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -116,6 +124,21 @@ def get_current_user(
     except JWTError:
         raise credentials_exception
 
+    cache_key = f"user:{user_id}"
+    
+    # 🔴 OPTIMISATION LATENCE : Restitution instantanée depuis le cache local (0ms BDD)
+    cached_user = LocalCache.get(cache_key) or CacheService.get(cache_key)
+    if cached_user:
+        user = Utilisateur()
+        for k, v in cached_user.items():
+            if k == "role_nom" and v:
+                from ..models.role import Role
+                user.role = Role(nom=v)
+            elif hasattr(user, k):
+                setattr(user, k, v)
+        if getattr(user, 'est_actif', True):
+            return user
+
     user = (
         db.query(Utilisateur)
         .options(joinedload(Utilisateur.role))
@@ -131,6 +154,18 @@ def get_current_user(
             detail="Compte utilisateur désactivé",
         )
 
+    user_dict = {
+        "id": user.id,
+        "email": user.email,
+        "nom": user.nom,
+        "prenom": user.prenom,
+        "post_nom": user.post_nom,
+        "role_id": user.role_id,
+        "role_nom": user.role.nom if user.role else None,
+        "est_actif": user.est_actif
+    }
+    LocalCache.set(cache_key, user_dict, 600)
+    CacheService.set(cache_key, user_dict, ttl=600)
     return user
 
 

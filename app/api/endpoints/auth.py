@@ -25,7 +25,7 @@ from ...services.password_reset_service import PasswordResetService
 from ...services.email_service import EmailService
 from ...api.dependencies import get_current_user
 from ...models.utilisateur import Utilisateur
-from ...core.security import get_password_hash, decode_token, create_access_token
+from ...core.security import get_password_hash, decode_token, create_access_token, invalidate_user_cache
 from ...core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,7 @@ def logout(
         nouvelles_valeurs=None,
     )
     logger.info("Déconnexion : %s", current_user.email)
+    invalidate_user_cache(current_user.id)
     response = JSONResponse(content={"message": "Déconnexion réussie"})
     clear_auth_cookies(response)
     return response

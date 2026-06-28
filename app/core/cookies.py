@@ -7,7 +7,8 @@ REFRESH_COOKIE = "refresh_token"
 
 
 def _cookie_secure() -> bool:
-    return settings.ENV == "production"
+    # ✅ CORRECTION : Utiliser ENVIRONMENT au lieu de ENV
+    return settings.ENVIRONMENT == "production"
 
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    
     # === Configuration SMTP (Optionnel) ===
     SMTP_SERVER: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
@@ -37,8 +38,10 @@ class Settings(BaseSettings):
     
     # === Application ===
     APP_NAME: str = "Gestion Immobilisations"
-    ENV: str = "development"
-    DEBUG: bool = False
+    
+    # ✅ CORRECTION : Remplacer ENV par ENVIRONMENT
+    ENVIRONMENT: str = "development"  # "development" ou "production"
+    DEBUG: bool = True
     FRONTEND_URL: str = "http://localhost:3000"
 
     @property

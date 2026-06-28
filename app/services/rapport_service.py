@@ -2,12 +2,13 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, extract, or_
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 
 from ..models.bien import Bien, EtatBien, StatutComptable
+from ..models.localisation import Localisation
 from ..models.panne import Panne, StatutPanne, TypePanne
-from ..models.maintenance import Maintenance, StatutMaintenance, TypeMaintenance
+from ..models.maintenance import Maintenance, StatutMaintenance, TypeMaintenance, TypeOrigineMaintenance
 from ..models.amortissement import Amortissement, MethodeAmortissement
 from ..models.ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture
 from ..models.mouvement_bien import MouvementBien, TypeMouvementEnum
@@ -15,11 +16,31 @@ from ..models.composant import Composant
 from ..models.plan_comptable import PlanComptable
 from ..models.fournisseur import Fournisseur
 from ..models.cession import Cession
+from ..models.alerte_vnc import AlerteVNC, StatutAlerteVNC
+from ..models.journal_evenements_immobilisation import JournalEvenementImmobilisation, TypeEvenementImmobilisation
+from ..models.projection_investissement import ProjectionInvestissement, StatutProjection
+
+# === NOUVEAUX IMPORTS TÂCHE 3 ===
+from ..core.constants import (
+    SEUIL_SCORE_BON,
+    SEUIL_SCORE_CRITIQUE,
+    SEUIL_SCORE_MOYEN,
+    SEUIL_VNC_CRITIQUE,
+    SEUIL_VNC_STANDARD,
+    ANNEE_PROJECTION_DEBUT,
+    ANNEE_PROJECTION_FIN,
+    TAUX_OBSOLESCENCE_DEFAUT,
+    Couleurs
+)
 
 
 class RapportService:
     def __init__(self, db: Session):
         self.db = db
+
+    # ============================================================
+    # MÉTHODES UTILITAIRES
+    # ============================================================
 
     def _date_to_datetime(self, d: date) -> datetime:
         """Convertit une date en datetime avec heure 00:00:00"""
@@ -38,6 +59,37 @@ class RapportService:
         if value is None:
             return 0.0
         return round(float(value), 2)
+
+    def _get_bien_designation(self, bien) -> str:
+        """Récupère la désignation d'un bien."""
+        if not bien:
+            return None
+        if hasattr(bien, 'marque') and bien.marque:
+            return f"{bien.marque} {getattr(bien, 'modele', '')}".strip()
+        if hasattr(bien, 'fabricant') and bien.fabricant:
+            return f"{bien.fabricant} {getattr(bien, 'modele', '')}".strip()
+        return bien.description or f"Bien #{bien.id_bien}"
+
+    def _get_bien_designation_from_id(self, bien_id: int) -> str:
+        """Récupère la désignation d'un bien à partir de son ID."""
+        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        return self._get_bien_designation(bien) if bien else f"Bien #{bien_id}"
+
+    def _get_critere_projection(self, projection: ProjectionInvestissement) -> str:
+        """Retourne le critère ayant déclenché la projection."""
+        if projection.critere_fin_amortissement:
+            return "fin_amortissement"
+        elif projection.critere_score_fiabilite:
+            return "score_fiabilite"
+        elif projection.critere_obligation_legale:
+            return "obligation_legale"
+        elif projection.critere_remplacement_cyclique:
+            return "remplacement_cyclique"
+        return "estimation"
+
+    # ============================================================
+    # A. RAPPORT FINANCIER OHADA/SYSCOHADA
+    # ============================================================
 
     def get_rapport_financier_ohada(
         self,
@@ -90,6 +142,7 @@ class RapportService:
     # ============================================================
     # A. SYNTHÈSE DU PATRIMOINE IMMOBILIER
     # ============================================================
+
     def _get_patrimoine_synthese(self) -> Dict[str, Any]:
         """Synthèse du patrimoine immobilier"""
         
@@ -166,6 +219,7 @@ class RapportService:
     # ============================================================
     # B. AMORTISSEMENTS ET DOTATIONS (Note 3C SYSCOHADA)
     # ============================================================
+
     def _get_amortissements_ohada(self, exercice: int) -> Dict[str, Any]:
         """Amortissements et dotations conformes à la Note 3C"""
         
@@ -240,6 +294,7 @@ class RapportService:
     # ============================================================
     # C. CHARGES LIÉES AU CYCLE DE VIE
     # ============================================================
+
     def _get_charges_cycle_vie(self, date_debut: datetime, date_fin: datetime) -> Dict[str, Any]:
         """Charges liées aux pannes et maintenances"""
         
@@ -320,17 +375,19 @@ class RapportService:
             Bien.id_bien,
             Bien.qr_code,
             Bien.type_bien,
-            Bien.localisation,
+            Localisation.nom_localisation.label("localisation"),
             func.sum(Panne.cout_total_reparation).label('cout_pannes'),
             func.sum(Maintenance.cout).label('cout_maintenances')
         ).outerjoin(Panne, Panne.id_bien == Bien.id_bien).outerjoin(
+            Localisation, Bien.id_localisation == Localisation.id_localisation
+        ).outerjoin(
             Maintenance, Maintenance.id_bien == Bien.id_bien
         ).filter(
             or_(
                 Panne.date_declaration.between(date_debut, date_fin),
                 Maintenance.date_debut_reelle.between(date_debut, date_fin)
             )
-        ).group_by(Bien.id_bien).order_by(
+        ).group_by(Bien.id_bien, Bien.qr_code, Bien.type_bien, Localisation.nom_localisation).order_by(
             (func.coalesce(func.sum(Panne.cout_total_reparation), 0) + 
              func.coalesce(func.sum(Maintenance.cout), 0)).desc()
         ).limit(5).all()
@@ -365,6 +422,7 @@ class RapportService:
     # ============================================================
     # D. CESSIONS ET MOUVEMENTS (Note 3D SYSCOHADA)
     # ============================================================
+
     def _get_cessions_mouvements(self, date_debut: datetime, date_fin: datetime) -> Dict[str, Any]:
         """Cessions et mouvements conformes à la Note 3D"""
         
@@ -379,10 +437,12 @@ class RapportService:
             Cession.resultat,
             Bien.qr_code,
             Bien.type_bien,
-            Bien.localisation,
+            Localisation.nom_localisation.label("localisation"),
             Bien.prix_acquisition,
             Bien.cumul_amortissement
-        ).join(Bien, Cession.id_bien == Bien.id_bien).filter(
+        ).join(Bien, Cession.id_bien == Bien.id_bien).outerjoin(
+            Localisation, Bien.id_localisation == Localisation.id_localisation
+        ).filter(
             Cession.date_cession >= date_debut.date(),
             Cession.date_cession <= date_fin.date()
         ).all()
@@ -436,7 +496,9 @@ class RapportService:
             Bien.qr_code,
             Bien.type_bien,
             Bien.localisation
-        ).join(Bien, MouvementBien.id_bien == Bien.id_bien).filter(
+        ).join(Bien, MouvementBien.id_bien == Bien.id_bien).outerjoin(
+            Localisation, Bien.id_localisation == Localisation.id_localisation
+        ).filter(
             MouvementBien.date_mouvement >= date_debut,
             MouvementBien.date_mouvement <= date_fin,
             MouvementBien.type_mouvement == TypeMouvementEnum.TRANSFERT
@@ -462,12 +524,14 @@ class RapportService:
             Bien.id_bien,
             Bien.qr_code,
             Bien.type_bien,
-            Bien.localisation,
+            Localisation.nom_localisation.label("localisation"),
             Bien.prix_acquisition,
             Bien.cumul_amortissement,
             Bien.date_sortie
+        ).outerjoin(
+            Localisation, Bien.id_localisation == Localisation.id_localisation
         ).filter(
-            Bien.statut_comptable == "MIS_AU_REBUT",  # String, pas Enum
+            Bien.statut_comptable == "MIS_AU_REBUT",
             Bien.date_sortie >= date_debut,
             Bien.date_sortie <= date_fin
         ).all()
@@ -502,6 +566,7 @@ class RapportService:
     # ============================================================
     # E. TABLEAU DE SUIVI DES AMORTISSEMENTS (Note 3C SYSCOHADA)
     # ============================================================
+
     def _get_tableau_amortissements(self, exercice: int) -> Dict[str, Any]:
         """Tableau de suivi des amortissements conforme à la Note 3C"""
         
@@ -519,9 +584,11 @@ class RapportService:
             Amortissement.valeur_nette_comptable,
             Bien.qr_code,
             Bien.type_bien,
-            Bien.localisation,
+            Localisation.nom_localisation.label("localisation"),
             Bien.date_acquisition
-        ).join(Bien, Amortissement.id_bien == Bien.id_bien).filter(
+        ).join(Bien, Amortissement.id_bien == Bien.id_bien).outerjoin(
+            Localisation, Bien.id_localisation == Localisation.id_localisation
+        ).filter(
             Amortissement.exercice == exercice,
             Amortissement.statut == "EN_COURS"
         ).all()
@@ -598,6 +665,7 @@ class RapportService:
     # ============================================================
     # F. NOTES ANNEXES SYSCOHADA
     # ============================================================
+
     def _get_notes_annexes_ohada(self, exercice: int) -> Dict[str, Any]:
         """Notes annexes conformes au SYSCOHADA"""
         
@@ -637,7 +705,6 @@ class RapportService:
         }
         
         # Note 3D : Plus/moins-values de cession (déjà calculé dans cessions)
-        # On récupère les données des cessions
         cessions = self.db.query(
             Cession.resultat
         ).all()
@@ -655,7 +722,6 @@ class RapportService:
         }
         
         # Note 3B : Location-acquisition (si applicable)
-        # Pour l'instant, on met des valeurs par défaut
         note_3b = {
             "titre": "Note 3B - Location-acquisition",
             "details": {
@@ -671,3 +737,572 @@ class RapportService:
             "note_3c": note_3c,
             "note_3d": note_3d
         }
+
+    # ============================================================
+    # G. TABLEAU 8 OHADA
+    # ============================================================
+
+    def generer_tableau8_ohada(self, annee: int) -> dict:
+        """
+        Génère le Tableau 8 OHADA pour une année donnée
+        """
+        debut_annee = datetime(annee, 1, 1)
+        fin_annee = datetime(annee, 12, 31)
+        
+        biens = self.db.query(Bien).filter(
+            Bien.date_acquisition <= fin_annee,
+            (Bien.date_sortie.is_(None) | (Bien.date_sortie >= debut_annee))
+        ).all()
+        
+        categories = {}
+        for bien in biens:
+            categorie = bien.type_bien or "autre"
+            if categorie not in categories:
+                categories[categorie] = {
+                    "brut_debut": 0.0,
+                    "augmentations": 0.0,
+                    "diminutions": 0.0,
+                    "brut_fin": 0.0,
+                    "amortissements_cumules": 0.0,
+                    "vnc_fin": 0.0,
+                    "dotations_exercice": 0.0,
+                    "nombre_biens": 0
+                }
+            
+            categories[categorie]["nombre_biens"] += 1
+            prix = float(bien.prix_acquisition or 0)
+            
+            if bien.date_acquisition < debut_annee:
+                categories[categorie]["brut_debut"] += prix
+            
+            if bien.date_acquisition >= debut_annee:
+                categories[categorie]["augmentations"] += prix
+            
+            if bien.date_sortie and bien.date_sortie >= debut_annee:
+                categories[categorie]["diminutions"] += prix
+            
+            cumul = float(bien.cumul_amortissement or 0)
+            categories[categorie]["amortissements_cumules"] += cumul
+            
+            vnc_fin = prix - cumul
+            categories[categorie]["vnc_fin"] += vnc_fin
+            
+            dotation = self.db.query(
+                func.sum(Amortissement.annuite_comptable)
+            ).filter(
+                Amortissement.id_bien == bien.id_bien,
+                Amortissement.exercice == annee
+            ).scalar() or 0
+            categories[categorie]["dotations_exercice"] += float(dotation)
+        
+        total_brut_debut = 0.0
+        total_augmentations = 0.0
+        total_diminutions = 0.0
+        total_brut_fin = 0.0
+        total_amortissements = 0.0
+        total_vnc_fin = 0.0
+        total_dotations = 0.0
+        
+        for cat in categories.values():
+            cat["brut_fin"] = self._round_value(cat["brut_debut"] + cat["augmentations"] - cat["diminutions"])
+            cat["brut_debut"] = self._round_value(cat["brut_debut"])
+            cat["augmentations"] = self._round_value(cat["augmentations"])
+            cat["diminutions"] = self._round_value(cat["diminutions"])
+            cat["amortissements_cumules"] = self._round_value(cat["amortissements_cumules"])
+            cat["vnc_fin"] = self._round_value(cat["vnc_fin"])
+            cat["dotations_exercice"] = self._round_value(cat["dotations_exercice"])
+            
+            total_brut_debut += cat["brut_debut"]
+            total_augmentations += cat["augmentations"]
+            total_diminutions += cat["diminutions"]
+            total_brut_fin += cat["brut_fin"]
+            total_amortissements += cat["amortissements_cumules"]
+            total_vnc_fin += cat["vnc_fin"]
+            total_dotations += cat["dotations_exercice"]
+        
+        coherent, ecart = self._verifier_equilibrage_tableau8(annee, total_dotations)
+        
+        mouvements = self.db.query(
+            MouvementBien.id_mouvement,
+            MouvementBien.id_bien,
+            MouvementBien.type_mouvement,
+            MouvementBien.date_mouvement,
+            MouvementBien.localisation_source,
+            MouvementBien.localisation_destination,
+            Bien.qr_code,
+            Bien.type_bien
+        ).join(Bien, MouvementBien.id_bien == Bien.id_bien).filter(
+            MouvementBien.date_mouvement >= debut_annee,
+            MouvementBien.date_mouvement <= fin_annee
+        ).all()
+        
+        details_mouvements = [
+            {
+                "id_mouvement": m.id_mouvement,
+                "id_bien": m.id_bien,
+                "qr_code": m.qr_code,
+                "designation": m.type_bien or f"Bien #{m.id_bien}",
+                "date_mouvement": m.date_mouvement.strftime("%d/%m/%Y") if m.date_mouvement else "",
+                "type": m.type_mouvement.value if m.type_mouvement else "",
+                "source": m.localisation_source or "",
+                "destination": m.localisation_destination or ""
+            }
+            for m in mouvements
+        ]
+        
+        return {
+            "annee": annee,
+            "categories": categories,
+            "total_general": {
+                "brut_debut": self._round_value(total_brut_debut),
+                "augmentations": self._round_value(total_augmentations),
+                "diminutions": self._round_value(total_diminutions),
+                "brut_fin": self._round_value(total_brut_fin),
+                "amortissements_cumules": self._round_value(total_amortissements),
+                "vnc_fin": self._round_value(total_vnc_fin),
+                "dotations_exercice": self._round_value(total_dotations),
+                "nombre_total_biens": len(biens)
+            },
+            "mouvements": {
+                "total": len(mouvements),
+                "details": details_mouvements
+            },
+            "coherent": coherent,
+            "ecart": round(ecart, 2) if not coherent else None
+        }
+
+    def _verifier_equilibrage_tableau8(self, annee: int, total_dotations_tableau: float) -> tuple:
+        """
+        Vérifie que le Tableau 8 est cohérent avec le Grand Livre
+        """
+        debut_annee = datetime(annee, 1, 1)
+        fin_annee = datetime(annee, 12, 31)
+        
+        total_dotations_livre = self.db.query(
+            func.sum(EcritureComptable.montant)
+        ).filter(
+            EcritureComptable.compte_debit == "6812",
+            EcritureComptable.date_ecriture >= debut_annee,
+            EcritureComptable.date_ecriture <= fin_annee,
+            EcritureComptable.statut == StatutEcriture.VALIDEE
+        ).scalar() or 0
+        
+        ecart = abs(float(total_dotations_tableau or 0) - float(total_dotations_livre or 0))
+        coherent = ecart < 0.01
+        
+        return coherent, ecart
+
+    # ============================================================
+    # H. ALERTES VNC
+    # ============================================================
+
+    def get_synthese_alertes_vnc(self) -> dict:
+        """
+        Récupère la synthèse des alertes VNC pour le tableau de bord
+        """
+        alertes_attente = self.db.query(AlerteVNC).filter(
+            AlerteVNC.statut == StatutAlerteVNC.EN_ATTENTE
+        ).count()
+        
+        alertes_cours = self.db.query(AlerteVNC).filter(
+            AlerteVNC.statut == StatutAlerteVNC.EN_COURS
+        ).count()
+        
+        alertes_traitees = self.db.query(AlerteVNC).filter(
+            AlerteVNC.statut == StatutAlerteVNC.TRAITEE
+        ).count()
+        
+        biens_critiques_alerte = self.db.query(Bien).filter(
+            Bien.est_critique == True,
+            Bien.vnc_alerte_declenchee == True,
+            Bien.statut_comptable == 'ACTIF'
+        ).count()
+        
+        alertes_recentes = self.db.query(
+            AlerteVNC.id,
+            AlerteVNC.bien_id,
+            AlerteVNC.seuil_atteint,
+            AlerteVNC.ratio_vnc,
+            AlerteVNC.valeur_vnc,
+            AlerteVNC.date_alerte,
+            AlerteVNC.statut,
+            Bien.qr_code,
+            Bien.type_bien,
+            Bien.prix_acquisition
+        ).join(Bien, AlerteVNC.bien_id == Bien.id_bien).order_by(
+            AlerteVNC.date_alerte.desc()
+        ).limit(10).all()
+        
+        details_recentes = [
+            {
+                "id": a.id,
+                "bien_id": a.bien_id,
+                "qr_code": a.qr_code,
+                "designation": a.type_bien or f"Bien #{a.bien_id}",
+                "seuil_atteint": a.seuil_atteint,
+                "ratio_vnc": self._round_value(a.ratio_vnc * 100),
+                "valeur_vnc": self._round_value(a.valeur_vnc),
+                "valeur_origine": self._round_value(a.prix_acquisition),
+                "date_alerte": a.date_alerte.strftime("%d/%m/%Y %H:%M") if a.date_alerte else "",
+                "statut": a.statut.value if a.statut else ""
+            }
+            for a in alertes_recentes
+        ]
+        
+        return {
+            "total_alertes": alertes_attente + alertes_cours + alertes_traitees,
+            "en_attente": alertes_attente,
+            "en_cours": alertes_cours,
+            "traitees": alertes_traitees,
+            "biens_critiques_avec_alerte": biens_critiques_alerte,
+            "alertes_recentes": details_recentes,
+            "seuils": {
+                "critique": SEUIL_VNC_CRITIQUE,
+                "standard": SEUIL_VNC_STANDARD
+            }
+        }
+
+    # ============================================================
+    # I. RAPPORT DE FIABILITÉ
+    # ============================================================
+
+    def get_rapport_fiabilite(self) -> dict:
+        """
+        Génère un rapport sur la fiabilité des biens
+        """
+        biens = self.db.query(Bien).filter(
+            Bien.statut_comptable == 'ACTIF'
+        ).all()
+        
+        total_biens = len(biens)
+        biens_avec_score = [b for b in biens if b.score_fiabilite is not None]
+        total_avec_score = len(biens_avec_score)
+        
+        critique = [b for b in biens_avec_score if b.score_fiabilite < SEUIL_SCORE_CRITIQUE]
+        moyen = [b for b in biens_avec_score if SEUIL_SCORE_CRITIQUE <= b.score_fiabilite < SEUIL_SCORE_MOYEN]
+        bon = [b for b in biens_avec_score if b.score_fiabilite >= SEUIL_SCORE_MOYEN]
+        
+        if total_avec_score > 0:
+            score_moyen = sum(b.score_fiabilite for b in biens_avec_score) / total_avec_score
+        else:
+            score_moyen = 0
+        
+        biens_critiques_faible = [b for b in biens if b.est_critique and b.score_fiabilite is not None and b.score_fiabilite < SEUIL_SCORE_CRITIQUE]
+        
+        details_faible = [
+            {
+                "id_bien": b.id_bien,
+                "qr_code": b.qr_code,
+                "designation": b.type_bien or f"Bien #{b.id_bien}",
+                "score_fiabilite": self._round_value(b.score_fiabilite),
+                "est_critique": b.est_critique,
+                "nb_pannes": self.db.query(func.count(Panne.id_panne)).filter(
+                    Panne.id_bien == b.id_bien,
+                    Panne.statut == StatutPanne.TERMINEE
+                ).scalar() or 0,
+                "couleur": Couleurs.SCORE_CRITIQUE if b.score_fiabilite < SEUIL_SCORE_CRITIQUE 
+                           else Couleurs.SCORE_MOYEN if b.score_fiabilite < SEUIL_SCORE_MOYEN 
+                           else Couleurs.SCORE_BON
+            }
+            for b in biens_avec_score
+            if b.score_fiabilite < SEUIL_SCORE_MOYEN
+        ]
+        
+        return {
+            "total_biens": total_biens,
+            "total_avec_score": total_avec_score,
+            "score_moyen": self._round_value(score_moyen),
+            "repartition": {
+                "critique": len(critique),
+                "moyen": len(moyen),
+                "bon": len(bon)
+            },
+            "pourcentages": {
+                "critique": round(len(critique) / total_avec_score * 100, 1) if total_avec_score > 0 else 0,
+                "moyen": round(len(moyen) / total_avec_score * 100, 1) if total_avec_score > 0 else 0,
+                "bon": round(len(bon) / total_avec_score * 100, 1) if total_avec_score > 0 else 0
+            },
+            "biens_critiques_faible": len(biens_critiques_faible),
+            "details_faible": details_faible,
+            "seuils": {
+                "critique": SEUIL_SCORE_CRITIQUE,
+                "moyen": SEUIL_SCORE_MOYEN,
+                "bon": SEUIL_SCORE_BON
+            },
+            "couleurs": {
+                "critique": Couleurs.SCORE_CRITIQUE,
+                "moyen": Couleurs.SCORE_MOYEN,
+                "bon": Couleurs.SCORE_BON
+            }
+        }
+
+    # ============================================================
+    # J. ÉVOLUTION DU PATRIMOINE
+    # ============================================================
+
+    def get_rapport_evolution_patrimoine(self, annee_debut: int, annee_fin: int) -> dict:
+        """
+        Génère un rapport d'évolution du patrimoine sur plusieurs années
+        """
+        evolution = []
+        
+        for annee in range(annee_debut, annee_fin + 1):
+            debut_annee = datetime(annee, 1, 1)
+            fin_annee = datetime(annee, 12, 31)
+            
+            biens = self.db.query(Bien).filter(
+                Bien.date_acquisition <= fin_annee,
+                (Bien.date_sortie.is_(None) | (Bien.date_sortie >= debut_annee))
+            ).all()
+            
+            acquisitions = self.db.query(Bien).filter(
+                Bien.date_acquisition >= debut_annee,
+                Bien.date_acquisition <= fin_annee
+            ).all()
+            
+            sorties = self.db.query(Bien).filter(
+                Bien.date_sortie >= debut_annee,
+                Bien.date_sortie <= fin_annee
+            ).all()
+            
+            valeur_totale = sum(float(b.prix_acquisition or 0) for b in biens)
+            valeur_acquisitions = sum(float(b.prix_acquisition or 0) for b in acquisitions)
+            valeur_sorties = sum(float(b.prix_acquisition or 0) for b in sorties)
+            
+            total_amort = self.db.query(func.sum(Amortissement.annuite_comptable)).filter(
+                Amortissement.exercice == annee
+            ).scalar() or 0
+            
+            vnc_totale = sum(
+                float(b.prix_acquisition or 0) - float(b.cumul_amortissement or 0)
+                for b in biens
+            )
+            
+            evolution.append({
+                "annee": annee,
+                "nombre_biens": len(biens),
+                "valeur_totale_brute": self._round_value(valeur_totale),
+                "valeur_acquisitions": self._round_value(valeur_acquisitions),
+                "valeur_sorties": self._round_value(valeur_sorties),
+                "total_amortissements": self._round_value(total_amort),
+                "vnc_totale": self._round_value(vnc_totale),
+                "taux_amortissement": round(total_amort / valeur_totale * 100, 2) if valeur_totale > 0 else 0
+            })
+        
+        return {
+            "annee_debut": annee_debut,
+            "annee_fin": annee_fin,
+            "evolution": evolution,
+            "tendance": self._calculer_tendance_evolution(evolution)
+        }
+
+    def _calculer_tendance_evolution(self, evolution: list) -> dict:
+        """Calcule la tendance d'évolution du patrimoine"""
+        if len(evolution) < 2:
+            return {"message": "Données insuffisantes pour calculer la tendance"}
+        
+        premiere = evolution[0]
+        derniere = evolution[-1]
+        
+        variation_brute = derniere["valeur_totale_brute"] - premiere["valeur_totale_brute"]
+        variation_pourcent = (variation_brute / premiere["valeur_totale_brute"] * 100) if premiere["valeur_totale_brute"] > 0 else 0
+        
+        return {
+            "variation_valeur_brute": self._round_value(variation_brute),
+            "variation_pourcent": self._round_value(variation_pourcent),
+            "tendance": "HAUSSE" if variation_brute > 0 else "BAISSE" if variation_brute < 0 else "STABLE",
+            "evolution_biens": derniere["nombre_biens"] - premiere["nombre_biens"]
+        }
+
+    # ============================================================
+    # K. RAPPORT MAINTENANCES PRÉVENTIVES AUTO-GÉNÉRÉES
+    # ============================================================
+
+    def get_rapport_maintenances_preventives(self) -> dict:
+        """
+        Génère un rapport sur les maintenances préventives auto-générées
+        """
+        maintenances_auto = self.db.query(Maintenance).filter(
+            Maintenance.origine == TypeOrigineMaintenance.AUTO
+        ).all()
+        
+        planifiees = [m for m in maintenances_auto if m.statut == StatutMaintenance.PLANIFIEE]
+        en_cours = [m for m in maintenances_auto if m.statut == StatutMaintenance.EN_COURS]
+        terminees = [m for m in maintenances_auto if m.statut == StatutMaintenance.TERMINEE]
+        
+        scores_depart = [m.score_fiabilite_depart for m in maintenances_auto if m.score_fiabilite_depart is not None]
+        score_moyen_depart = sum(scores_depart) / len(scores_depart) if scores_depart else 0
+        
+        details = [
+            {
+                "id_maintenance": m.id_maintenance,
+                "id_bien": m.id_bien,
+                "date_planifiee": m.date_planifiee.strftime("%d/%m/%Y") if m.date_planifiee else "",
+                "statut": m.statut.value if m.statut else "",
+                "score_fiabilite_depart": self._round_value(m.score_fiabilite_depart),
+                "cout": self._round_value(m.cout),
+                "description": m.description
+            }
+            for m in maintenances_auto
+            if m.statut != StatutMaintenance.TERMINEE
+        ]
+        
+        return {
+            "total_auto_generes": len(maintenances_auto),
+            "planifiees": len(planifiees),
+            "en_cours": len(en_cours),
+            "terminees": len(terminees),
+            "score_moyen_depart": self._round_value(score_moyen_depart),
+            "details_en_cours": details[:10],
+            "taux_realisation": round(len(terminees) / len(maintenances_auto) * 100, 1) if maintenances_auto else 0
+        }
+
+    # ============================================================
+    # L. PROJECTIONS – UTILISATION DES DONNÉES PRÉ-CALCULÉES
+    # ============================================================
+
+    def get_projections_pre_calculees(self, bien_id: int) -> List[ProjectionInvestissement]:
+        """
+        Retourne les projections pré-calculées par le CRON pour un bien.
+        Lecture rapide, pas de calcul.
+        """
+        return self.db.query(ProjectionInvestissement).filter(
+            ProjectionInvestissement.bien_id == bien_id
+        ).order_by(ProjectionInvestissement.annee_projection).all()
+
+    def get_projections_synthese(self, bien_id: int) -> dict:
+        """
+        Retourne une synthèse des projections pré-calculées.
+        """
+        projections = self.get_projections_pre_calculees(bien_id)
+
+        if not projections:
+            bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+            return {
+                "bien_id": bien_id,
+                "bien_designation": self._get_bien_designation(bien) if bien else f"Bien #{bien_id}",
+                "total_projections": 0,
+                "projections": [],
+                "message": "Aucune projection disponible. Veuillez exécuter le CRON de projections."
+            }
+
+        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        
+        return {
+            "bien_id": bien_id,
+            "bien_designation": self._get_bien_designation(bien) if bien else f"Bien #{bien_id}",
+            "total_projections": len(projections),
+            "projections": [
+                {
+                    "annee": p.annee_projection,
+                    "score_fiabilite_projete": float(p.score_fiabilite_projete or 0),
+                    "vnc_projetee": float(p.vnc_projetee or 0),
+                    "cout_remplacement": float(p.cout_remplacement_estime or 0),
+                    "critere_fin_amortissement": p.critere_fin_amortissement,
+                    "critere_score_fiabilite": p.critere_score_fiabilite,
+                    "statut": p.statut.value if p.statut else None
+                }
+                for p in projections
+            ]
+        }
+
+    def get_projections_pluriannuelles(self) -> dict:
+        """
+        Retourne les projections pluriannuelles agrégées pour tous les biens.
+        Utilise les données pré-calculées par le CRON.
+        """
+        annee_actuelle = datetime.now().year
+
+        projections = self.db.query(ProjectionInvestissement).filter(
+            ProjectionInvestissement.annee_projection >= annee_actuelle + 1
+        ).all()
+
+        if not projections:
+            return {
+                "annee_base": annee_actuelle,
+                "total_projections": 0,
+                "projections_par_annee": [],
+                "total_5_ans": 0,
+                "message": "Aucune projection disponible. Veuillez exécuter le CRON de projections."
+            }
+
+        projections_par_annee = {}
+        for proj in projections:
+            annee = proj.annee_projection
+            if annee not in projections_par_annee:
+                projections_par_annee[annee] = []
+            projections_par_annee[annee].append(proj)
+
+        resultat = {
+            "annee_base": annee_actuelle,
+            "total_projections": len(projections),
+            "projections_par_annee": [],
+            "total_5_ans": 0,
+            "biens_a_remplacer": []
+        }
+
+        for annee in sorted(projections_par_annee.keys()):
+            projs = projections_par_annee[annee]
+            budget_requis = sum(float(p.cout_remplacement_estime or 0) for p in projs)
+            nb_biens = len(projs)
+            
+            resultat["total_5_ans"] += budget_requis
+            resultat["projections_par_annee"].append({
+                "annee": annee,
+                "budget_requis": self._round_value(budget_requis),
+                "nb_biens": nb_biens,
+                "details": [
+                    {
+                        "bien_id": p.bien_id,
+                        "bien_designation": self._get_bien_designation_from_id(p.bien_id),
+                        "cout_remplacement": float(p.cout_remplacement_estime or 0),
+                        "critere": self._get_critere_projection(p)
+                    }
+                    for p in projs
+                ]
+            })
+
+        resultat["total_5_ans"] = self._round_value(resultat["total_5_ans"])
+        resultat["biens_a_remplacer"] = self._get_biens_a_remplacer(projections, annee_actuelle)
+
+        return resultat
+
+    def _get_biens_a_remplacer(self, projections: List[ProjectionInvestissement], annee_actuelle: int) -> List[dict]:
+        """
+        Identifie les biens à remplacer dans les 2 ans.
+        """
+        biens_a_remplacer = []
+        biens_vus = set()
+
+        for proj in projections:
+            if proj.annee_projection <= annee_actuelle + 2:
+                if proj.critere_fin_amortissement or proj.critere_score_fiabilite:
+                    if proj.bien_id not in biens_vus:
+                        biens_vus.add(proj.bien_id)
+                        bien = self.db.query(Bien).filter(Bien.id_bien == proj.bien_id).first()
+                        biens_a_remplacer.append({
+                            "bien_id": proj.bien_id,
+                            "designation": self._get_bien_designation(bien) if bien else f"Bien #{proj.bien_id}",
+                            "annee": proj.annee_projection,
+                            "cout_remplacement": float(proj.cout_remplacement_estime or 0),
+                            "raison": "Amortissement complet" if proj.critere_fin_amortissement else "Score de fiabilité critique"
+                        })
+
+        return biens_a_remplacer
+
+    # ============================================================
+    # M. MÉTHODE GÉNÉRER_PROJECTION_PLURIANNUELLE – DÉPRÉCIÉE
+    # ============================================================
+
+    def generer_projection_pluriannuelle(self, *args, **kwargs) -> dict:
+        """
+        🔴 DÉPRÉCIÉ — Les projections sont générées par le CRON.
+
+        Utiliser get_projections_pre_calculees() pour les projections d'un bien,
+        ou get_projections_pluriannuelles() pour une vue agrégée.
+        """
+        raise RuntimeError(
+            "Méthode dépréciée. Les projections sont générées par cron_projections. "
+            "Utiliser get_projections_pre_calculees() pour les projections d'un bien, "
+            "ou get_projections_pluriannuelles() pour une vue agrégée."
+        )
