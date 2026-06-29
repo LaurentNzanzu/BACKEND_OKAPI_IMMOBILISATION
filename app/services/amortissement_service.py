@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -41,8 +41,12 @@ class AmortissementService:
     def _to_decimal(self, value: float, precision: int = 2) -> Decimal:
         return Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-    def _ensure_naive(self, dt: datetime) -> datetime:
-        if dt.tzinfo is not None:
+    def _ensure_naive(self, dt: Any) -> datetime:
+        if dt is None:
+            return datetime.now()
+        if isinstance(dt, date) and not isinstance(dt, datetime):
+            return datetime(dt.year, dt.month, dt.day)
+        if hasattr(dt, 'tzinfo') and getattr(dt, 'tzinfo', None) is not None:
             return dt.replace(tzinfo=None)
         return dt
 
@@ -339,126 +343,124 @@ class AmortissementService:
     def creer_amortissement(self, data: AmortissementCreate, type_bien: str) -> Amortissement:
         """
         Crée un amortissement et met à jour le statut comptable du bien.
-        
         🔴 TÂCHE 2 : valeur_residuelle FORCÉE À 0
-        ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
-                bien = self.db.query(Bien).filter(
-                    Bien.id_bien == data.id_bien
-                ).with_for_update().first()
+            bien = self.db.query(Bien).filter(
+                Bien.id_bien == data.id_bien
+            ).first()
 
-                if not bien:
-                    raise ValueError("Bien non trouvé")
+            if not bien:
+                raise ValueError("Bien non trouvé")
 
-                if bien.statut_comptable in ["CEDE", "MIS_AU_REBUT"]:
-                    raise ValueError(f"Impossible d'amortir un bien {bien.statut_comptable}")
+            if bien.statut_comptable in ["CEDE", "MIS_AU_REBUT"]:
+                raise ValueError(f"Impossible d'amortir un bien {bien.statut_comptable}")
 
-                # 🔴 FORCER LA VALEUR RÉSIDUELLE À 0 (TÂCHE 2)
-                # base_amortissable = valeur_origine (pas de soustraction)
-                base_amortissable = data.valeur_origine
+            # 🔴 FORCER LA VALEUR RÉSIDUELLE À 0 (TÂCHE 2)
+            base_amortissable = data.valeur_origine
 
-                regle = self.get_regle_par_categorie(type_bien)
-                duree_comptable = data.duree_vie_comptable_ans
-                if duree_comptable <= 0:
-                    raise ValueError("La durée de vie comptable doit être supérieure à 0.")
+            regle = self.get_regle_par_categorie(type_bien)
+            duree_comptable = data.duree_vie_comptable_ans
+            if duree_comptable <= 0:
+                raise ValueError("La durée de vie comptable doit être supérieure à 0.")
 
-                duree_fiscale = data.duree_vie_fiscale_ans or (regle.duree_vie_ans if regle else duree_comptable)
-                taux_fiscal = regle.taux_fiscal if regle else (100.0 / duree_fiscale)
-                annuite_comptable = 0.0
-                taux_comptable = 0.0
+            duree_fiscale = data.duree_vie_fiscale_ans or (regle.duree_vie_ans if regle else duree_comptable)
+            taux_fiscal = regle.taux_fiscal if regle else (100.0 / duree_fiscale)
+            annuite_comptable = 0.0
+            # Fallbacks sécurisés pour les dates si absentes
+            from datetime import datetime as dt_class
+            date_acq = data.date_acquisition or bien.date_acquisition or dt_class(data.exercice, 1, 1)
+            date_mes = data.date_mise_en_service or date_acq
 
-                if data.methode == MethodeEnum.LINEAIRE:
-                    duree_comptable = float(data.duree_vie_comptable_ans)
-                    taux_comptable = 100.0 / duree_comptable
-                    annuite_comptable = self.calculer_annuite_lineaire_rdc(
-                        base_amortissable, taux_comptable, data.date_mise_en_service, data.exercice
-                    )
-                elif data.methode == MethodeEnum.DEGRESSIF:
-                    duree_comptable = float(data.duree_vie_comptable_ans)
-                    coeff = data.coefficient_deg or self.get_coefficient_degressif(duree_comptable, regle)
-                    taux_lineaire_base = 100.0 / duree_comptable
-                    taux_comptable = taux_lineaire_base * coeff
-                    annuite_comptable = self.calculer_annuite_degressive_rdc(
-                        base_amortissable, duree_comptable, coeff, data.date_acquisition, data.exercice, 1
-                    )
-                elif data.methode == MethodeEnum.UNITE_PRODUCTION:
-                    if not data.unites_totales_prevues or data.unites_totales_prevues <= 0:
-                        raise ValueError("Les unités totales prévues doivent être supérieures à 0 pour cette méthode.")
-                    annuite_comptable = self.calculer_annuite_uop(
-                        base_amortissable, data.unites_consommees_exercice or 0, data.unites_totales_prevues
-                    )
-                    taux_comptable = (annuite_comptable / base_amortissable) * 100 if base_amortissable > 0 else 0
-                elif data.methode == MethodeEnum.SPECIFIQUE_OKAPI:
-                    if not data.duree_fournisseur or data.duree_fournisseur <= 0:
-                        raise ValueError("La durée fournisseur (DF) est requise et doit être > 0.")
-                    annuite_comptable = self.calculer_annuite_okapi(
-                        base_amortissable, data.duree_fournisseur, data.jours_ouvres_mois or 26, data.jours_utilisation_annee or 260
-                    )
-                    taux_comptable = (annuite_comptable / base_amortissable) * 100 if base_amortissable > 0 else 0
-                elif data.methode == MethodeEnum.COMPOSANTS:
-                    result = self.calculer_amortissement_composants(
-                        data.id_bien,
-                        data.exercice,
-                        base_amortissable,
-                        duree_structure_ans=int(data.duree_vie_comptable_ans),
-                        date_mise_en_service_bien=data.date_mise_en_service,
-                    )
-                    annuite_comptable = result["annuite_totale_comptable"]
-                    taux_comptable = (annuite_comptable / base_amortissable) * 100 if base_amortissable > 0 else 0
-
-                annuite_fiscale = self.calculer_annuite_lineaire_rdc(
-                    base_amortissable, taux_fiscal, data.date_mise_en_service, data.exercice
+            if data.methode == MethodeEnum.LINEAIRE:
+                duree_comptable = float(data.duree_vie_comptable_ans)
+                taux_comptable = 100.0 / duree_comptable
+                annuite_comptable = self.calculer_annuite_lineaire_rdc(
+                    base_amortissable, taux_comptable, date_mes, data.exercice
                 )
-                ecart = self.calculer_ecart(annuite_comptable, annuite_fiscale)
-
-                # 🔴 VALEUR RÉSIDUELLE = 0 (forcée)
-                amortissement = Amortissement(
-                    id_bien=data.id_bien,
-                    exercice=data.exercice,
-                    methode=data.methode,
-                    valeur_origine=data.valeur_origine,
-                    valeur_residuelle=0.0,  # 🔴 TÂCHE 2: valeur résiduelle forcée à 0
-                    duree_vie_comptable_ans=duree_comptable,
-                    duree_vie_fiscale_ans=duree_fiscale,
-                    taux_comptable=round(taux_comptable, 2),
-                    taux_fiscal=round(taux_fiscal, 2),
-                    coefficient_deg=data.coefficient_deg,
-                    jours_prorata=self.JOURS_ANNEE,
-                    date_acquisition=data.date_acquisition,
-                    date_mise_en_service=data.date_mise_en_service,
-                    unites_totales_prevues=data.unites_totales_prevues,
-                    unites_consommees_exercice=data.unites_consommees_exercice,
-                    production_totale_prevue=data.production_totale_prevue,
-                    production_reelle_exercice=data.production_reelle_exercice,
-                    duree_fournisseur=data.duree_fournisseur,
-                    jours_ouvres_mois=data.jours_ouvres_mois,
-                    jours_utilisation_annee=data.jours_utilisation_annee,
-                    annuite_comptable=round(annuite_comptable, 2),
-                    annuite_fiscale=round(annuite_fiscale, 2),
-                    ecart_a_reintegrer=round(ecart, 2),
-                    cumul_comptable=round(annuite_comptable, 2),
-                    cumul_fiscal=round(annuite_fiscale, 2),
-                    valeur_nette_comptable=round(data.valeur_origine - annuite_comptable, 2),
-                    valeur_nette_fiscale=round(data.valeur_origine - annuite_fiscale, 2),
-                    date_debut=data.date_mise_en_service,
-                    statut=StatutAmortissement.EN_COURS
+            elif data.methode == MethodeEnum.DEGRESSIF:
+                duree_comptable = float(data.duree_vie_comptable_ans)
+                coeff = data.coefficient_deg or self.get_coefficient_degressif(duree_comptable, regle)
+                taux_lineaire_base = 100.0 / duree_comptable
+                taux_comptable = taux_lineaire_base * coeff
+                annuite_comptable = self.calculer_annuite_degressive_rdc(
+                    base_amortissable, duree_comptable, coeff, date_acq, data.exercice, 1
                 )
+            elif data.methode == MethodeEnum.UNITE_PRODUCTION:
+                if not data.unites_totales_prevues or data.unites_totales_prevues <= 0:
+                    raise ValueError("Les unités totales prévues doivent être supérieures à 0 pour cette méthode.")
+                annuite_comptable = self.calculer_annuite_uop(
+                    base_amortissable, data.unites_consommees_exercice or 0, data.unites_totales_prevues
+                )
+                taux_comptable = (annuite_comptable / base_amortissable) * 100 if base_amortissable > 0 else 0
+            elif data.methode == MethodeEnum.SPECIFIQUE_OKAPI:
+                if not data.duree_fournisseur or data.duree_fournisseur <= 0:
+                    raise ValueError("La durée fournisseur (DF) est requise et doit être > 0.")
+                annuite_comptable = self.calculer_annuite_okapi(
+                    base_amortissable, data.duree_fournisseur, data.jours_ouvres_mois or 26, data.jours_utilisation_annee or 260
+                )
+                taux_comptable = (annuite_comptable / base_amortissable) * 100 if base_amortissable > 0 else 0
+            elif data.methode == MethodeEnum.COMPOSANTS:
+                result = self.calculer_amortissement_composants(
+                    data.id_bien,
+                    data.exercice,
+                    base_amortissable,
+                    duree_structure_ans=int(data.duree_vie_comptable_ans),
+                    date_mise_en_service_bien=data.date_mise_en_service,
+                )
+                annuite_comptable = result["annuite_totale_comptable"]
+                taux_comptable = (annuite_comptable / base_amortissable) * 100 if base_amortissable > 0 else 0
 
-                self.db.add(amortissement)
+            annuite_fiscale = self.calculer_annuite_lineaire_rdc(
+                base_amortissable, taux_fiscal, date_mes, data.exercice
+            )
+            ecart = self.calculer_ecart(annuite_comptable, annuite_fiscale)
 
-                existing_amorts = self.db.query(Amortissement).filter(
-                    Amortissement.id_bien == data.id_bien
-                ).count()
+            # 🔴 VALEUR RÉSIDUELLE = 0 (forcée)
+            amortissement = Amortissement(
+                id_bien=data.id_bien,
+                exercice=data.exercice,
+                methode=data.methode,
+                valeur_origine=data.valeur_origine,
+                valeur_residuelle=0.0,
+                duree_vie_comptable_ans=duree_comptable,
+                duree_vie_fiscale_ans=duree_fiscale,
+                taux_comptable=round(taux_comptable, 2),
+                taux_fiscal=round(taux_fiscal, 2),
+                coefficient_deg=data.coefficient_deg,
+                jours_prorata=self.JOURS_ANNEE,
+                date_acquisition=date_acq,
+                date_mise_en_service=date_mes,
+                unites_totales_prevues=data.unites_totales_prevues,
+                unites_consommees_exercice=data.unites_consommees_exercice,
+                production_totale_prevue=data.production_totale_prevue,
+                production_reelle_exercice=data.production_reelle_exercice,
+                duree_fournisseur=data.duree_fournisseur,
+                jours_ouvres_mois=data.jours_ouvres_mois,
+                jours_utilisation_annee=data.jours_utilisation_annee,
+                annuite_comptable=round(annuite_comptable, 2),
+                annuite_fiscale=round(annuite_fiscale, 2),
+                ecart_a_reintegrer=round(ecart, 2),
+                cumul_comptable=round(annuite_comptable, 2),
+                cumul_fiscal=round(annuite_fiscale, 2),
+                valeur_nette_comptable=round(data.valeur_origine - annuite_comptable, 2),
+                valeur_nette_fiscale=round(data.valeur_origine - annuite_fiscale, 2),
+                date_debut=date_mes,
+                statut=StatutAmortissement.EN_COURS
+            )
 
-                if existing_amorts == 0:
-                    bien.statut_comptable = "EN_AMORTISSEMENT"
+            self.db.add(amortissement)
 
-                cumul_actuel = float(bien.cumul_amortissement or 0)
-                bien.cumul_amortissement = round(cumul_actuel + amortissement.annuite_comptable, 2)
+            existing_amorts = self.db.query(Amortissement).filter(
+                Amortissement.id_bien == data.id_bien
+            ).count()
 
-                # Le commit est automatique à la sortie du with
+            if existing_amorts == 0:
+                bien.statut_comptable = "EN_AMORTISSEMENT"
+
+            cumul_actuel = float(bien.cumul_amortissement or 0)
+            bien.cumul_amortissement = round(cumul_actuel + amortissement.annuite_comptable, 2)
+            self.db.flush()
 
         except SQLAlchemyError as e:
             logger.error(f"Erreur création amortissement: {e}")
@@ -962,31 +964,38 @@ class AmortissementService:
         
         return round(annuite_fusionnee, 2)
 
-    def verrouiller_amortissement(self, id_amortissement: int, verrouille_par: int) -> dict:
+    def verrouiller_amortissement(self, id_amortissement: int, verrouille_par: int, raison: str = "Validation exercice") -> Amortissement:
+        """
+        Verrouille définitivement un amortissement.
+        """
+        amortissement = self.db.query(Amortissement).filter(
+            Amortissement.id_amortissement == id_amortissement
+        ).first()
+
+        if not amortissement:
+            raise ValueError("Amortissement non trouvé")
+
+        if amortissement.est_verrouille:
+            raise ValueError("Cet amortissement est déjà verrouillé")
+
+        from ..models.utilisateur import Utilisateur
+        utilisateur = self.db.query(Utilisateur).filter(Utilisateur.id == verrouille_par).first()
+        if not utilisateur:
+            raise ValueError("Utilisateur non trouvé")
+
+        role = utilisateur.role.nom.upper() if utilisateur.role else ""
+        if role not in ["DG", "COMPTABLE", "ADMIN"]:
+            raise ValueError("Seul le DG, le Comptable ou l'Admin peut verrouiller un amortissement")
+
+        amortissement.verrouiller(verrouille_par, raison)
+
+        # Générer l'écriture comptable si nécessaire
         try:
-            with self.db.begin():
-                amortissement = self.db.query(Amortissement).filter(
-                    Amortissement.id_amortissement == id_amortissement
-                ).with_for_update().first()
+            self._generer_ecriture_comptable(amortissement, verrouille_par)
+        except Exception as e:
+            logger.warning(f"Note lors de la génération d'écriture au verrouillage: {e}")
 
-                if not amortissement:
-                    raise ValueError("Amortissement non trouvé")
-
-                if amortissement.est_verrouille:
-                    return {
-                        "id_amortissement": amortissement.id_amortissement,
-                        "est_verrouille": True,
-                        "message": "Cet amortissement est déjà verrouillé"
-                    }
-
-                amortissement.est_verrouille = True
-                amortissement.date_verrouillage = datetime.utcnow()
-                amortissement.verrouille_par = verrouille_par
-
-        except SQLAlchemyError as e:
-            logger.error(f"Erreur verrouillage amortissement: {e}")
-            raise ValueError(f"Échec du verrouillage: {str(e)}")
-
+        self.db.commit()
         self.db.refresh(amortissement)
 
         from .audit_service import AuditService
@@ -996,15 +1005,31 @@ class AmortissementService:
             table_name="amortissements",
             record_id=id_amortissement,
             action="VERROUILLAGE",
-            nouvelles_valeurs={"est_verrouille": True}
+            nouvelles_valeurs={
+                "est_verrouille": True,
+                "raison": raison,
+                "date_verrouillage": amortissement.date_verrouillage.isoformat() if amortissement.date_verrouillage else None
+            }
         )
 
-        return {
-            "id_amortissement": amortissement.id_amortissement,
-            "est_verrouille": True,
-            "date_verrouillage": amortissement.date_verrouillage,
-            "verrouille_par": verrouille_par
-        }
+        return amortissement
+
+    def _generer_ecriture_comptable(self, amortissement: Amortissement, utilisateur_id: int):
+        """Génère l'écriture comptable pour l'amortissement."""
+        from .comptabilite_service import ComptabiliteService
+        comptabilite = ComptabiliteService(self.db)
+        bien = self.db.query(Bien).filter(Bien.id_bien == amortissement.id_bien).first()
+        
+        type_b = getattr(bien, "type_bien", "autre") if bien else "autre"
+        if hasattr(type_b, "value"):
+            type_b = type_b.value
+            
+        ecriture = comptabilite.generer_ecriture_dotation(
+            amortissement, 
+            type_b
+        )
+        return ecriture
+
 
     def calculer_et_verifier_tresorerie(self, id_amortissement: int) -> dict:
         amortissement = self.db.query(Amortissement).filter(
@@ -1229,7 +1254,7 @@ class AmortissementService:
                             valeur_vnc=vnc,
                             valeur_origine=prix_acquisition,
                             statut=StatutAlerteVNC.EN_ATTENTE,
-                            description=f"Le bien a atteint {seuil}% de sa valeur résiduelle (VNC: {vnc:.2f} FCFA, Ratio: {ratio_pourcent:.1f}%)",
+                            description=f"Le bien a atteint {seuil}% de sa valeur résiduelle (VNC: {vnc:.2f} USD, Ratio: {ratio_pourcent:.1f}%)",
                             action_recommandee="Planifier le remplacement du bien"
                         )
                         self.db.add(alerte)

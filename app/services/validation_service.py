@@ -280,7 +280,7 @@ class ValidationService:
                     ids_destinataires=caissier.id,
                     type_notif=TypeNotificationEnum.FOURNITURE_EN_ATTENTE,
                     titre=f"💰 Bon de décaissement généré - {besoin.numero_demande}",
-                    contenu=f"Le besoin {besoin.numero_demande} a reçu la validation finale de la DG. Montant: {besoin.montant_total:,.0f} FCFA. Veuillez procéder au décaissement.",
+                    contenu=f"Le besoin {besoin.numero_demande} a reçu la validation finale de la DG. Montant: {besoin.montant_total:,.0f} USD. Veuillez procéder au décaissement.",
                     lien=f"/besoins/{besoin.id_besoin}"
                 )
 

@@ -141,7 +141,7 @@ async def create_bien(
 @router.get("/", response_model=BienListResponse, include_in_schema=False)
 def get_biens(
     skip: int = Query(0, ge=0),
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(25, ge=1, le=1000),
     type_bien: Optional[str] = None,
     etat: Optional[str] = None,
     search: Optional[str] = Query(None, description="Recherche par désignation"),

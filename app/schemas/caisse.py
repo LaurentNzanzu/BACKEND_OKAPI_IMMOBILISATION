@@ -7,7 +7,7 @@ from datetime import datetime
 class CaisseBase(BaseModel):
     solde_physique: float = 0.0
     solde_theorique: float = 0.0
-    devise: str = "FCFA"
+    devise: str = "USD"
     statut: str = "ACTIF"
 
 

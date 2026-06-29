@@ -49,10 +49,10 @@ class RapportService:
         return datetime.combine(d, datetime.min.time())
 
     def _format_currency(self, value) -> str:
-        """Formatte un montant en FCFA"""
+        """Formatte un montant en USD"""
         if value is None:
-            return "0,00 FCFA"
-        return f"{float(value):,.2f} FCFA"
+            return "0,00 USD"
+        return f"{float(value):,.2f} USD"
 
     def _round_value(self, value) -> float:
         """Arrondit une valeur à 2 décimales"""
@@ -86,6 +86,24 @@ class RapportService:
         elif projection.critere_remplacement_cyclique:
             return "remplacement_cyclique"
         return "estimation"
+
+    def get_rapport_amortissements(self, annee: int) -> dict:
+        """Retourne le rapport détaillé des amortissements pour une année."""
+        return self._get_tableau_amortissements(annee)
+
+    def get_rapport_financier(self, date_debut: date, date_fin: date) -> dict:
+        """Retourne le rapport financier pour une période."""
+        return self.get_rapport_financier_ohada(date_debut, date_fin, date_fin.year)
+
+    def get_rapport_technique(self, date_debut: date, date_fin: date) -> dict:
+        """Retourne le rapport technique et de fiabilité des équipements."""
+        fiabilite = self.get_rapport_fiabilite()
+        maintenances = self.get_rapport_maintenances_preventives()
+        return {
+            "periode": {"date_debut": str(date_debut), "date_fin": str(date_fin)},
+            "fiabilite": fiabilite,
+            "maintenances": maintenances
+        }
 
     # ============================================================
     # A. RAPPORT FINANCIER OHADA/SYSCOHADA
@@ -495,7 +513,7 @@ class RapportService:
             MouvementBien.raison,
             Bien.qr_code,
             Bien.type_bien,
-            Bien.localisation
+            Localisation.nom_localisation.label("localisation")
         ).join(Bien, MouvementBien.id_bien == Bien.id_bien).outerjoin(
             Localisation, Bien.id_localisation == Localisation.id_localisation
         ).filter(
@@ -739,15 +757,16 @@ class RapportService:
         }
 
     # ============================================================
-    # G. TABLEAU 8 OHADA
+    # G. TABLEAU 8 OHADA (CORRIGÉ)
     # ============================================================
 
     def generer_tableau8_ohada(self, annee: int) -> dict:
         """
         Génère le Tableau 8 OHADA pour une année donnée
         """
-        debut_annee = datetime(annee, 1, 1)
-        fin_annee = datetime(annee, 12, 31)
+        # ✅ CORRECTION : Utiliser date() au lieu de datetime()
+        debut_annee = date(annee, 1, 1)
+        fin_annee = date(annee, 12, 31)
         
         biens = self.db.query(Bien).filter(
             Bien.date_acquisition <= fin_annee,
@@ -772,10 +791,11 @@ class RapportService:
             categories[categorie]["nombre_biens"] += 1
             prix = float(bien.prix_acquisition or 0)
             
-            if bien.date_acquisition < debut_annee:
+            # ✅ Vérification que date_acquisition n'est pas None
+            if bien.date_acquisition and bien.date_acquisition < debut_annee:
                 categories[categorie]["brut_debut"] += prix
             
-            if bien.date_acquisition >= debut_annee:
+            if bien.date_acquisition and bien.date_acquisition >= debut_annee:
                 categories[categorie]["augmentations"] += prix
             
             if bien.date_sortie and bien.date_sortie >= debut_annee:
@@ -875,8 +895,9 @@ class RapportService:
         """
         Vérifie que le Tableau 8 est cohérent avec le Grand Livre
         """
-        debut_annee = datetime(annee, 1, 1)
-        fin_annee = datetime(annee, 12, 31)
+        # ✅ CORRECTION : Utiliser date() au lieu de datetime()
+        debut_annee = date(annee, 1, 1)
+        fin_annee = date(annee, 12, 31)
         
         total_dotations_livre = self.db.query(
             func.sum(EcritureComptable.montant)

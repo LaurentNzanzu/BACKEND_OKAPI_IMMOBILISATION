@@ -263,7 +263,7 @@ class MaintenanceService:
             self._journaliser_evenement(
                 bien_id=maintenance.id_bien,
                 type_evenement=TypeEvenementImmobilisation.MAINTENANCE,
-                libelle=f"Maintenance {maintenance.type_maintenance.value} terminée - Coût: {cout} FCFA",
+                libelle=f"Maintenance {maintenance.type_maintenance.value} terminée - Coût: {cout} USD",
                 montant=cout,
                 utilisateur_id=maintenance.id_technicien
             )
@@ -642,7 +642,7 @@ class MaintenanceService:
                         valeur_vnc=vnc,
                         valeur_origine=prix_acquisition,
                         statut=StatutAlerteVNC.EN_ATTENTE,
-                        description=f"Le bien a atteint le seuil VNC critique de {seuil}% (VNC: {vnc:.2f} FCFA, Ratio: {ratio_vnc*100:.1f}%)"
+                        description=f"Le bien a atteint le seuil VNC critique de {seuil}% (VNC: {vnc:.2f} USD, Ratio: {ratio_vnc*100:.1f}%)"
                     )
                     self.db.add(alerte)
 
@@ -674,7 +674,7 @@ class MaintenanceService:
                         ids_destinataires=[u.id for u in responsables],
                         type_notif=TypeNotificationEnum.ALERTE_VNC,
                         titre=f"🚨 Alerte VNC - {designation}",
-                        contenu=f"Le bien {designation} a atteint le seuil VNC critique de {seuil}% (VNC: {vnc:.2f} FCFA). Remplacement recommandé.",
+                        contenu=f"Le bien {designation} a atteint le seuil VNC critique de {seuil}% (VNC: {vnc:.2f} USD). Remplacement recommandé.",
                         lien=f"/alertes-vnc/{alerte.id}"
                     )
             except Exception as e:

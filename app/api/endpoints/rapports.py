@@ -225,11 +225,11 @@ async def exporter_rapport(
         titre = f"Rapport Financier - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
         
         synthese_data = [
-            ["Valeur acquisition totale", f"{data['synthese']['valeur_acquisition_totale']:,.2f} FCFA"],
-            ["Coût des pannes", f"{data['synthese']['cout_pannes_total']:,.2f} FCFA"],
-            ["Coût des maintenances", f"{data['synthese']['cout_maintenances_total']:,.2f} FCFA"],
-            ["Dotation aux amortissements", f"{data['synthese']['dotation_amortissements_total']:,.2f} FCFA"],
-            ["Total des dépenses", f"{data['synthese']['total_depenses']:,.2f} FCFA"]
+            ["Valeur acquisition totale", f"{data['synthese']['valeur_acquisition_totale']:,.2f} USD"],
+            ["Coût des pannes", f"{data['synthese']['cout_pannes_total']:,.2f} USD"],
+            ["Coût des maintenances", f"{data['synthese']['cout_maintenances_total']:,.2f} USD"],
+            ["Dotation aux amortissements", f"{data['synthese']['dotation_amortissements_total']:,.2f} USD"],
+            ["Total des dépenses", f"{data['synthese']['total_depenses']:,.2f} USD"]
         ]
         
         biens_data = [
@@ -255,9 +255,9 @@ async def exporter_rapport(
         elif format == "excel":
             feuilles = [
                 {"nom": "Synthèse", "en_tetes": ["Indicateur", "Valeur"], "donnees": synthese_data},
-                {"nom": "Biens", "en_tetes": ["ID", "QR Code", "Date acquisition", "Prix (FCFA)", "État", "Localisation", "Type"], "donnees": biens_data},
-                {"nom": "Pannes", "en_tetes": ["ID", "Bien ID", "Date", "Type", "Priorité", "Statut", "Coût (FCFA)"], "donnees": pannes_data},
-                {"nom": "Maintenances", "en_tetes": ["ID", "Bien ID", "Type", "Statut", "Date planifiée", "Date début", "Date fin", "Coût (FCFA)", "Description"], "donnees": [
+                {"nom": "Biens", "en_tetes": ["ID", "QR Code", "Date acquisition", "Prix (USD)", "État", "Localisation", "Type"], "donnees": biens_data},
+                {"nom": "Pannes", "en_tetes": ["ID", "Bien ID", "Date", "Type", "Priorité", "Statut", "Coût (USD)"], "donnees": pannes_data},
+                {"nom": "Maintenances", "en_tetes": ["ID", "Bien ID", "Type", "Statut", "Date planifiée", "Date début", "Date fin", "Coût (USD)", "Description"], "donnees": [
                     [m['id'], m['bien_id'], m['type'], m['statut'], m['date_planifiee'], m['date_debut'], m['date_fin'], f"{m['cout']:,.2f}", m['description']]
                     for m in data['details_maintenances']
                 ]}
@@ -360,17 +360,17 @@ async def exporter_rapport(
             for a in data['details']
         ]
         
-        total_data = [["TOTAL", "", "", "", "", "", f"{data['total_dotations']:,.2f} FCFA"]]
+        total_data = [["TOTAL", "", "", "", "", "", f"{data['total_dotations']:,.2f} USD"]]
         
         if format == "pdf":
             sections = [
                 {"titre": "Synthèse", "en_tetes": ["Indicateur", "Valeur"], "donnees": [
                     ["Année", str(annee)],
-                    ["Total des dotations", f"{data['total_dotations']:,.2f} FCFA"],
+                    ["Total des dotations", f"{data['total_dotations']:,.2f} USD"],
                     ["Nombre de biens amortis", str(data['nombre_biens_amortis'])]
                 ]},
                 {"titre": f"Détail des amortissements ({len(amortissements_data)} biens)", 
-                 "en_tetes": ["Bien ID", "QR Code", "Type", "Méthode", "Valeur origine", "Valeur résiduelle", "Annuite (FCFA)"], 
+                 "en_tetes": ["Bien ID", "QR Code", "Type", "Méthode", "Valeur origine", "Valeur résiduelle", "Annuite (USD)"], 
                  "donnees": amortissements_data + total_data}
             ]
             content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
@@ -381,11 +381,11 @@ async def exporter_rapport(
             feuilles = [
                 {"nom": "Synthèse", "en_tetes": ["Indicateur", "Valeur"], "donnees": [
                     ["Année", str(annee)],
-                    ["Total des dotations", f"{data['total_dotations']:,.2f} FCFA"],
+                    ["Total des dotations", f"{data['total_dotations']:,.2f} USD"],
                     ["Nombre de biens amortis", str(data['nombre_biens_amortis'])]
                 ]},
                 {"nom": "Détail des amortissements", 
-                 "en_tetes": ["Bien ID", "QR Code", "Type", "Méthode", "Valeur origine (FCFA)", "Valeur résiduelle (FCFA)", "Annuite (FCFA)"], 
+                 "en_tetes": ["Bien ID", "QR Code", "Type", "Méthode", "Valeur origine (USD)", "Valeur résiduelle (USD)", "Annuite (USD)"], 
                  "donnees": amortissements_data + total_data}
             ]
             content = generer_excel_rapport_multifeuilles(titre, feuilles)
@@ -559,6 +559,72 @@ async def get_tableau8_ohada(
         detail=f"Format d'export non supporté: {format_export}"
     )
 
+@router.get("/tableau8/export-pdf")
+@router.get("/tableau-8/export-pdf")
+async def export_tableau8_pdf(
+    annee: int = Query(..., description="Année du tableau 8"),
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Exporte le Tableau 8 OHADA au format PDF.
+    """
+    import io
+    role = current_user.role.nom.upper() if current_user.role else ""
+    if role not in ["COMPTABLE", "DG", "ADMIN"]:
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    
+    service = RapportService(db)
+    data = service.generer_tableau8_ohada(annee)
+    
+    # ✅ CORRECTION : Utiliser generer_pdf_rapport_avec_sections
+    from ...utils.pdf_generator import generer_pdf_rapport_avec_sections
+    
+    # Préparer les sections pour le PDF
+    titre = f"Tableau 8 OHADA - Exercice {annee}"
+    
+    # Construire les données du tableau
+    tableau_data = []
+    for cat, valeurs in data['categories'].items():
+        tableau_data.append([
+            cat,
+            f"{valeurs['brut_debut']:,.2f}",
+            f"{valeurs['augmentations']:,.2f}",
+            f"{valeurs['diminutions']:,.2f}",
+            f"{valeurs['brut_fin']:,.2f}",
+            f"{valeurs['amortissements_cumules']:,.2f}",
+            f"{valeurs['dotations_exercice']:,.2f}",
+            f"{valeurs['vnc_fin']:,.2f}"
+        ])
+    
+    # Ajouter la ligne de total
+    total = data['total_general']
+    tableau_data.append([
+        "TOTAL",
+        f"{total['brut_debut']:,.2f}",
+        f"{total['augmentations']:,.2f}",
+        f"{total['diminutions']:,.2f}",
+        f"{total['brut_fin']:,.2f}",
+        f"{total['amortissements_cumules']:,.2f}",
+        f"{total['dotations_exercice']:,.2f}",
+        f"{total['vnc_fin']:,.2f}"
+    ])
+    
+    sections = [
+        {
+            "titre": "Synthèse du patrimoine",
+            "en_tetes": ["Catégorie", "Brut début", "Augmentations", "Diminutions", "Brut fin", "Amort. cumulés", "Dotations", "VNC fin"],
+            "donnees": tableau_data
+        }
+    ]
+    
+    pdf_content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
+    
+    return StreamingResponse(
+        io.BytesIO(pdf_content if isinstance(pdf_content, bytes) else pdf_content.encode('utf-8')),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=tableau8_{annee}.pdf"}
+    )
 
 @router.get("/projections")
 async def get_projections_pluriannuelles(
@@ -768,7 +834,7 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
     sections = []
     
     patrimoine_data = [
-        ["Valeur totale d'acquisition", f"{data['patrimoine']['valeur_totale_acquisition']:,.2f} FCFA"],
+        ["Valeur totale d'acquisition", f"{data['patrimoine']['valeur_totale_acquisition']:,.2f} USD"],
         ["Total des biens", str(data['patrimoine']['total_biens'])],
     ]
     sections.append({
@@ -778,9 +844,9 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
     })
     
     amort_data = [
-        ["Dotations de l'exercice", f"{data['amortissements']['dotations_exercice']:,.2f} FCFA"],
-        ["Cumul des amortissements", f"{data['amortissements']['cumul_total_amortissements']:,.2f} FCFA"],
-        ["Valeur nette comptable (VNC)", f"{data['amortissements']['valeur_nette_comptable_totale']:,.2f} FCFA"],
+        ["Dotations de l'exercice", f"{data['amortissements']['dotations_exercice']:,.2f} USD"],
+        ["Cumul des amortissements", f"{data['amortissements']['cumul_total_amortissements']:,.2f} USD"],
+        ["Valeur nette comptable (VNC)", f"{data['amortissements']['valeur_nette_comptable_totale']:,.2f} USD"],
     ]
     sections.append({
         "titre": f"B. Amortissements - Exercice {exercice} (Note 3C)",
@@ -789,11 +855,11 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
     })
     
     charges_data = [
-        ["Coût des pannes", f"{data['charges_cycle_vie']['pannes']['cout_total']:,.2f} FCFA"],
+        ["Coût des pannes", f"{data['charges_cycle_vie']['pannes']['cout_total']:,.2f} USD"],
         ["Nombre de pannes", str(data['charges_cycle_vie']['pannes']['total'])],
-        ["Coût des maintenances", f"{data['charges_cycle_vie']['maintenances']['cout_total']:,.2f} FCFA"],
+        ["Coût des maintenances", f"{data['charges_cycle_vie']['maintenances']['cout_total']:,.2f} USD"],
         ["Nombre de maintenances", str(data['charges_cycle_vie']['maintenances']['total'])],
-        ["Total des charges", f"{data['charges_cycle_vie']['total_charges']:,.2f} FCFA"],
+        ["Total des charges", f"{data['charges_cycle_vie']['total_charges']:,.2f} USD"],
     ]
     sections.append({
         "titre": "C. Charges de maintenance et réparations",
@@ -803,9 +869,9 @@ def _prepare_pdf_sections_ohada(data: dict, exercice: int) -> list:
     
     cessions_data = [
         ["Total des cessions", str(data['cessions_mouvements']['total_cessions'])],
-        ["Total prix de vente", f"{data['cessions_mouvements']['total_prix_vente']:,.2f} FCFA"],
-        ["Plus-values", f"{data['cessions_mouvements']['plus_values']:,.2f} FCFA"],
-        ["Moins-values", f"{data['cessions_mouvements']['moins_values']:,.2f} FCFA"],
+        ["Total prix de vente", f"{data['cessions_mouvements']['total_prix_vente']:,.2f} USD"],
+        ["Plus-values", f"{data['cessions_mouvements']['plus_values']:,.2f} USD"],
+        ["Moins-values", f"{data['cessions_mouvements']['moins_values']:,.2f} USD"],
         ["Biens mis au rebut", str(data['cessions_mouvements']['total_rebuts'])],
     ]
     sections.append({
@@ -844,7 +910,7 @@ def _prepare_excel_sheets_ohada(data: dict, exercice: int) -> list:
     ]
     feuilles.append({
         "nom": "Répartition par type",
-        "en_tetes": ["Type", "Nombre", "Valeur (FCFA)"],
+        "en_tetes": ["Type", "Nombre", "Valeur (USD)"],
         "donnees": repartition_data
     })
     

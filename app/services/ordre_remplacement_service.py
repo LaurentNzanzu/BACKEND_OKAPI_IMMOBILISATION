@@ -161,13 +161,13 @@ class OrdreRemplacementService:
         # Titre et contenu selon la priorité
         if ordre.priorite == PrioriteOrdre.CRITIQUE.value:
             titre = f"🚨 ORDRE CRITIQUE - Remplacement requis : {designation}"
-            contenu = f"Le bien {designation} a atteint son seuil de sécurité VNC. Remplacement URGENT requis. VNC: {ordre.vnc_actuelle:.2f} FCFA"
+            contenu = f"Le bien {designation} a atteint son seuil de sécurité VNC. Remplacement URGENT requis. VNC: {ordre.vnc_actuelle:.2f} USD"
         elif ordre.priorite == PrioriteOrdre.URGENT.value:
             titre = f"⚠️ ORDRE URGENT - Remplacement requis : {designation}"
-            contenu = f"Le bien {designation} nécessite un remplacement rapide. VNC: {ordre.vnc_actuelle:.2f} FCFA"
+            contenu = f"Le bien {designation} nécessite un remplacement rapide. VNC: {ordre.vnc_actuelle:.2f} USD"
         else:
             titre = f"📋 Ordre de remplacement - {designation}"
-            contenu = f"Le bien {designation} doit être remplacé. VNC: {ordre.vnc_actuelle:.2f} FCFA"
+            contenu = f"Le bien {designation} doit être remplacé. VNC: {ordre.vnc_actuelle:.2f} USD"
         
         contenu += f"\nMotif: {ordre.motif}"
         contenu += f"\nÉchéance: {ordre.date_echeance.strftime('%d/%m/%Y') if ordre.date_echeance else 'Non définie'}"

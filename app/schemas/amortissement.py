@@ -23,8 +23,8 @@ class AmortissementCreate(BaseModel):
     id_bien: int = Field(..., gt=0, description="ID du bien à amortir")
     exercice: int = Field(..., ge=2000, le=2100, description="Exercice comptable")
     methode: MethodeEnum = Field(..., description="Méthode d'amortissement")
-    date_acquisition: datetime = Field(..., description="Date d'acquisition pour le calcul dégressif")
-    date_mise_en_service: datetime = Field(..., description="Date de mise en service pour le calcul linéaire")
+    date_acquisition: Optional[datetime] = Field(None, description="Date d'acquisition pour le calcul dégressif")
+    date_mise_en_service: Optional[datetime] = Field(None, description="Date de mise en service pour le calcul linéaire")
     date_debut: Optional[datetime] = Field(None, deprecated=True, description="Déprécié : utiliser date_mise_en_service")
     
     valeur_origine: float = Field(..., gt=0, description="Valeur d'origine du bien")
@@ -75,6 +75,12 @@ class AmortissementResponse(BaseModel):
     valeur_nette_fiscale: float
     statut: StatutEnum
     date_creation: datetime
+    est_verrouille: bool = False
+    date_verrouillage: Optional[datetime] = None
+    verrouille_par_id: Optional[int] = None
+    verrouille_par_nom: Optional[str] = None
+    raison_verrouillage: Optional[str] = None
+    est_modifiable: bool = True
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -122,16 +128,22 @@ class AmortissementValidate(BaseModel):
         return v
 
 
+class AmortissementVerrouiller(BaseModel):
+    """Schéma pour le verrouillage d'un amortissement."""
+    raison: str = Field(..., min_length=5, max_length=255, description="Raison du verrouillage (obligatoire)")
+
+
 class AmortissementVerrouilleResponse(BaseModel):
     id_amortissement: int
     id_bien: int
     exercice: int
     est_verrouille: bool
     date_verrouillage: Optional[datetime] = None
-    verrouille_par: Optional[int] = None
+    verrouille_par_id: Optional[int] = None
     verrouille_par_nom: Optional[str] = None
     raison_verrouillage: Optional[str] = None
     est_modifiable: bool
+
 
 
 class AmortissementValidationStatus(BaseModel):

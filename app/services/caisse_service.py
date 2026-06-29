@@ -22,7 +22,7 @@ class CaisseService:
         caisse = self.get_caisse_principale()
         if not caisse:
             # Si aucune caisse n'existe en BDD, créer une caisse par défaut avec 0.0
-            caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="FCFA", statut="ACTIF")
+            caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="USD", statut="ACTIF")
             self.db.add(caisse)
             self.db.commit()
             self.db.refresh(caisse)

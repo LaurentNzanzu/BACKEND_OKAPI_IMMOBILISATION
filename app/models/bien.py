@@ -218,7 +218,7 @@ class Bien(Base):
         Formule :
         - Base : 100 points
         - Pénalité pannes : -15 points par panne (max -60)
-        - Pénalité coût : -1 point par tranche de 100 000 FCFA de maintenance (max -30)
+        - Pénalité coût : -1 point par tranche de 100 000 USD de maintenance (max -30)
         - Pénalité âge : -2 points par année d'âge (max -20)
         
         Le score est borné entre 0 et 100.

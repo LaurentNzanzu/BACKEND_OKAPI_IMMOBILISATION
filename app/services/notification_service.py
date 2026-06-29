@@ -603,7 +603,7 @@ class NotificationService:
             else:
                 designation = f"Bien #{bien_id}"
         
-        message = f"Le bien {designation} a atteint le seuil VNC de {seuil}% (Ratio: {ratio*100:.1f}%, VNC: {vnc:.2f} FCFA). Remplacement recommandé."
+        message = f"Le bien {designation} a atteint le seuil VNC de {seuil}% (Ratio: {ratio*100:.1f}%, VNC: {vnc:.2f} USD). Remplacement recommandé."
         
         # Envoyer au DG
         self.envoyer_alerte_dg(message, bien_id)

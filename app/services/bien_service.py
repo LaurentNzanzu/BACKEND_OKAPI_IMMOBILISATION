@@ -14,6 +14,7 @@ from ..models.panne import Panne
 from ..models.vehicule import Vehicule
 from ..models.machine import Machine
 from ..models.ordinateur import Ordinateur
+from ..models.maintenance import Maintenance  # ✅ AJOUT POUR LES MAINTENANCES
 from ..schemas.bien import BienCreate, BienUpdate
 from .qr_code_service import QRCodeService
 import logging
@@ -337,6 +338,7 @@ class BienService:
         # Récupérer les données nécessaires
         from ..models.amortissement import Amortissement
         from ..models.panne import StatutPanne
+        from ..models.maintenance import Maintenance  # ✅ AJOUT
         
         amortissements = self.db.query(Amortissement).filter(
             Amortissement.id_bien == bien_id
@@ -345,6 +347,16 @@ class BienService:
         pannes = self.db.query(Panne).filter(
             Panne.id_bien == bien_id
         ).order_by(Panne.date_declaration.desc()).all()
+        
+        # ✅ Récupérer les maintenances
+        maintenances = self.db.query(Maintenance).filter(
+            Maintenance.id_bien == bien_id
+        ).all()
+        
+        # ✅ Calculer les champs manquants
+        nb_pannes_totales = len(pannes)
+        nb_maintenances = len(maintenances)
+        age_bien_ans = bien.calcul_age() if hasattr(bien, 'calcul_age') else 0
         
         # Calculer les critères
         garantie_expiree = self._verifier_garantie_expiree(bien)
@@ -419,7 +431,11 @@ class BienService:
             "amortissement_termine": amortissement_termine,
             "cycles_techniques_obligatoires": cycles_techniques,
             "recommandation": recommandation,
-            "valeur_nette_comptable": bien.valeur_nette_comptable
+            "valeur_nette_comptable": bien.valeur_nette_comptable,
+            # ✅ AJOUT DES CHAMPS MANQUANTS
+            "nb_pannes_totales": nb_pannes_totales,
+            "nb_maintenances": nb_maintenances,
+            "age_bien_ans": age_bien_ans,
         }
 
     def verifier_eligibilite_cession_optimise(self, bien: Bien) -> dict:
@@ -505,6 +521,7 @@ class BienService:
             "nb_maintenances": nb_maintenances,
             "age_bien_ans": age_bien_ans,
         }
+
     def _verifier_garantie_expiree(self, bien: Bien) -> bool:
         """Vérifie si la garantie est expirée"""
         if not bien.date_fin_garantie:

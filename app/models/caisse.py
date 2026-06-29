@@ -10,7 +10,7 @@ class Caisse(Base):
     id_caisse = Column(Integer, primary_key=True, index=True)
     solde_physique = Column(Float, default=0.0, nullable=False)
     solde_theorique = Column(Float, default=0.0, nullable=False)
-    devise = Column(String(10), default="FCFA", nullable=False)
+    devise = Column(String(10), default="USD", nullable=False)
     dernier_rapprochement = Column(DateTime, nullable=True)
     statut = Column(String(20), default="ACTIF", nullable=False)
 

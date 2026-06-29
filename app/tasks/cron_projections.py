@@ -126,7 +126,7 @@ def generer_projections():
                 contenu=(
                     f"Projections pluriannuelles générées le {datetime.now().strftime('%d/%m/%Y')}:\n"
                     f"- {len(biens_a_remplacer)} biens à remplacer dans les 2 ans\n"
-                    f"- Coût total estimé: {total_cout:,.0f} FCFA\n"
+                    f"- Coût total estimé: {total_cout:,.0f} USD\n"
                     f"- Consultez le rapport détaillé pour plus d'informations."
                 ),
                 lien="/rapports/projections"

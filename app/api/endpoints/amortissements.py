@@ -3,6 +3,7 @@ from ast import Dict
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Any, List, Optional
@@ -17,6 +18,10 @@ from ...services.comptabilite_service import ComptabiliteService
 from ...services.audit_service import AuditService
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
+from ...services.amortissement_workflow_service import AmortissementWorkflowService
+from ...schemas.workflow_amortissement import (
+    VerifierTresorerieRequest, ValiderDecaissementRequest, ValiderEcritureRequest, WorkflowStatusResponse
+)
 from ...models.bien import Bien
 from ...models.vehicule import Vehicule
 from ...models.ordinateur import Ordinateur
@@ -24,7 +29,7 @@ from ...models.machine import Machine
 from ...models.amortissement import Amortissement
 
 from ...schemas.amortissement import (
-    AmortissementValidate, AmortissementVerrouilleResponse,
+    AmortissementValidate, AmortissementVerrouiller, AmortissementVerrouilleResponse,
     AmortissementValidationStatus, AmortissementTresorerieCheck
 )
 from ...models.amortissement import StatutAmortissement
@@ -78,7 +83,7 @@ def check_amortissement_permission(user: Utilisateur, action: str) -> bool:
     role = user.role.nom.upper() if user.role else "USER"
     if role in ["ADMIN", "DG"]:
         return True
-    if role == "COMPTABLE" and action in ["view", "create", "edit"]:
+    if role == "COMPTABLE" and action in ["view", "create", "edit", "verrouiller"]:
         return True
     return action == "view"
 
@@ -135,6 +140,13 @@ async def calculer_et_enregistrer_amortissement(
         amort = service.creer_amortissement(data, bien.type_bien)
         compt_service.generer_ecriture_dotation(amort, bien.type_bien)
         
+        # Initialisation automatique du workflow séquentiel en 4 étapes
+        try:
+            wf_service = AmortissementWorkflowService(db)
+            wf_service.initialiser_workflow(amort.id_amortissement, current_user.id)
+        except Exception as wf_err:
+            logger.warning(f"Erreur lors de l'initialisation du workflow d'amortissement: {wf_err}")
+
         audit_service.log_create(
             user_id=current_user.id,
             table_name="amortissements",
@@ -908,3 +920,162 @@ async def previsualisation_cloture_detaille(
         return resultat
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{amortissement_id}/verrouiller", response_model=AmortissementVerrouilleResponse)
+async def verrouiller_amortissement_endpoint(
+    amortissement_id: int,
+    data: AmortissementVerrouiller,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user),
+    request: Request = None
+):
+    """
+    Verrouille définitivement un amortissement.
+    🔒 Une fois verrouillé, l'amortissement ne peut plus être modifié.
+    ⚠️ Seul le DG, le Comptable ou l'Admin peut effectuer cette opération.
+    """
+    if not check_amortissement_permission(current_user, "verrouiller"):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    
+    service = AmortissementService(db)
+    
+    try:
+        amortissement = service.verrouiller_amortissement(
+            id_amortissement=amortissement_id,
+            verrouille_par=current_user.id,
+            raison=data.raison
+        )
+        
+        nom_user = current_user.nom if hasattr(current_user, 'nom') else str(current_user.id)
+        return AmortissementVerrouilleResponse(
+            id_amortissement=amortissement.id_amortissement,
+            id_bien=amortissement.id_bien,
+            exercice=amortissement.exercice,
+            est_verrouille=amortissement.est_verrouille,
+            date_verrouillage=amortissement.date_verrouillage,
+            verrouille_par_id=current_user.id,
+            verrouille_par_nom=nom_user,
+            raison_verrouillage=amortissement.raison_verrouillage,
+            est_modifiable=False
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        logger.error(f"Erreur BDD verrouillage amortissement: {e}")
+        raise HTTPException(status_code=503, detail="Erreur de base de données")
+
+
+# ============================================================
+# ENDPOINTS WORKFLOW DE VALIDATION EN 4 ÉTAPES
+# ============================================================
+
+@router.get("/{id_amortissement}/workflow-status", response_model=WorkflowStatusResponse)
+async def get_workflow_status(
+    id_amortissement: int,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """Récupère le statut détaillé et l'historique du workflow de validation pour un amortissement."""
+    service = AmortissementWorkflowService(db)
+    return service.get_workflow_status(id_amortissement)
+
+
+@router.post("/{id_amortissement}/verifier-tresorerie")
+async def verifier_tresorerie_caisse(
+    id_amortissement: int,
+    data: VerifierTresorerieRequest,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """Étape 2: La CAISSE vérifie la disponibilité physique des fonds en trésorerie."""
+    service = AmortissementWorkflowService(db)
+    try:
+        res = service.verifier_tresorerie(
+            id_amortissement=id_amortissement,
+            tresorerie_disponible=data.tresorerie_disponible,
+            commentaire=data.commentaire or "",
+            user_id=current_user.id
+        )
+        db.commit()
+        return {"success": True, "statut": res.statut.value, "etape": res.etape.value}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{id_amortissement}/valider-decaissement")
+async def valider_decaissement_dg(
+    id_amortissement: int,
+    data: ValiderDecaissementRequest,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """Étape 3: Le DG valide le décaissement et déclenche la génération du Bon de Décaissement PDF."""
+    service = AmortissementWorkflowService(db)
+    try:
+        res = service.valider_decaissement(
+            id_amortissement=id_amortissement,
+            approuve=data.approuve,
+            motif=data.motif or "",
+            user_id=current_user.id
+        )
+        db.commit()
+        return {
+            "success": True,
+            "statut": res.statut.value,
+            "etape": res.etape.value,
+            "bon_decaissement_pdf": res.bon_decaissement_pdf
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{id_amortissement}/valider-ecriture")
+async def valider_ecriture_comptable(
+    id_amortissement: int,
+    data: ValiderEcritureRequest,
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """Étape 4: Le COMPTABLE effectue la validation finale de l'écriture et verrouille l'amortissement."""
+    service = AmortissementWorkflowService(db)
+    try:
+        res = service.valider_ecriture(
+            id_amortissement=id_amortissement,
+            piece_justificative_url=data.piece_justificative_url,
+            commentaire=data.commentaire,
+            user_id=current_user.id
+        )
+        db.commit()
+        return {"success": True, "statut": res.statut.value, "etape": res.etape.value, "est_verrouille": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{id_amortissement}/bon-decaissement-pdf")
+async def telecharger_bon_decaissement_pdf(
+    id_amortissement: int,
+    db: Session = Depends(get_db)
+):
+    """Téléchargement direct du Bon de Décaissement PDF pour l'amortissement donné."""
+    import os
+    service = AmortissementWorkflowService(db)
+    status_data = service.get_workflow_status(id_amortissement)
+    dg_step = next((h for h in status_data.get("historique_validations", []) if h.get("etape") == "DG"), None)
+    
+    pdf_rel_path = dg_step.get("bon_decaissement_pdf") if dg_step else None
+    if not pdf_rel_path:
+        raise HTTPException(status_code=404, detail="Bon de décaissement non encore généré pour cet amortissement.")
+    
+    # Supprimer les slashs initiaux pour obtenir le chemin fichier local
+    clean_path = pdf_rel_path.lstrip('/')
+    if not os.path.exists(clean_path):
+        raise HTTPException(status_code=404, detail="Fichier PDF non trouvé sur le serveur.")
+        
+    return FileResponse(
+        clean_path, 
+        media_type="application/pdf", 
+        filename=f"bon_decaissement_amortissement_{id_amortissement}.pdf"
+    )
+

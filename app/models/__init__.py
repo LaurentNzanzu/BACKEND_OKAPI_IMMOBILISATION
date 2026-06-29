@@ -34,6 +34,10 @@ from .journal_evenements_immobilisation import JournalEvenementImmobilisation, T
 from .alerte_vnc import AlerteVNC, StatutAlerteVNC
 from .projection_investissement import ProjectionInvestissement, StatutProjection
 from .ordre_remplacement import OrdreRemplacement, StatutOrdreRemplacement
+from .piece_justificative import PieceJustificative, TypePieceJustificative, StatutPieceJustificative
+from .cession import Cession
+from .workflow_amortissement import WorkflowValidationAmortissement, EtapeWorkflowAmortissement, StatutWorkflowAmortissement
+
 
 
 __all__ = [
