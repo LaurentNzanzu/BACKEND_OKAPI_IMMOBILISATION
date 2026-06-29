@@ -299,3 +299,90 @@ def generer_pdf_rapport_avec_sections(
     doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif: str = "") -> bytes:
+    """
+    Génère un bon de décaissement officiel au format PDF signé par la Direction Générale.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5*cm,
+        leftMargin=1.5*cm,
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
+    )
+    
+    styles = getSampleStyleSheet()
+    style_titre = ParagraphStyle(
+        'BonTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        leading=24,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#1e3a8a'),
+        spaceAfter=15
+    )
+    style_label = ParagraphStyle('BonLabel', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold')
+    style_val = ParagraphStyle('BonVal', parent=styles['Normal'], fontSize=11)
+    style_stamp = ParagraphStyle(
+        'Stamp',
+        parent=styles['Normal'],
+        fontSize=12,
+        fontName='Helvetica-Bold',
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#15803d')
+    )
+
+    elements = []
+    
+    # En-tête
+    elements.append(Paragraph("OKAPI IMMOBILISATIONS", ParagraphStyle('SubHeader', parent=styles['Heading2'], alignment=TA_CENTER, textColor=colors.HexColor('#475569'))))
+    elements.append(Paragraph("BON DE DÉCAISSEMENT OFFICIEL", style_titre))
+    elements.append(Paragraph(f"Réf: BD-AMORT-{amortissement.id_amortissement:05d} | Date: {datetime.now().strftime('%d/%m/%Y')}", ParagraphStyle('Ref', parent=styles['Normal'], alignment=TA_CENTER, textColor=colors.gray)))
+    elements.append(Spacer(1, 20))
+
+    # Détails
+    nom_bien = getattr(bien, 'nom_bien', None) or getattr(bien, 'designation', None) or f"Bien #{bien.id_bien}"
+    montant_str = f"{amortissement.annuite_comptable:,.2f} USD"
+    
+    table_data = [
+        [Paragraph("ID Amortissement:", style_label), Paragraph(str(amortissement.id_amortissement), style_val)],
+        [Paragraph("Bien Immobilisé:", style_label), Paragraph(f"{nom_bien} (ID: #{bien.id_bien})", style_val)],
+        [Paragraph("Exercice Comptable:", style_label), Paragraph(str(amortissement.exercice), style_val)],
+        [Paragraph("Méthode d'Amortissement:", style_label), Paragraph(str(amortissement.methode.value if hasattr(amortissement.methode, 'value') else amortissement.methode), style_val)],
+        [Paragraph("Montant de la Dotation (Verrouillé):", style_label), Paragraph(montant_str, ParagraphStyle('Mnt', parent=style_val, fontName='Helvetica-Bold', textColor=colors.HexColor('#b91c1c')))],
+    ]
+    
+    t = Table(table_data, colWidths=[6*cm, 11*cm])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('PADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 25))
+
+    # Section Validation DG
+    dg_name = getattr(dg_user, 'nom_complet', None) or getattr(dg_user, 'username', 'Direction Générale')
+    validation_box = [
+        [Paragraph("VISA DE LA DIRECTION GÉNÉRALE", ParagraphStyle('VHead', parent=styles['Normal'], fontName='Helvetica-Bold', alignment=TA_CENTER, textColor=colors.white))],
+        [Paragraph(f"<b>Validé par :</b> {dg_name}", style_val)],
+        [Paragraph(f"<b>Instructions / Motif :</b> {motif or 'Décaissement et dotation autorisés sous réserve des pièces comptables.'}", style_val)],
+        [Spacer(1, 10)],
+        [Paragraph("✔ APPROUVÉ & SIGNÉ NUMÉRIQUEMENT", style_stamp)]
+    ]
+    t_val = Table(validation_box, colWidths=[17*cm])
+    t_val.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#1e3a8a')),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f0fdf4')),
+        ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#16a34a')),
+        ('PADDING', (0, 0), (-1, -1), 10),
+    ]))
+    elements.append(t_val)
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()

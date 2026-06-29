@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List
 from datetime import datetime
 
+from ..models.piece_rechange import PieceRechange
 from ..models.fourniture_piece import FourniturePiece, StatutFourniture
 from ..models.besoin import Besoin, StatutBesoin
 from ..models.ligne_besoin import LigneBesoin
@@ -74,16 +75,15 @@ class FournitureService:
         commentaire: str = None,
         user_id_audit: int = None,
     ) -> FourniturePiece:
+        # ✅ CORRECTION : Séparer la récupération avec verrouillage des jointures
+        # Étape 1 : Récupérer la fourniture avec verrouillage SANS jointures
         fourniture = (
             self.db.query(FourniturePiece)
-            .options(
-                joinedload(FourniturePiece.besoin),
-                joinedload(FourniturePiece.piece),
-            )
             .filter(FourniturePiece.id_fourniture == id_fourniture)
             .with_for_update()
             .first()
         )
+        
         if not fourniture:
             raise ValueError("Demande de fourniture non trouvée")
         if fourniture.statut != StatutFourniture.EN_ATTENTE:
@@ -93,7 +93,13 @@ class FournitureService:
                 f"Quantité invalide : doit être entre 1 et {fourniture.quantite_demandee}"
             )
 
-        piece = fourniture.piece
+        # Étape 2 : Charger les relations séparément
+        piece = self.db.query(PieceRechange).filter(PieceRechange.id_piece == fourniture.id_piece).first()
+        besoin = self.db.query(Besoin).filter(Besoin.id_besoin == fourniture.id_besoin).first()
+        
+        if not piece:
+            raise ValueError("Pièce associée non trouvée")
+        
         if piece.stock_actuel < quantite_fournie:
             raise ValueError(
                 f"Stock insuffisant : disponible {piece.stock_actuel}, demandé {quantite_fournie}"
@@ -125,7 +131,7 @@ class FournitureService:
             self.notification_service.envoyer_notification(
                 ids_destinataires=id_magasinier,
                 type_notif=TypeNotificationEnum.FOURNITURE_EN_ATTENTE,
-                titre=f"📦 Relance fourniture partielle - Besoin {fourniture.besoin.numero_demande}",
+                titre=f"📦 Relance fourniture partielle - Besoin {besoin.numero_demande if besoin else 'N/A'}",
                 contenu=f"Il reste {reste} unité(s) de {piece.designation} à fournir.",
                 lien="/fournitures/en-attente",
             )

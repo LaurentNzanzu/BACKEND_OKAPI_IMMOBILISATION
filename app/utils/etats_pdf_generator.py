@@ -252,8 +252,8 @@ def generate_fiche_bien_pdf(data: Dict[str, Any]) -> bytes:
          Paragraph("Âge:", styles['OkapiLabel']), Paragraph(f"{bien.get('age_ans', 0)} an(s)", styles['OkapiValue'])],
         [Paragraph("Localisation:", styles['OkapiLabel']), Paragraph(bien.get('localisation', '-') or "-", styles['OkapiValue']), 
          Paragraph("Date acquisition:", styles['OkapiLabel']), Paragraph(bien.get('date_acquisition', '-') or "-", styles['OkapiValue'])],
-        [Paragraph("Prix d'acquisition:", styles['OkapiLabel']), Paragraph(f"{prix_acq:,.0f} FCFA", styles['OkapiValue']), 
-         Paragraph("<b>Valeur Totale (avec frais):</b>", styles['OkapiLabel']), Paragraph(f"<b>{prix_total_evalue:,.0f} FCFA</b>", styles['OkapiValue'])],
+        [Paragraph("Prix d'acquisition:", styles['OkapiLabel']), Paragraph(f"{prix_acq:,.0f} USD", styles['OkapiValue']), 
+         Paragraph("<b>Valeur Totale (avec frais):</b>", styles['OkapiLabel']), Paragraph(f"<b>{prix_total_evalue:,.0f} USD</b>", styles['OkapiValue'])],
     ]
 
     ident_table = _create_info_table(ident_data, [doc.width*0.22, doc.width*0.28, doc.width*0.22, doc.width*0.28])
@@ -310,7 +310,7 @@ def generate_fiche_bien_pdf(data: Dict[str, Any]) -> bytes:
         total_compos = sum(c.get('valeur', 0) for c in composants)
         is_overflow = total_compos > prix_total_evalue
         
-        comp_data = [["Désignation", "Valeur (FCFA)", "Durée de vie", "% du bien"]]
+        comp_data = [["Désignation", "Valeur (USD)", "Durée de vie", "% du bien"]]
         
         for comp in composants:
             valeur = comp.get('valeur', 0)
@@ -393,7 +393,7 @@ def generate_fiche_bien_pdf(data: Dict[str, Any]) -> bytes:
         if maintenances:
             elements.append(Paragraph("<b>Dernières maintenances</b>", styles['OkapiLabel']))
             elements.append(Spacer(1, 6))
-            maint_data = [["Date", "Type", "Coût (FCFA)"]]
+            maint_data = [["Date", "Type", "Coût (USD)"]]
             for m in maintenances[:3]:
                 maint_data.append([m.get('date', '-'), m.get('type', '-'), f"{m.get('cout', 0):,.0f}"])
             
@@ -492,7 +492,7 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
         [Paragraph("Localisation:", styles['OkapiLabel']), Paragraph(bien.get('localisation', '-'), styles['OkapiValue']),
          Paragraph("État:", styles['OkapiLabel']), Paragraph(bien.get('etat', '-'), styles['OkapiValue'])],
         [Paragraph("Date acquisition:", styles['OkapiLabel']), Paragraph(bien.get('date_acquisition', '-'), styles['OkapiValue']),
-         Paragraph("Valeur d'origine:", styles['OkapiLabel']), Paragraph(f"{amort.get('valeur_origine', 0):,.0f} FCFA", styles['OkapiValue'])],
+         Paragraph("Valeur d'origine:", styles['OkapiLabel']), Paragraph(f"{amort.get('valeur_origine', 0):,.0f} USD", styles['OkapiValue'])],
     ]
     
     ident_table = _create_info_table(ident_data, [doc.width*0.22, doc.width*0.28, doc.width*0.22, doc.width*0.28])
@@ -521,13 +521,13 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     # Cartes de synthèse
     synth_data = [
         [Paragraph("<b>Valeur d'origine</b>", styles['OkapiLabel']),
-         Paragraph(f"<b>{amort.get('valeur_origine', 0):,.0f} FCFA</b>", styles['OkapiValue']),
+         Paragraph(f"<b>{amort.get('valeur_origine', 0):,.0f} USD</b>", styles['OkapiValue']),
          Paragraph("<b>Valeur résiduelle</b>", styles['OkapiLabel']),
-         Paragraph(f"<b>{amort.get('valeur_residuelle', 0):,.0f} FCFA</b>", styles['OkapiValue'])],
+         Paragraph(f"<b>{amort.get('valeur_residuelle', 0):,.0f} USD</b>", styles['OkapiValue'])],
         [Paragraph("<b>Cumul amorti</b>", styles['OkapiLabel']),
-         Paragraph(f"<b>{amort.get('cumul_amorti', 0):,.0f} FCFA</b>", styles['OkapiValue']),
+         Paragraph(f"<b>{amort.get('cumul_amorti', 0):,.0f} USD</b>", styles['OkapiValue']),
          Paragraph("<b>VNC actuelle</b>", styles['OkapiLabel']),
-         Paragraph(f"<b>{amort.get('vnc_actuelle', 0):,.0f} FCFA</b>", styles['OkapiValue'])],
+         Paragraph(f"<b>{amort.get('vnc_actuelle', 0):,.0f} USD</b>", styles['OkapiValue'])],
         [Paragraph("<b>Date début</b>", styles['OkapiLabel']),
          Paragraph(amort.get('date_debut', '-'), styles['OkapiValue']),
          Paragraph("<b>Statut</b>", styles['OkapiLabel']),
@@ -566,7 +566,7 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     elements.append(Paragraph("4. PLAN D'AMORTISSEMENT PRÉVISIONNEL", styles['OkapiSection']))
     
     if plan:
-        plan_data = [["Année", "VNC début (FCFA)", "Annuité (FCFA)", "Cumul (FCFA)", "VNC fin (FCFA)"]]
+        plan_data = [["Année", "VNC début (USD)", "Annuité (USD)", "Cumul (USD)", "VNC fin (USD)"]]
         
         for p in plan:
             plan_data.append([
@@ -604,7 +604,7 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
         elements.append(plan_table)
         
         elements.append(Spacer(1, 8))
-        note_text = f"Plan établi sur {stats.get('duree_totale_ans', 0)} ans • Annuité moyenne: {stats.get('annuite_moyenne', 0):,.0f} FCFA"
+        note_text = f"Plan établi sur {stats.get('duree_totale_ans', 0)} ans • Annuité moyenne: {stats.get('annuite_moyenne', 0):,.0f} USD"
         elements.append(Paragraph(note_text, styles['OkapiNote']))
     else:
         elements.append(Paragraph("Aucun plan d'amortissement disponible.", styles['OkapiValue']))
@@ -615,7 +615,7 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     if ecritures:
         elements.append(Paragraph("5. DERNIÈRES ÉCRITURES COMPTABLES", styles['OkapiSection']))
         
-        ecrit_data = [["Date", "Type", "Comptes", "Montant (FCFA)", "Statut"]]
+        ecrit_data = [["Date", "Type", "Comptes", "Montant (USD)", "Statut"]]
         for e in ecritures[:5]:
             ecrit_data.append([
                 e.get('date', '-'),
@@ -667,7 +667,6 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()
-
 
 def generate_etat_besoin_pdf(data: Dict[str, Any]) -> bytes:
     """Génère le PDF de l'état de sortie pour une demande de besoin."""
@@ -848,6 +847,104 @@ def generate_etat_besoin_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     elements.append(sig_table)
 
+    _add_footer(elements, doc)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+def generate_fiche_panne_pdf(data: Dict[str, Any]) -> bytes:
+    """Génère le PDF de la fiche de panne"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            rightMargin=1.8*cm, leftMargin=1.8*cm,
+                            topMargin=1.5*cm, bottomMargin=1.5*cm)
+    styles = _get_styles()
+    elements = []
+    
+    panne = data['panne']
+    bien = data.get('bien', {})
+    
+    titre = "FICHE DE PANNE"
+    sous_titre = f"Panne #{panne.get('id_panne', '')}"
+    _add_header(elements, doc, titre, sous_titre, f"PANNE-{panne.get('id_panne', '')}")
+    
+    # 1. INFORMATIONS GENERALES
+    elements.append(Paragraph("1. INFORMATIONS GENERALES", styles['OkapiSection']))
+    
+    statut_colors = {
+        'DECLAREE': colors.HexColor('#fef3c7'),
+        'DIAGNOSTIQUEE': colors.HexColor('#dbeafe'),
+        'EN_ATTENTE_PIECES': colors.HexColor('#ffedd5'),
+        'EN_VALIDATION': colors.HexColor('#f3e8ff'),
+        'EN_COURS': colors.HexColor('#e0e7ff'),
+        'EN_TEST': colors.HexColor('#cffafe'),
+        'TERMINEE': colors.HexColor('#dcfce7'),
+        'ANNULEE': colors.HexColor('#f3f4f6')
+    }
+    
+    info_data = [
+        [Paragraph("N° Panne:", styles['OkapiLabel']), Paragraph(f"#{panne.get('id_panne', '')}", styles['OkapiValue']),
+         Paragraph("Date déclaration:", styles['OkapiLabel']), Paragraph(panne.get('date_declaration', '-'), styles['OkapiValue'])],
+        [Paragraph("Statut:", styles['OkapiLabel']), Paragraph(panne.get('statut', '-'), styles['OkapiValue']),
+         Paragraph("Priorité:", styles['OkapiLabel']), Paragraph(panne.get('priorite', '-'), styles['OkapiValue'])],
+        [Paragraph("Type:", styles['OkapiLabel']), Paragraph(panne.get('type_panne_personnalise') or panne.get('type_panne', '-'), styles['OkapiValue']),
+         Paragraph("Technicien:", styles['OkapiLabel']), Paragraph(panne.get('technicien_nom', '-'), styles['OkapiValue'])],
+    ]
+    
+    info_table = _create_info_table(info_data, [doc.width*0.22, doc.width*0.28, doc.width*0.22, doc.width*0.28])
+    elements.append(info_table)
+    elements.append(Spacer(1, 10))
+    
+    # 2. BIEN CONCERNE
+    if bien:
+        elements.append(Paragraph("2. BIEN CONCERNE", styles['OkapiSection']))
+        bien_data = [
+            [Paragraph("Désignation:", styles['OkapiLabel']), Paragraph(f"{bien.get('marque_fabricant', '')} {bien.get('modele', '')}".strip() or '-', styles['OkapiValue']),
+             Paragraph("Type:", styles['OkapiLabel']), Paragraph(bien.get('type_bien', '-'), styles['OkapiValue'])],
+            [Paragraph("N° Série:", styles['OkapiLabel']), Paragraph(bien.get('numero_serie', '-'), styles['OkapiValue']),
+             Paragraph("Localisation:", styles['OkapiLabel']), Paragraph(bien.get('localisation', '-'), styles['OkapiValue'])],
+        ]
+        bien_table = _create_info_table(bien_data, [doc.width*0.22, doc.width*0.28, doc.width*0.22, doc.width*0.28])
+        elements.append(bien_table)
+        elements.append(Spacer(1, 10))
+    
+    # 3. DIAGNOSTIC
+    elements.append(Paragraph("3. DIAGNOSTIC DU TECHNICIEN", styles['OkapiSection']))
+    elements.append(Paragraph(panne.get('diagnostic', 'Aucun diagnostic enregistré'), styles['OkapiValue']))
+    elements.append(Spacer(1, 10))
+    
+    # 4. SOLUTION
+    if panne.get('solution_apportee'):
+        elements.append(Paragraph("4. SOLUTION APPORTEE", styles['OkapiSection']))
+        elements.append(Paragraph(panne['solution_apportee'], styles['OkapiValue']))
+        elements.append(Spacer(1, 10))
+    
+    # 5. COUT
+    if panne.get('cout_total_reparation', 0) > 0:
+        elements.append(Paragraph("5. COUT DE REPARATION", styles['OkapiSection']))
+        elements.append(Paragraph(f"{panne['cout_total_reparation']:,.0f} USD", styles['OkapiValue']))
+        elements.append(Spacer(1, 10))
+    
+    # 6. SIGNATURES
+    elements.append(Spacer(1, 25))
+    sig_data = [
+        ["Le Technicien", "Le Responsable", "Date"],
+        [" ", " ", " "],
+        ["(Signature)", "(Cachet et signature)", "____ / ____ / ______"]
+    ]
+    sig_table = Table(sig_data, colWidths=[doc.width/3, doc.width/3, doc.width/3])
+    sig_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#4b5563')),
+        ('FONTSIZE', (0, 2), (-1, 2), 7),
+        ('TEXTCOLOR', (0, 2), (-1, 2), colors.HexColor('#9ca3af')),
+        ('TOPPADDING', (0, 1), (-1, 1), 40),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 10),
+    ]))
+    elements.append(sig_table)
+    
     _add_footer(elements, doc)
     doc.build(elements)
     buffer.seek(0)

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/vehicules", tags=["Véhicules"])
 @router.get("/")
 async def get_vehicules(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=1000),
     type_vehicule: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(require_any_roles(BIENS_VIEW_ROLES)),

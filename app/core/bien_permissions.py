@@ -1,12 +1,10 @@
 """Permissions métier pour les biens immobilisés."""
 import logging
 from typing import Any, Dict, Optional, Set
-
 from fastapi import Request
 from sqlalchemy.orm import Session
-
 from ..models.utilisateur import Utilisateur
-from ..models.bien import Bien
+from ..models.bien import Bien, EtatBien
 from ..models.panne import Panne
 from ..schemas.bien import BienUpdate
 
@@ -26,7 +24,7 @@ TECHNICIAN_VIEWABLE_ETATS = frozenset({"PANNE", "MAINTENANCE"})
 
 TECHNICIAN_EDITABLE_FIELDS: Set[str] = {
     "etat",
-    "localisation",
+    "id_localisation",
     "description",
     "image",
     "type_vehicule",
@@ -39,7 +37,6 @@ TECHNICIAN_EDITABLE_FIELDS: Set[str] = {
     "consommation_carburant",
     "consommation_huile",
     "type_propulsion",
-    "numero_serie",
     "fabricant",
     "puissance",
     "type_alimentation",
@@ -62,7 +59,7 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
     "COMPTABLE": {"view_bien", "edit_bien", "create_bien", "view_bien_financial", "view_bien_inventory"},
     "TECHNICIEN": {"view_bien", "edit_bien_limited"},
     "CAISSE": {"view_bien"},
-    "MAGASINIER": set(),
+    "MAGASINIER": {"view_bien"},  # ✅ AJOUT : view_bien pour MAGASINIER
     "USER": {"view_bien"},
 }
 
@@ -83,6 +80,7 @@ def _has_permission(user: Optional[Utilisateur], permission: str) -> bool:
 
 
 def can_view_biens(user: Optional[Utilisateur]) -> bool:
+    """Vérifie si l'utilisateur peut voir la liste des biens"""
     return _has_permission(user, "view_bien")
 
 
@@ -130,7 +128,7 @@ def can_technician_view_bien(
     """Technicien : bien en PANNE/MAINTENANCE ou lié à une de ses pannes."""
     if _bien_etat_value(bien) in TECHNICIAN_VIEWABLE_ETATS:
         return True
-
+    
     user_id = getattr(user, "id", None)
     if user_id is None:
         return False
@@ -151,7 +149,6 @@ def can_technician_view_bien(
             if panne is not None:
                 if int(panne.id_technicien) == user_id:
                     return True
-                # Contexte panne valide : le technicien a au moins une panne sur ce bien
                 other = (
                     db.query(Panne)
                     .filter(Panne.id_bien == bien_id, Panne.id_technicien == user_id)
@@ -174,11 +171,29 @@ def can_view_bien_detail(
     db: Session,
     panne_id: Optional[int] = None,
 ) -> bool:
+    """Vérifie si l'utilisateur peut voir le détail d'un bien"""
     if not can_view_biens(user):
         return False
-    if get_user_role(user) != "TECHNICIEN":
+    
+    role = get_user_role(user)
+    
+    # ADMIN, DG, GESTIONNAIRE, COMPTABLE voient tout
+    if role in ["ADMIN", "DG", "GESTIONNAIRE", "COMPTABLE"]:
         return True
-    return can_technician_view_bien(user, bien, db, panne_id)
+    
+    # ✅ AJOUT : MAGASINIER peut voir tous les biens (pour gestion stock)
+    if role == "MAGASINIER":
+        return True
+    
+    # CAISSE peut voir tous les biens
+    if role == "CAISSE":
+        return True
+    
+    # TECHNICIEN : restrictions selon l'état du bien et ses pannes
+    if role == "TECHNICIEN":
+        return can_technician_view_bien(user, bien, db, panne_id)
+    
+    return False
 
 
 def build_bien_context_dict(bien: Bien, user: Optional[Utilisateur]) -> Dict[str, Any]:
@@ -191,7 +206,14 @@ def build_bien_context_dict(bien: Bien, user: Optional[Utilisateur]) -> Dict[str
         "modele": getattr(bien, "modele", None),
         "numero_serie": getattr(bien, "numero_serie", None),
         "immatriculation": getattr(bien, "immatriculation", None),
-        "localisation": getattr(bien, "localisation", None),
+        "localisation": (
+            {
+                "id_localisation": bien.localisation_ref.id_localisation,
+                "nom_localisation": bien.localisation_ref.nom_localisation,
+            }
+            if getattr(bien, "localisation_ref", None)
+            else None
+        ),
         "etat": _bien_etat_value(bien) or None,
         "qr_code": getattr(bien, "qr_code", None),
     }
@@ -223,7 +245,6 @@ def log_access_granted(
 def filter_bien_update(user: Optional[Utilisateur], bien_data: BienUpdate) -> BienUpdate:
     if can_edit_bien_full(user):
         return bien_data
-
     if not can_edit_bien_technician(user):
         return BienUpdate()
 

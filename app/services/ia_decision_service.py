@@ -252,13 +252,13 @@ class IADecisionService:
                 raisons.append(f"Fréquence pannes: {freq_pannes}x (moyenne flotte: {self._round(moyenne_flotte)}x)")
 
         if valeur_origine > 0 and (vnc_actuelle / valeur_origine) < 0.20:
-            raisons.append(f"VNC actuelle: {int(vnc_actuelle)} FCFA (moins de 20% de la valeur d'origine)")
+            raisons.append(f"VNC actuelle: {int(vnc_actuelle)} USD (moins de 20% de la valeur d'origine)")
 
         if age_actuel > (duree_vie * 0.7):
             raisons.append(f"Âge avancé: {int(age_actuel)} ans (durée de vie: {int(duree_vie)} ans)")
 
         if economie_annuelle > 0:
-            raisons.append(f"Le coût de remplacement est inférieur au coût de conservation ({int(economie_annuelle)} FCFA/an)")
+            raisons.append(f"Le coût de remplacement est inférieur au coût de conservation ({int(economie_annuelle)} USD/an)")
 
         if not raisons:
             raisons.append("Analyse basée sur les données disponibles : stabilité opérationnelle")
@@ -268,7 +268,7 @@ class IADecisionService:
             budget_previs = self._round(prix_neuf_estime)
             actions_suggerees = [
                 "Programmer la cession via le module Mouvements",
-                f"Commencer la recherche d'un bien neuf (budget prévisionnel: {int(budget_previs)} FCFA)",
+                f"Commencer la recherche d'un bien neuf (budget prévisionnel: {int(budget_previs)} USD)",
                 "Prévoir le remplacement dans les 6 mois"
             ]
         else:
@@ -584,7 +584,7 @@ class IADecisionService:
         elif intention == "valeur_parc":
             total_value = self.db.query(sa.func.sum(Bien.prix_acquisition)).scalar()
             if total_value:
-                texte = f"La valeur totale du parc est de {total_value:,.0f} FCFA."
+                texte = f"La valeur totale du parc est de {total_value:,.0f} USD."
                 return texte, [{"valeur_totale": total_value}]
             else:
                 texte = "Impossible de calculer la valeur totale du parc."

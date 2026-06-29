@@ -17,8 +17,7 @@ def check_ia_permission(user: Utilisateur) -> bool:
     """Vérifie si l'utilisateur a le droit d'accéder aux fonctionnalités IA"""
     if not user:
         return False
-    role = user.role.nom.upper() if user.role else "USER"
-    return role in ["ADMIN", "DG", "COMPTABLE", "MAGASINIER"]  
+    return True  
 
 
 # ========== PHASE 1.1 : HEALTH SCORE ==========

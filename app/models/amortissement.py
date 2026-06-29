@@ -72,5 +72,29 @@ class Amortissement(Base):
     statut = Column(SQLEnum(StatutAmortissement), default=StatutAmortissement.EN_COURS)
     date_creation = Column(DateTime, default=datetime.utcnow)
 
+    # Colonnes de verrouillage
+    est_verrouille = Column(Boolean, default=False, nullable=False, comment="True si l'amortissement est verrouillé")
+    date_verrouillage = Column(DateTime, nullable=True, comment="Date du verrouillage")
+    verrouille_par_id = Column(Integer, ForeignKey("utilisateurs.id", ondelete="SET NULL"), nullable=True, comment="Utilisateur ayant verrouillé")
+    raison_verrouillage = Column(String(255), nullable=True, comment="Raison du verrouillage (obligatoire)")
+
     bien = relationship("Bien", back_populates="amortissements")
     ecritures = relationship("EcritureComptable", back_populates="amortissement", cascade="all, delete-orphan")
+    verrouille_par = relationship("Utilisateur", foreign_keys=[verrouille_par_id])
+
+    def verrouiller(self, utilisateur_id: int, raison: str):
+        """Verrouille définitivement l'amortissement."""
+        if self.est_verrouille:
+            raise ValueError("Cet amortissement est déjà verrouillé")
+        if not raison or not raison.strip():
+            raise ValueError("La raison du verrouillage est obligatoire")
+        self.est_verrouille = True
+        self.date_verrouillage = datetime.utcnow()
+        self.verrouille_par_id = utilisateur_id
+        self.raison_verrouillage = raison.strip()
+        return self
+
+    @property
+    def est_modifiable(self) -> bool:
+        """Vérifie si l'amortissement peut être modifié."""
+        return not self.est_verrouille

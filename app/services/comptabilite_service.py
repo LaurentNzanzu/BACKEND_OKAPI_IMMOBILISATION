@@ -1,8 +1,10 @@
-# backend/app/services/comptabilite_service.py
-from sqlalchemy.orm import Session
+# app/services/comptabilite_service.py
+from decimal import Decimal
 from typing import List, Optional
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+
 from ..models.ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture
 from ..models.amortissement import Amortissement, StatutAmortissement
 from ..models.regles_amortissement import RegleAmortissement
@@ -11,6 +13,10 @@ from ..models.cession import Cession
 from ..schemas.cession import CessionCreate, RebutCreate
 from ..schemas.ecriture_comptable import EcritureCreate
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class ComptabiliteService:
     def __init__(self, db: Session, cree_par_id: Optional[int] = None):
@@ -18,6 +24,7 @@ class ComptabiliteService:
         self.cree_par_id = cree_par_id
 
     def _journal_pour_type(self, type_operation: TypeOperationEnum) -> str:
+        """Détermine le journal comptable pour un type d'opération."""
         mapping = {
             TypeOperationEnum.ACQUISITION: "ACH",
             TypeOperationEnum.DOTATION_AMORTISSEMENT: "OD",
@@ -28,12 +35,73 @@ class ComptabiliteService:
         }
         return mapping.get(type_operation, "OD")
 
+    def _round(self, value: float) -> float:
+        """Arrondit une valeur à 2 décimales."""
+        return float(Decimal(str(value)).quantize(Decimal('0.01')))
+
+    # ============================================================
+    # 🔐 VÉRIFICATION DE L'ÉQUILIBRE COMPTABLE
+    # ============================================================
+
+    def _verifier_equilibre(self, ecritures: List[EcritureComptable]) -> bool:
+        """
+        Vérifie que la somme des débits égale la somme des crédits.
+        
+        Args:
+            ecritures: Liste d'écritures à vérifier
+            
+        Returns:
+            bool: True si équilibré
+            
+        Raises:
+            ValueError: Si déséquilibre détecté
+        """
+        total_debit = Decimal('0')
+        total_credit = Decimal('0')
+        
+        for ecriture in ecritures:
+            if ecriture.compte_debit:
+                total_debit += Decimal(str(ecriture.montant))
+            if ecriture.compte_credit:
+                total_credit += Decimal(str(ecriture.montant))
+        
+        # Tolérance de 0.01 pour les arrondis
+        if abs(total_debit - total_credit) > Decimal('0.01'):
+            raise ValueError(
+                f"Écriture comptable déséquilibrée. "
+                f"Total Débit: {total_debit}, Total Crédit: {total_credit}, "
+                f"Écart: {abs(total_debit - total_credit)}"
+            )
+        
+        return True
+
+    def _verifier_equilibre_simple(
+        self,
+        compte_debit: str,
+        compte_credit: str,
+        montant: Decimal
+    ) -> bool:
+        """
+        Vérifie l'équilibre d'une écriture simple (1 débit = 1 crédit).
+        """
+        if not compte_debit or not compte_credit:
+            raise ValueError("Les comptes débit et crédit sont obligatoires")
+
+        if compte_debit == compte_credit:
+            raise ValueError("Les comptes débit et crédit doivent être différents")
+
+        if montant <= 0:
+            raise ValueError("Le montant doit être strictement positif")
+
+        return True
+
     def _appliquer_tracabilite_creation(
         self,
         ecriture: EcritureComptable,
         cree_par_id: Optional[int] = None,
         reference_id: Optional[int] = None,
     ) -> None:
+        """Applique les champs de traçabilité à une écriture."""
         now = datetime.utcnow()
         ecriture.date_creation = now
         user_id = cree_par_id if cree_par_id is not None else self.cree_par_id
@@ -47,11 +115,8 @@ class ComptabiliteService:
             ecriture.periode_comptable = ecriture.date_ecriture.strftime("%Y-%m")
         ecriture.journal = self._journal_pour_type(ecriture.type_operation)
 
-    def _round(self, value: float) -> float:
-        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-
     def _get_compte_immobilisation(self, type_bien: str) -> str:
-        """Compte d'immobilisation corporelle (classe 2 SYSCOHADA)"""
+        """Compte d'immobilisation corporelle (classe 2 SYSCOHADA)."""
         compte_map = {
             "vehicule": "2445",
             "machine": "2441",
@@ -62,16 +127,15 @@ class ComptabiliteService:
         return compte_map.get(type_bien, "2440")
 
     def get_compte_amortissement_par_categorie(self, categorie: str) -> tuple:
-        """Retourne le compte de dotation et le compte d'amortissement depuis le plan comptable"""
+        """Retourne le compte de dotation et le compte d'amortissement."""
         regle = self.db.query(RegleAmortissement).filter(
             RegleAmortissement.categorie_bien == categorie,
             RegleAmortissement.est_active == True
         ).first()
-        
+
         if regle and regle.compte_dotation and regle.compte_amortissement:
             return (regle.compte_dotation, regle.compte_amortissement)
-        
-        # Fallback avec les comptes par défaut
+
         compte_map = {
             "vehicule": ("6812", "2845"),
             "ordinateur": ("6812", "2843"),
@@ -81,17 +145,8 @@ class ComptabiliteService:
         }
         return compte_map.get(categorie, ("6812", "2840"))
 
-    def _get_default_compte(self, categorie: str) -> str:
-        compte_map = {
-            "vehicule": "2845",
-            "ordinateur": "2843",
-            "machine": "2841",
-            "mobilier": "2848"
-        }
-        return compte_map.get(categorie, "2840")
-
     def _get_compte_amortissement_credit(self, type_bien: str) -> str:
-        """Compte d'amortissement crédit pour cession"""
+        """Compte d'amortissement crédit pour cession."""
         compte_map = {
             "vehicule": "2845",
             "ordinateur": "2843",
@@ -101,14 +156,24 @@ class ComptabiliteService:
         return compte_map.get(type_bien, "2840")
 
     def _calculer_vnc(self, bien: Bien) -> float:
+        """Calcule la Valeur Nette Comptable d'un bien."""
         brut = float(bien.prix_acquisition or 0)
         cumul_amo = float(bien.cumul_amortissement or 0)
         cumul_dep = float(bien.cumul_depreciation or 0)
         return self._round(max(0, brut - cumul_amo - cumul_dep))
 
+    def _get_bien_designation(self, bien: Bien) -> str:
+        """Récupère la désignation du bien."""
+        if hasattr(bien, 'marque') and bien.marque:
+            return f"{bien.marque} {getattr(bien, 'modele', '')}".strip()
+        if hasattr(bien, 'fabricant') and bien.fabricant:
+            return f"{bien.fabricant} {getattr(bien, 'modele', '')}".strip()
+        return f"Bien #{bien.id_bien}"
+
     # ============================================================
     # ÉCRITURE D'ACQUISITION
     # ============================================================
+
     def generer_ecriture_acquisition(self, bien: Bien) -> EcritureComptable:
         """
         Génère l'écriture d'acquisition d'un bien.
@@ -116,18 +181,24 @@ class ComptabiliteService:
         OHADA/SYSCOHADA
         """
         compte_debit = self._get_compte_immobilisation(bien.type_bien or "autre")
-        
-        # Détermination du compte de crédit selon le mode de paiement
+
         if bien.mode_paiement == "comptant":
             compte_credit = "512"  # Banque
         else:
             compte_credit = "481"  # Fournisseur d'investissement
-        
+
         montant = float(bien.prix_acquisition or 0)
         if montant <= 0:
             raise ValueError("Le prix d'acquisition doit être supérieur à 0")
 
-        designation = getattr(bien, "marque", None) or getattr(bien, "fabricant", None) or f"Bien #{bien.id_bien}"
+        # ✅ Vérification de l'équilibre
+        self._verifier_equilibre_simple(
+            compte_debit=compte_debit,
+            compte_credit=compte_credit,
+            montant=Decimal(str(montant))
+        )
+
+        designation = self._get_bien_designation(bien)
 
         ecriture = EcritureComptable(
             id_bien=bien.id_bien,
@@ -147,16 +218,24 @@ class ComptabiliteService:
         self.db.add(ecriture)
         self.db.commit()
         self.db.refresh(ecriture)
-        
+
         return ecriture
 
     # ============================================================
     # ÉCRITURES DE DOTATION
     # ============================================================
+
     def generer_ecriture_dotation(self, amortissement: Amortissement, type_bien: str) -> EcritureComptable:
-        """Génère une écriture de dotation avec statut BROUILLON (non validée)"""
+        """Génère une écriture de dotation avec statut BROUILLON (non validée)."""
         compte_debit, compte_credit = self.get_compte_amortissement_par_categorie(type_bien)
-        
+
+        # ✅ Vérification de l'équilibre
+        self._verifier_equilibre_simple(
+            compte_debit=compte_debit,
+            compte_credit=compte_credit,
+            montant=Decimal(str(amortissement.annuite_comptable))
+        )
+
         details_calcul = {
             "base": amortissement.valeur_origine - amortissement.valeur_residuelle,
             "taux": amortissement.taux_comptable,
@@ -165,7 +244,7 @@ class ComptabiliteService:
             "prorata_mois": getattr(amortissement, 'mois_prorata', None),
             "coefficient": amortissement.coefficient_deg
         }
-        
+
         ecriture = EcritureComptable(
             id_bien=amortissement.id_bien,
             id_amortissement=amortissement.id_amortissement,
@@ -181,17 +260,32 @@ class ComptabiliteService:
             details_calcul=str(details_calcul),
             validee=False
         )
+
         self._appliquer_tracabilite_creation(ecriture, reference_id=amortissement.id_amortissement)
         self.db.add(ecriture)
         self.db.commit()
         self.db.refresh(ecriture)
+
         return ecriture
 
     # ============================================================
     # ÉCRITURES DE DÉPRÉCIATION
     # ============================================================
-    def generer_ecriture_depreciation(self, amortissement: Amortissement, montant_depreciation: float, 
-                                       date_depreciation: datetime) -> EcritureComptable:
+
+    def generer_ecriture_depreciation(
+        self,
+        amortissement: Amortissement,
+        montant_depreciation: float,
+        date_depreciation: datetime
+    ) -> EcritureComptable:
+        """Génère une écriture de dépréciation."""
+        # ✅ Vérification de l'équilibre
+        self._verifier_equilibre_simple(
+            compte_debit="6914",
+            compte_credit="2944",
+            montant=Decimal(str(montant_depreciation))
+        )
+
         ecriture = EcritureComptable(
             id_bien=amortissement.id_bien,
             id_amortissement=amortissement.id_amortissement,
@@ -206,100 +300,18 @@ class ComptabiliteService:
             montant_original=self._round(montant_depreciation),
             validee=False
         )
+
         self._appliquer_tracabilite_creation(ecriture, reference_id=amortissement.id_amortissement)
         self.db.add(ecriture)
         self.db.commit()
         self.db.refresh(ecriture)
+
         return ecriture
 
     # ============================================================
-    # ÉCRITURES DE REPRISE DE DÉPRÉCIATION
+    # ÉCRITURES DE CESSION (AVEC VÉRIFICATION GLOBALE)
     # ============================================================
-    def generer_ecriture_reprise_depreciation(
-        self,
-        bien_id: int,
-        montant_reprise: float,
-        motif: str,
-        depreciation_id: int = None,
-    ) -> EcritureComptable:
-        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
-        if not bien:
-            raise ValueError("Bien non trouvé")
 
-        designation = getattr(bien, "marque", None) or getattr(bien, "fabricant", None) or f"Bien #{bien_id}"
-
-        ecriture = EcritureComptable(
-            id_bien=bien_id,
-            id_amortissement=depreciation_id,
-            date_ecriture=datetime.utcnow(),
-            exercice=datetime.utcnow().year,
-            type_operation=TypeOperationEnum.REPRISE_DEPRECIATION,
-            statut=StatutEcriture.BROUILLON,
-            libelle=f"Reprise dépréciation - {motif} - {designation}",
-            compte_debit="2944",
-            compte_credit="7914",
-            montant=self._round(montant_reprise),
-            montant_original=self._round(montant_reprise),
-            validee=False,
-        )
-
-        self._appliquer_tracabilite_creation(ecriture, reference_id=depreciation_id)
-        self.db.add(ecriture)
-        self.db.flush()
-        return ecriture
-
-    def reprendre_depreciation(
-        self,
-        bien_id: int,
-        montant_reprise: float,
-        motif: str,
-        depreciation_id: int = None,
-    ) -> dict:
-        """
-        Reprend partiellement ou totalement une dépréciation.
-        Génère l'écriture 2944/7914 et met à jour le cumul.
-        """
-        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
-        if not bien:
-            raise ValueError("Bien non trouvé")
-        
-        # Vérifier que la reprise est autorisée
-        if bien.statut_comptable != "EN_DEPRECIATION":
-            raise ValueError("La reprise n'est autorisée que pour les biens en dépréciation")
-
-        cumul_actuel = float(bien.cumul_depreciation or 0)
-        if montant_reprise > cumul_actuel:
-            raise ValueError(
-                f"La reprise ({montant_reprise}) dépasse le cumul des dépréciations ({cumul_actuel})"
-            )
-
-        ecriture = self.generer_ecriture_reprise_depreciation(
-            bien_id, montant_reprise, motif, depreciation_id
-        )
-
-        nouveau_cumul = round(cumul_actuel - montant_reprise, 2)
-        bien.cumul_depreciation = nouveau_cumul
-
-        # Mettre à jour le statut après reprise
-        if nouveau_cumul == 0:
-            has_amort = self.db.query(Amortissement).filter(
-                Amortissement.id_bien == bien_id
-            ).first()
-            bien.statut_comptable = "EN_AMORTISSEMENT" if has_amort else "ACTIF"
-
-        self.db.commit()
-        self.db.refresh(ecriture)
-        self.db.refresh(bien)
-
-        return {
-            "ecriture": ecriture,
-            "nouveau_cumul_depreciation": float(bien.cumul_depreciation),
-            "statut_comptable": bien.statut_comptable,
-        }
-
-    # ============================================================
-    # ÉCRITURES DE CESSION
-    # ============================================================
     def _generer_ecritures_cession(
         self,
         cession: Cession,
@@ -309,10 +321,14 @@ class ComptabiliteService:
         date_ecriture: datetime,
         motif: str = None,
     ) -> List[EcritureComptable]:
-        """Génère les écritures de cession avec distinction courant/non courant"""
-        is_non_courante = cession.type_cession == "non_courante"
+        """
+        Génère les écritures de cession avec distinction courant/non courant.
         
-        # Vérification des comptes selon le type
+        🔴 LE STATUT CEDE N'EST PAS MODIFIÉ ICI
+        🔴 VÉRIFICATION GLOBALE DE L'ÉQUILIBRE AVANT PERSISTANCE
+        """
+        is_non_courante = cession.type_cession == "non_courante"
+
         if is_non_courante:
             compte_vnc = "81"
             compte_produit = "82"
@@ -323,18 +339,18 @@ class ComptabiliteService:
             compte_produit = "754"
             compte_plus_value = "754"
             compte_moins_value = "654"
-        
+
         compte_immobilisation = self._get_compte_immobilisation(bien.type_bien or "autre")
         compte_amort = self._get_compte_amortissement_credit(bien.type_bien or "autre")
         compte_encaissement = "512" if cession.mode_reglement == "comptant" else "411"
 
-        designation = getattr(bien, "marque", None) or getattr(bien, "fabricant", None) or f"Bien #{bien.id_bien}"
+        designation = self._get_bien_designation(bien)
         libelle_base = motif or f"Cession {cession.type_cession} - {designation}"
         ecritures = []
         cumul_amo = float(bien.cumul_amortissement or 0)
         brut = float(bien.prix_acquisition or 0)
 
-        # Reprise des amortissements
+        # 1. Reprise des amortissements
         if cumul_amo > 0:
             ec_amo = EcritureComptable(
                 id_bien=bien.id_bien,
@@ -350,11 +366,11 @@ class ComptabiliteService:
                 validee=False,
             )
             self._appliquer_tracabilite_creation(ec_amo, reference_id=cession.id_cession)
-            self.db.add(ec_amo)
             ecritures.append(ec_amo)
 
-        # Sortie de l'immobilisation
-        if vnc > 0:
+        # 2. Sortie de l'immobilisation
+        vnc_courante = self._round(brut - cumul_amo)
+        if vnc_courante > 0:
             ec_sortie = EcritureComptable(
                 id_bien=bien.id_bien,
                 date_ecriture=date_ecriture,
@@ -364,15 +380,14 @@ class ComptabiliteService:
                 libelle=f"{libelle_base} - Sortie immobilisation",
                 compte_debit=compte_vnc,
                 compte_credit=compte_immobilisation,
-                montant=self._round(vnc if cumul_amo == 0 else brut - cumul_amo),
-                montant_original=self._round(vnc if cumul_amo == 0 else brut - cumul_amo),
+                montant=vnc_courante,
+                montant_original=vnc_courante,
                 validee=False,
             )
             self._appliquer_tracabilite_creation(ec_sortie, reference_id=cession.id_cession)
-            self.db.add(ec_sortie)
             ecritures.append(ec_sortie)
 
-        # Produit de cession
+        # 3. Produit de cession
         if prix_vente > 0:
             ec_vente = EcritureComptable(
                 id_bien=bien.id_bien,
@@ -388,10 +403,9 @@ class ComptabiliteService:
                 validee=False,
             )
             self._appliquer_tracabilite_creation(ec_vente, reference_id=cession.id_cession)
-            self.db.add(ec_vente)
             ecritures.append(ec_vente)
 
-        # Résultat de cession (plus-value ou moins-value)
+        # 4. Résultat de cession (plus-value ou moins-value)
         resultat = float(cession.resultat or 0)
         if resultat > 0:
             ec_res = EcritureComptable(
@@ -408,7 +422,6 @@ class ComptabiliteService:
                 validee=False,
             )
             self._appliquer_tracabilite_creation(ec_res, reference_id=cession.id_cession)
-            self.db.add(ec_res)
             ecritures.append(ec_res)
         elif resultat < 0:
             ec_res = EcritureComptable(
@@ -425,140 +438,113 @@ class ComptabiliteService:
                 validee=False,
             )
             self._appliquer_tracabilite_creation(ec_res, reference_id=cession.id_cession)
-            self.db.add(ec_res)
             ecritures.append(ec_res)
+
+        # 🔴 VÉRIFICATION GLOBALE DE L'ÉQUILIBRE AVANT PERSISTANCE
+        self._verifier_equilibre(ecritures)
 
         return ecritures
 
+    # ============================================================
+    # MÉTHODE ENREGISTRER_CESSION – DÉPRÉCIÉE
+    # ============================================================
+
     def enregistrer_cession(self, data: CessionCreate) -> tuple:
-        """Enregistre la cession et met à jour le statut comptable"""
-        bien = self.db.query(Bien).filter(Bien.id_bien == data.id_bien).first()
-        if not bien:
-            raise ValueError("Bien non trouvé")
-        
-        # Vérifier que la cession est autorisée
-        if bien.statut_comptable in ["CEDE", "MIS_AU_REBUT"]:
-            raise ValueError(f"Impossible de céder un bien déjà {bien.statut_comptable}")
+        """
+        🔴 MÉTHODE DÉPRÉCIÉE
 
-        prix_vente = float(data.prix_vente)
-        vnc = data.valeur_nette_comptable if data.valeur_nette_comptable is not None else self._calculer_vnc(bien)
-        resultat = self._round(prix_vente - vnc)
+        Cette méthode changeait incorrectement le statut du bien à CEDE
+        lors de la création de la cession.
 
-        cession = Cession(
-            id_bien=data.id_bien,
-            date_cession=data.date_cession,
-            prix_vente=prix_vente,
-            acheteur=data.acheteur,
-            mode_reglement=data.mode_reglement,
-            type_cession=data.type_cession,
-            resultat=resultat,
+        Le statut CEDE est désormais géré UNIQUEMENT par ValidationService
+        lors de la validation de l'encaissement par le caissier.
+
+        Utiliser ValidationService.valider_cession() à l'étape CAISSE.
+        """
+        logger.error(
+            "ComptabiliteService.enregistrer_cession est DÉPRÉCIÉE et ne doit "
+            "plus être utilisée. Le statut CEDE est géré par ValidationService."
         )
-        self.db.add(cession)
-        self.db.flush()
-
-        date_ecriture = datetime.combine(data.date_cession, datetime.min.time())
-        ecritures = self._generer_ecritures_cession(cession, bien, vnc, prix_vente, date_ecriture, data.motif)
-
-        # Mettre à jour le statut et la date de sortie
-        bien.statut_comptable = "CEDE"
-        bien.date_sortie = date_ecriture
-
-        self.db.commit()
-        self.db.refresh(cession)
-        return cession, ecritures
-
-    # ============================================================
-    # ÉCRITURES DE REBUT
-    # ============================================================
-    def enregistrer_rebut(self, data: RebutCreate) -> List[EcritureComptable]:
-        """Enregistre le rebut et met à jour le statut comptable"""
-        bien = self.db.query(Bien).filter(Bien.id_bien == data.id_bien).first()
-        if not bien:
-            raise ValueError("Bien non trouvé")
-        
-        # Vérifier que le rebut est autorisé
-        if bien.statut_comptable in ["CEDE", "MIS_AU_REBUT"]:
-            raise ValueError(f"Impossible de mettre au rebut un bien déjà {bien.statut_comptable}")
-
-        date_rebut = data.date_rebut or datetime.utcnow().date()
-        date_ecriture = datetime.combine(date_rebut, datetime.min.time())
-        vnc = self._calculer_vnc(bien)
-        compte_immobilisation = self._get_compte_immobilisation(bien.type_bien or "autre")
-
-        ecriture = EcritureComptable(
-            id_bien=bien.id_bien,
-            date_ecriture=date_ecriture,
-            exercice=date_ecriture.year,
-            type_operation=TypeOperationEnum.CESSION,
-            statut=StatutEcriture.BROUILLON,
-            libelle=f"Mise au rebut - {data.motif}",
-            compte_debit="654",
-            compte_credit=compte_immobilisation,
-            montant=self._round(vnc),
-            montant_original=self._round(vnc),
-            validee=False,
+        raise RuntimeError(
+            "Méthode dépréciée. Le statut CEDE est géré par ValidationService."
         )
-        self._appliquer_tracabilite_creation(ecriture, reference_id=bien.id_bien)
-        self.db.add(ecriture)
-
-        bien.statut_comptable = "MIS_AU_REBUT"
-        bien.date_sortie = date_ecriture
-
-        self.db.commit()
-        self.db.refresh(ecriture)
-        return [ecriture]
 
     # ============================================================
     # MÉTHODES DE GESTION DES ÉCRITURES
     # ============================================================
-    def modifier_montant_ecriture(self, id_ecriture: int, nouveau_montant: float, motif: str, id_modificateur: int) -> Optional[EcritureComptable]:
-        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_ecriture == id_ecriture).first()
+
+    def modifier_montant_ecriture(
+        self,
+        id_ecriture: int,
+        nouveau_montant: float,
+        motif: str,
+        id_modificateur: int
+    ) -> Optional[EcritureComptable]:
+        """Modifie le montant d'une écriture (si non validée)."""
+        ecriture = self.db.query(EcritureComptable).filter(
+            EcritureComptable.id_ecriture == id_ecriture
+        ).first()
+
         if not ecriture or ecriture.validee:
             return None
-        
+
+        # ✅ Vérification que le nouveau montant est positif
+        if nouveau_montant <= 0:
+            raise ValueError("Le nouveau montant doit être strictement positif")
+
         ecriture.montant_original = ecriture.montant
         ecriture.montant = self._round(nouveau_montant)
         ecriture.motif_modification = motif
         ecriture.id_modificateur = id_modificateur
         ecriture.date_modification = datetime.utcnow()
-        
+
         self.db.commit()
         self.db.refresh(ecriture)
+
         return ecriture
 
     def valider_ecriture(self, id_ecriture: int, id_validateur: int) -> Optional[EcritureComptable]:
-        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_ecriture == id_ecriture).first()
+        """Valide une écriture comptable."""
+        ecriture = self.db.query(EcritureComptable).filter(
+            EcritureComptable.id_ecriture == id_ecriture
+        ).first()
+
         if not ecriture or ecriture.validee:
             return None
-        
+
         ecriture.validee = True
         ecriture.statut = StatutEcriture.VALIDEE
         ecriture.date_validation = datetime.utcnow()
         ecriture.valide_par = id_validateur
         ecriture.id_validateur = id_validateur
-        
+
         if ecriture.id_amortissement:
-            amort = self.db.query(Amortissement).filter(Amortissement.id_amortissement == ecriture.id_amortissement).first()
+            amort = self.db.query(Amortissement).filter(
+                Amortissement.id_amortissement == ecriture.id_amortissement
+            ).first()
             if amort:
                 amort.statut = StatutAmortissement.EN_COURS
-        
+
         self.db.commit()
         self.db.refresh(ecriture)
+
         return ecriture
 
     def get_ecritures_en_attente(self) -> List[EcritureComptable]:
+        """Récupère les écritures en attente de validation."""
         return self.db.query(EcritureComptable).filter(
             EcritureComptable.validee == False,
             EcritureComptable.statut == StatutEcriture.BROUILLON
         ).order_by(EcritureComptable.date_ecriture.asc()).all()
 
     def get_ecritures_du_jour(self, date_jour: datetime = None) -> List[EcritureComptable]:
+        """Récupère les écritures validées du jour."""
         if not date_jour:
             date_jour = datetime.utcnow()
-        
+
         debut_jour = datetime(date_jour.year, date_jour.month, date_jour.day)
         fin_jour = datetime(date_jour.year, date_jour.month, date_jour.day, 23, 59, 59)
-        
+
         return self.db.query(EcritureComptable).filter(
             EcritureComptable.date_ecriture.between(debut_jour, fin_jour),
             EcritureComptable.validee == True

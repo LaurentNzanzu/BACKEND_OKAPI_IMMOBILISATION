@@ -1,13 +1,17 @@
-from pydantic import BaseModel, ConfigDict
+# app/schemas/ecriture_comptable.py
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from datetime import datetime
 from typing import Optional
 from enum import Enum
+
 
 class StatutEcritureEnum(str, Enum):
     BROUILLON = "BROUILLON"
     VALIDEE = "VALIDEE"
     REJETEE = "REJETEE"
     MODIFIEE = "MODIFIEE"
+    EN_ATTENTE_PAIEMENT = "EN_ATTENTE_PAIEMENT"
+
 
 class TypeOpEnum(str, Enum):
     DOTATION_AMORTISSEMENT = "DOTATION_AMORTISSEMENT"
@@ -16,18 +20,39 @@ class TypeOpEnum(str, Enum):
     REPRISE = "REPRISE"
     REPRISE_DEPRECIATION = "REPRISE_DEPRECIATION"
     DEPRECIATION = "DEPRECIATION"
+    DECAISSEMENT = "DECAISSEMENT"
+
 
 class EcritureCreate(BaseModel):
-    id_bien: int
-    id_amortissement: Optional[int] = None
+    id_bien: int = Field(..., gt=0)
+    id_amortissement: Optional[int] = Field(None, gt=0)
     type_operation: TypeOpEnum
-    compte_debit: str
-    compte_credit: str
-    montant: float
-    piece_justificative: Optional[str] = None
-    libelle: Optional[str] = None
+    compte_debit: str = Field(..., min_length=3, max_length=20, description="Compte SYSCOHADA débité")
+    compte_credit: str = Field(..., min_length=3, max_length=20, description="Compte SYSCOHADA crédité")
+    montant: float = Field(..., gt=0, description="Montant strictement positif")
+    piece_justificative: Optional[str] = Field(None, max_length=100)
+    libelle: Optional[str] = Field(None, max_length=500)
     date_ecriture: datetime
-    exercice: int
+    exercice: int = Field(..., ge=2000, le=2100)
+
+    @field_validator('compte_debit', 'compte_credit')
+    @classmethod
+    def validate_compte_syscohada(cls, v):
+        if not v or len(v.strip()) < 3:
+            raise ValueError("Le compte SYSCOHADA doit avoir au moins 3 caractères")
+        if not v.strip().isdigit():
+            raise ValueError("Le compte SYSCOHADA doit être numérique")
+        return v.strip()
+
+    @model_validator(mode='after')
+    def validate_equilibre(self):
+        if self.compte_debit == self.compte_credit:
+            raise ValueError("Les comptes débit et crédit doivent être différents")
+        if self.compte_debit == self.compte_credit:
+            # Les comptes sont déjà distincts
+            pass
+        return self
+
 
 class EcritureResponse(BaseModel):
     id_ecriture: int
@@ -43,7 +68,7 @@ class EcritureResponse(BaseModel):
     validee: bool
     date_ecriture: datetime
     date_creation: Optional[datetime] = None
-    date_validation: Optional[datetime]
+    date_validation: Optional[datetime] = None
     exercice: Optional[int] = None
     journal: Optional[str] = None
     periode_comptable: Optional[str] = None

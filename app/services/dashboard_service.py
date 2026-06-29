@@ -13,31 +13,49 @@ class DashboardService:
         self.db = db
 
     def get_global_summary(self) -> dict:
-        total_biens = self.db.query(func.count(Bien.id_bien)).scalar() or 0
+        from ..core.redis import CacheService
+        from ..core.database import LocalCache
+        from sqlalchemy import text
 
-        statuts_panne_en_cours = [
-            StatutPanne.DECLAREE,
-            StatutPanne.DIAGNOSTIQUEE,
-            StatutPanne.EN_ATTENTE_PIECES,
-            StatutPanne.EN_VALIDATION,
-            StatutPanne.EN_COURS
-        ]
-        pannes_en_cours = self.db.query(func.count(Panne.id_panne)).filter(
-            Panne.statut.in_(statuts_panne_en_cours)
-        ).scalar() or 0
+        cache_key = "dashboard:global_summary"
+        cached_data = LocalCache.get(cache_key) or CacheService.get(cache_key)
+        if cached_data:
+            return cached_data
 
-        stats_biens = self.db.query(
-            Bien.type_bien,
-            func.count(Bien.id_bien)
-        ).group_by(Bien.type_bien).all()
+        # 🔴 UNE SEULE requête CTE qui regroupe tout pour éviter la latence réseau
+        result = self.db.execute(
+            text("""
+                WITH 
+                stats_totaux AS (
+                    SELECT COUNT(*) as total_biens FROM biens
+                ),
+                stats_pannes AS (
+                    SELECT COUNT(*) as pannes_en_cours 
+                    FROM pannes 
+                    WHERE statut IN ('DECLAREE', 'DIAGNOSTIQUEE', 'EN_ATTENTE_PIECES', 'EN_VALIDATION', 'EN_COURS')
+                ),
+                stats_types AS (
+                    SELECT type_bien, COUNT(*) as count 
+                    FROM biens 
+                    GROUP BY type_bien
+                )
+                SELECT 
+                    (SELECT total_biens FROM stats_totaux) as total_biens,
+                    (SELECT pannes_en_cours FROM stats_pannes) as pannes_en_cours,
+                    json_object_agg(COALESCE(type_bien, 'AUTRE'), count) as statistiques_biens
+                FROM stats_types
+            """)
+        ).mappings().first()
 
-        statistiques_biens = {row[0]: row[1] for row in stats_biens}
-
-        return {
-            "total_biens": total_biens,
-            "pannes_en_cours": pannes_en_cours,
-            "statistiques_biens": statistiques_biens
+        summary = {
+            "total_biens": result["total_biens"] if result else 0,
+            "pannes_en_cours": result["pannes_en_cours"] if result else 0,
+            "statistiques_biens": result["statistiques_biens"] if result and result["statistiques_biens"] else {}
         }
+
+        LocalCache.set(cache_key, summary, ttl_seconds=600)
+        CacheService.set(cache_key, summary, ttl=600)
+        return summary
 
     # Les méthodes suivantes seront décommentées quand la table dashboard_widgets existera
     """

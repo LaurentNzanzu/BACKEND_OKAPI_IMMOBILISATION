@@ -1,5 +1,5 @@
 # backend/app/models/maintenance.py
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Enum as SQLEnum, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
@@ -9,6 +9,11 @@ class TypeMaintenance(enum.Enum):
     PREVENTIVE = "PREVENTIVE"
     CORRECTIVE = "CORRECTIVE"
     PREDICTIVE = "PREDICTIVE"
+    CURATIVE = "CURATIVE"
+
+class TypeOrigineMaintenance(enum.Enum):
+    AUTO = "AUTO"  # Généré automatiquement
+    MANUEL = "MANUEL"  # Créé manuellement
 
 class StatutMaintenance(enum.Enum):
     PLANIFIEE = "PLANIFIEE"
@@ -36,10 +41,18 @@ class Maintenance(Base):
     pieces_remplacees = Column(Text, nullable=True)
     rapport = Column(Text, nullable=True)
     date_creation = Column(DateTime, default=datetime.utcnow)
-
+    
+    # === NOUVEAUX CHAMPS TÂCHE 3 ===
+    origine = Column(SQLEnum(TypeOrigineMaintenance), default=TypeOrigineMaintenance.MANUEL)
+    alerte_vnc_id = Column(Integer, ForeignKey("alertes_vnc.id", ondelete="SET NULL"), nullable=True)
+    score_fiabilite_depart = Column(Float, nullable=True, comment="Score qui a déclenché la maintenance")
+    a_genere_alerte = Column(Boolean, default=False, comment="True si cette maintenance a généré une alerte")
+    
+    # Relations
     bien = relationship("Bien", back_populates="maintenances")
     panne = relationship("Panne", back_populates="maintenances")
     technicien = relationship("Utilisateur", foreign_keys=[id_technicien])
+    alerte_vnc = relationship("AlerteVNC", foreign_keys=[alerte_vnc_id])
 
     def calculer_duree(self) -> int:
         if self.date_debut_reelle and self.date_fin_reelle:
@@ -52,7 +65,6 @@ class Maintenance(Base):
             return max(0, delta.days)
         return 0
 
-    # ✅ CORRECTION: Ajouter @property
     @property
     def est_en_retard(self) -> bool:
         """Retourne True si la maintenance planifiée est en retard"""
@@ -77,3 +89,7 @@ class Maintenance(Base):
         self.date_planifiee = nouvelle_date
         if motif:
             self.observation = motif
+    
+    def generer_alerte(self):
+        """Marque cette maintenance comme ayant généré une alerte"""
+        self.a_genere_alerte = True

@@ -1,67 +1,84 @@
-from pydantic import BaseModel, Field, ConfigDict, computed_field
-from datetime import datetime
+# app/schemas/besoin.py
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
-from enum import Enum
+from datetime import datetime
+from .piece_rechange import PieceRechangeResponse
 
-class StatutBesoinEnum(str, Enum):
-    BROUILLON = "BROUILLON"
-    EN_VALIDATION = "EN_VALIDATION"
-    DG_VALIDE = "DG_VALIDE"
-    COMPTABLE_VALIDE = "COMPTABLE_VALIDE"
-    CAISSE_VALIDE = "CAISSE_VALIDE"
-    REJETE = "REJETE"
-    APPROUVEE = "APPROUVEE"
-    ATTENTE_STOCK = "ATTENTE_STOCK"
 
 class LigneBesoinCreate(BaseModel):
-    id_piece: int
-    quantite: int = Field(..., ge=1)
+    id_piece: Optional[int] = Field(None, gt=0)
+    designation: Optional[str] = None
+    prix_unitaire: Optional[float] = Field(None, gt=0)
+    quantite: int = Field(..., gt=0)
 
-class BesoinCreate(BaseModel):
-    id_panne: int
-    observations: Optional[str] = None
-    lignes: List[LigneBesoinCreate] = Field(..., min_length=1)
+    @model_validator(mode='after')
+    def check_hors_catalogue_fields(self):
+        if self.id_piece is None:
+            if not self.designation or not str(self.designation).strip():
+                raise ValueError('La désignation est obligatoire pour une pièce hors catalogue')
+            if self.prix_unitaire is None or self.prix_unitaire <= 0:
+                raise ValueError('Le prix unitaire est obligatoire pour une pièce hors catalogue')
+        return self
 
-class BesoinUpdate(BaseModel):
-    observations: Optional[str] = None
-    statut: Optional[StatutBesoinEnum] = None
 
-class LigneBesoinResponse(BaseModel):
+class LigneBesoinRead(BaseModel):
     id_ligne: int
+    id_besoin: int
     id_piece: int
     quantite: int
     prix_unitaire: float
     prix_total: float
-    
-    # ✅ Champs calculés via computed_field pour accéder aux données de la pièce
-    @computed_field
-    @property
-    def reference_piece(self) -> Optional[str]:
-        if hasattr(self, 'piece') and self.piece:
-            return self.piece.reference
-        return None
-    
-    @computed_field
-    @property
-    def designation_piece(self) -> Optional[str]:
-        if hasattr(self, 'piece') and self.piece:
-            return self.piece.designation
-        return None
+    est_hors_catalogue: bool
+    piece: Optional[PieceRechangeResponse] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        from_attributes = True
+
+
+class BesoinCreate(BaseModel):
+    id_panne: int = Field(..., gt=0)
+    id_budget: Optional[int] = Field(None, description="ID du budget associé")
+    centre_cout: Optional[str] = Field(None, description="Code ou nom du centre de coût")
+    date_limite: Optional[datetime] = Field(None, description="Date limite de traitement du besoin")
+    lignes: List[LigneBesoinCreate] = Field(..., min_length=1)
+
+    @model_validator(mode='after')
+    def validate_dates(self):
+        if self.date_limite:
+            now = datetime.now()
+            if self.date_limite < now:
+                raise ValueError("La date limite ne peut être dans le passé")
+        return self
+
+
+class BesoinUpdate(BaseModel):
+    statut: Optional[str] = None
+    id_budget: Optional[int] = None
+    centre_cout: Optional[str] = None
+
 
 class BesoinResponse(BaseModel):
     id_besoin: int
     id_panne: int
     numero_demande: str
-    date_creation: datetime
     montant_total: float
-    statut: StatutBesoinEnum
-    observations: Optional[str] = None
-    lignes: List[LigneBesoinResponse]
-    
-    model_config = ConfigDict(from_attributes=True)
+    statut: str
+    id_budget: Optional[int] = None
+    centre_cout: Optional[str] = None
+    date_creation: datetime
+    date_limite: Optional[datetime] = None
+    lignes: List[LigneBesoinRead] = []
+
+    class Config:
+        from_attributes = True
+
 
 class AjoutLigneRequest(BaseModel):
     id_piece: int = Field(..., gt=0)
-    quantite: int = Field(..., ge=1)
+    quantite: int = Field(..., gt=0)
+
+
+class AjoutLigneHorsCatalogueRequest(BaseModel):
+    designation: str = Field(..., min_length=1)
+    prix_unitaire: float = Field(..., gt=0)
+    quantite: int = Field(..., gt=0)

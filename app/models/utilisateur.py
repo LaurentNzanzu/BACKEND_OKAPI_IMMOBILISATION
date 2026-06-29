@@ -41,6 +41,11 @@ class Utilisateur(Base):
 
     # === Relations ===
     role = relationship("Role", back_populates="utilisateurs")
+
+    @property
+    def nom_complet(self) -> str:
+        parts = [self.prenom, self.nom, self.post_nom]
+        return " ".join([p for p in parts if p]).strip()
     # Dans backend/app/models/utilisateur.py, ajouter :
     #audit_logs = relationship("AuditLog", back_populates="utilisateur", lazy="select")
     

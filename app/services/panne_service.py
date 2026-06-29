@@ -8,18 +8,44 @@ from ..models.maintenance import Maintenance, TypeMaintenance, StatutMaintenance
 from ..models.utilisateur import Utilisateur
 from ..models.role import Role
 from ..models.notification import TypeNotificationEnum
-from ..schemas.panne import PanneCreate, PanneUpdate
+from ..schemas.panne import PanneCreate, PanneUpdate, PanneResponse, DemandeurBrief
 from .bien_service import BienService
 from .notification_service import NotificationService
 from .audit_service import AuditService
 
 
 def _bien_designation(bien: Bien) -> str:
+    if bien.description:
+        return bien.description
     label = (
         f"{getattr(bien, 'marque', None) or getattr(bien, 'fabricant', None) or ''} "
         f"{getattr(bien, 'modele', '')}"
     ).strip()
     return label or f"Bien #{bien.id_bien}"
+
+
+def panne_to_response(panne: Panne) -> PanneResponse:
+    technicien = panne.technicien
+    demandeur = DemandeurBrief(
+        prenom=technicien.prenom if technicien else "",
+        nom=technicien.nom if technicien else "",
+    )
+    return PanneResponse(
+        id_panne=panne.id_panne,
+        id_bien=panne.id_bien,
+        demandeur=demandeur,
+        type_panne=panne.type_panne,
+        type_panne_personnalise=panne.type_panne_personnalise,
+        priorite=panne.priorite,
+        diagnostic=panne.diagnostic,
+        date_declaration=panne.date_declaration,
+        date_debut=panne.date_debut,
+        date_fin=panne.date_fin,
+        statut=panne.statut,
+        cout_total_reparation=panne.cout_total_reparation or 0.0,
+        solution_apportee=panne.solution_apportee,
+        duree_jours=panne.calculer_duree() if panne.date_debut and panne.date_fin else None,
+    )
 
 
 class PanneService:
@@ -43,9 +69,10 @@ class PanneService:
         return technicien
 
     def _creer_maintenance_corrective(self, panne: Panne, id_technicien: int) -> Maintenance:
+        desc_source = panne.diagnostic or panne.type_panne_personnalise or panne.type_panne.value
         description = (
             f"Maintenance corrective suite à la panne #{panne.id_panne} - "
-            f"{panne.description[:200]}"
+            f"{desc_source[:200]}"
         )
         maintenance = Maintenance(
             id_bien=panne.id_bien,
@@ -60,6 +87,9 @@ class PanneService:
         self.db.add(maintenance)
         return maintenance
 
+    def _query_pannes_with_technicien(self):
+        return self.db.query(Panne).options(joinedload(Panne.technicien))
+
     def declarer_panne(self, data: PanneCreate, id_technicien: int) -> Panne:
         self._verifier_technicien(id_technicien)
 
@@ -71,13 +101,17 @@ class PanneService:
         if bien.etat == EtatBien.REFORME:
             raise ValueError("Une panne ne peut pas être déclarée sur un bien réformé")
 
+        if not data.diagnostic or len(data.diagnostic.strip()) < 5:
+            raise ValueError("Le diagnostic du technicien est obligatoire (minimum 5 caractères)")
+
         try:
             panne = Panne(
                 id_bien=data.id_bien,
                 id_technicien=id_technicien,
                 type_panne=data.type_panne,
+                type_panne_personnalise=data.type_panne_personnalise,
                 priorite=data.priorite,
-                description=data.description,
+                description=data.diagnostic,
                 diagnostic=data.diagnostic,
                 statut=StatutPanne.DECLAREE,
                 date_declaration=datetime.utcnow(),
@@ -126,7 +160,7 @@ class PanneService:
                     lien=f"/pannes/{panne.id_panne}",
                 )
 
-            return panne
+            return self._query_pannes_with_technicien().filter(Panne.id_panne == panne.id_panne).first()
         except Exception:
             self.db.rollback()
             raise
@@ -135,7 +169,7 @@ class PanneService:
         self._verifier_technicien(id_technicien)
 
         panne = (
-            self.db.query(Panne)
+            self._query_pannes_with_technicien()
             .options(joinedload(Panne.bien), joinedload(Panne.maintenances))
             .filter(Panne.id_panne == id_panne)
             .first()
@@ -202,16 +236,21 @@ class PanneService:
             raise
 
     def get_pannes_by_bien(self, id_bien: int) -> List[Panne]:
-        return self.db.query(Panne).filter(Panne.id_bien == id_bien).order_by(Panne.date_declaration.desc()).all()
+        return (
+            self._query_pannes_with_technicien()
+            .filter(Panne.id_bien == id_bien)
+            .order_by(Panne.date_declaration.desc())
+            .all()
+        )
 
     def get_pannes_by_technicien(self, id_technicien: int, statut: Optional[str] = None) -> List[Panne]:
-        query = self.db.query(Panne).filter(Panne.id_technicien == id_technicien)
+        query = self._query_pannes_with_technicien().filter(Panne.id_technicien == id_technicien)
         if statut:
             query = query.filter(Panne.statut == statut)
         return query.order_by(Panne.priorite.desc(), Panne.date_declaration.asc()).all()
 
     def get_panne(self, id_panne: int) -> Optional[Panne]:
-        return self.db.query(Panne).filter(Panne.id_panne == id_panne).first()
+        return self._query_pannes_with_technicien().filter(Panne.id_panne == id_panne).first()
 
     def update_panne(self, id_panne: int, data: PanneUpdate) -> Optional[Panne]:
         panne = self.get_panne(id_panne)
@@ -234,16 +273,21 @@ class PanneService:
         return panne
 
     def get_pannes_actives(self) -> List[Panne]:
-        return self.db.query(Panne).filter(
-            Panne.statut.in_([
-                StatutPanne.DECLAREE,
-                StatutPanne.DIAGNOSTIQUEE,
-                StatutPanne.EN_ATTENTE_PIECES,
-                StatutPanne.EN_VALIDATION,
-                StatutPanne.EN_COURS,
-                StatutPanne.EN_TEST,
-            ])
-        ).order_by(Panne.priorite.desc(), Panne.date_declaration.asc()).all()
+        return (
+            self._query_pannes_with_technicien()
+            .filter(
+                Panne.statut.in_([
+                    StatutPanne.DECLAREE,
+                    StatutPanne.DIAGNOSTIQUEE,
+                    StatutPanne.EN_ATTENTE_PIECES,
+                    StatutPanne.EN_VALIDATION,
+                    StatutPanne.EN_COURS,
+                    StatutPanne.EN_TEST,
+                ])
+            )
+            .order_by(Panne.priorite.desc(), Panne.date_declaration.asc())
+            .all()
+        )
 
     def get_statistiques(self, id_bien: Optional[int] = None) -> dict:
         query = self.db.query(Panne)
