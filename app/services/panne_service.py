@@ -30,9 +30,11 @@ def panne_to_response(panne: Panne) -> PanneResponse:
         prenom=technicien.prenom if technicien else "",
         nom=technicien.nom if technicien else "",
     )
+    bien_designation = _bien_designation(panne.bien) if panne.bien else None
     return PanneResponse(
         id_panne=panne.id_panne,
         id_bien=panne.id_bien,
+        bien_designation=bien_designation,
         demandeur=demandeur,
         type_panne=panne.type_panne,
         type_panne_personnalise=panne.type_panne_personnalise,
@@ -88,7 +90,7 @@ class PanneService:
         return maintenance
 
     def _query_pannes_with_technicien(self):
-        return self.db.query(Panne).options(joinedload(Panne.technicien))
+        return self.db.query(Panne).options(joinedload(Panne.technicien), joinedload(Panne.bien))
 
     def declarer_panne(self, data: PanneCreate, id_technicien: int) -> Panne:
         self._verifier_technicien(id_technicien)

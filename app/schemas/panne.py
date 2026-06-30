@@ -68,6 +68,7 @@ class PanneUpdate(BaseModel):
 class PanneResponse(BaseModel):
     id_panne: int
     id_bien: int
+    bien_designation: Optional[str] = None
     demandeur: DemandeurBrief
     type_panne: TypePanneEnum
     type_panne_personnalise: Optional[str] = None
