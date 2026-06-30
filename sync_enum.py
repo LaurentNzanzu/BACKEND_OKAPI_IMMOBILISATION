@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, text
 from app.core.config import settings
 
 engine = create_engine(settings.DATABASE_URL)
-
+#tbc
 with engine.connect() as conn:
     # 1. Mettre à jour les données existantes
     print("Mise à jour des données existantes...")
