@@ -61,13 +61,13 @@ jobs:
 
           cd /var/www/BACKEND_OKAPI_IMMOBILISATION
 
-          echo "Vérification du .env..."
+          echo "Vérification du fichier .env..."
           if [ ! -f .env ]; then
-            echo "ERREUR: fichier .env absent sur le VPS."
+            echo "ERREUR: le fichier .env est absent sur le VPS."
             exit 1
           fi
 
-          echo "Préparation Python..."
+          echo "Préparation de l'environnement Python..."
           if [ ! -d "venv" ]; then
             python3 -m venv venv
           fi
@@ -76,28 +76,13 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-          echo "Vérification PM2..."
+          echo "Vérification ecosystem.config.js..."
           if [ ! -f ecosystem.config.js ]; then
-            cat > ecosystem.config.js <<'EOC'
-          module.exports = {
-            apps: [
-              {
-                name: "okapi-backend",
-                cwd: "/var/www/BACKEND_OKAPI_IMMOBILISATION",
-                script: "/var/www/BACKEND_OKAPI_IMMOBILISATION/venv/bin/uvicorn",
-                args: "app.main:app --host 127.0.0.1 --port 8000",
-                interpreter: "none",
-                env: {
-                  ENV: "production",
-                  ENVIRONMENT: "production"
-                }
-              }
-            ]
-          };
-          EOC
+            echo "ERREUR: ecosystem.config.js est absent sur le VPS."
+            exit 1
           fi
 
-          echo "Redémarrage backend..."
+          echo "Redémarrage backend avec PM2..."
           if pm2 describe okapi-backend > /dev/null; then
             pm2 restart okapi-backend --update-env
           else
@@ -106,19 +91,22 @@ jobs:
 
           pm2 save --force
 
-echo "Attente du démarrage backend..."
-for i in {1..60}; do
-  if curl -fsS http://127.0.0.1:8000/health; then
-    echo "Backend déployé avec succès."
-    exit 0
-  fi
+          echo "Attente du démarrage backend..."
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health; then
+              echo "Backend local OK."
+              break
+            fi
 
-  echo "Backend pas encore prêt... tentative $i/60"
-  sleep 2
-done
+            echo "Backend pas encore prêt... tentative $i/60"
+            sleep 2
+          done
 
-echo "ERREUR: le backend ne répond pas après attente."
-pm2 list
-pm2 logs okapi-backend --lines 80 --nostream
-sudo lsof -i :8000 || true
-exit 1
+          echo "Vérification finale backend local..."
+          curl -f http://127.0.0.1:8000/health
+
+          echo "Vérification backend public..."
+          curl -f https://tbcgroupe.me/health
+
+          echo "Backend déployé avec succès."
+          EOF
