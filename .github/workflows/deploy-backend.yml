@@ -24,6 +24,11 @@ jobs:
 
             cd /var/www/BACKEND_OKAPI_IMMOBILISATION
 
+            # Reset local changes to avoid merge conflicts
+            echo "🧹 Reset local changes..."
+            git reset --hard
+            git clean -fd
+
             echo "📥 Pull latest code..."
             git pull origin main
 
