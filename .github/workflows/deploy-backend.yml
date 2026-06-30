@@ -1,0 +1,114 @@
+name: Deploy Backend OKAPI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Install rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "${{ secrets.VPS_PORT }}" -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync backend files to VPS
+        run: |
+          BACKUP_DIR="/home/ubuntu/deploy-backups/backend-${{ github.sha }}"
+
+          ssh -i ~/.ssh/vps_key -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "mkdir -p $BACKUP_DIR"
+
+          rsync -az --delete \
+            --backup --backup-dir="$BACKUP_DIR" \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude ".env" \
+            --exclude ".env.*" \
+            --exclude "venv/" \
+            --exclude "__pycache__/" \
+            --exclude "*.pyc" \
+            --exclude ".pytest_cache/" \
+            --exclude "ecosystem.config.js" \
+            --exclude "logs/" \
+            --exclude "uploads/" \
+            --exclude "media/" \
+            --exclude "static/uploads/" \
+            -e "ssh -i ~/.ssh/vps_key -p ${{ secrets.VPS_PORT }}" \
+            ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/BACKEND_OKAPI_IMMOBILISATION/"
+
+      - name: Install dependencies and restart backend
+        run: |
+          ssh -i ~/.ssh/vps_key -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" << 'EOF'
+          set -e
+
+          cd /var/www/BACKEND_OKAPI_IMMOBILISATION
+
+          echo "Vérification du .env..."
+          if [ ! -f .env ]; then
+            echo "ERREUR: fichier .env absent sur le VPS."
+            exit 1
+          fi
+
+          echo "Préparation Python..."
+          if [ ! -d "venv" ]; then
+            python3 -m venv venv
+          fi
+
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+          echo "Vérification PM2..."
+          if [ ! -f ecosystem.config.js ]; then
+            cat > ecosystem.config.js <<'EOC'
+          module.exports = {
+            apps: [
+              {
+                name: "okapi-backend",
+                cwd: "/var/www/BACKEND_OKAPI_IMMOBILISATION",
+                script: "/var/www/BACKEND_OKAPI_IMMOBILISATION/venv/bin/uvicorn",
+                args: "app.main:app --host 127.0.0.1 --port 8000",
+                interpreter: "none",
+                env: {
+                  ENV: "production",
+                  ENVIRONMENT: "production"
+                }
+              }
+            ]
+          };
+          EOC
+          fi
+
+          echo "Redémarrage backend..."
+          if pm2 describe okapi-backend > /dev/null; then
+            pm2 restart okapi-backend --update-env
+          else
+            pm2 start ecosystem.config.js
+          fi
+
+          pm2 save --force
+
+          echo "Test backend..."
+          sleep 5
+          curl -f http://127.0.0.1:8000/health
+
+          echo "Backend déployé avec succès."
+          EOF
