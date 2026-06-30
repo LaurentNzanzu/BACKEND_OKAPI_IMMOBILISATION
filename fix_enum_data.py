@@ -5,6 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import SessionLocal
 from sqlalchemy import text
+#thibaut
 
 def fix_enum_values():
     db = SessionLocal()
