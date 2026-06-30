@@ -893,26 +893,62 @@ class AmortissementService:
         from ..models.ecriture_comptable import EcritureComptable
         
         annee_courante = datetime.utcnow().year
+        
+        # Total amortissements comptables pour l'exercice courant
         total_amort = self.db.query(func.sum(Amortissement.annuite_comptable)).filter(
             Amortissement.exercice == annee_courante
         ).scalar() or 0
         
+        # Fallback si aucun amortissement pour l'année courante mais que des données existent
+        if total_amort == 0:
+            latest_exercice = self.db.query(func.max(Amortissement.exercice)).scalar()
+            if latest_exercice:
+                total_amort = self.db.query(func.sum(Amortissement.annuite_comptable)).filter(
+                    Amortissement.exercice == latest_exercice
+                ).scalar() or 0
+        
+        # Total écarts fiscaux
         total_ecart = self.db.query(func.sum(Amortissement.ecart_a_reintegrer)).filter(
             Amortissement.exercice == annee_courante
         ).scalar() or 0
-        
-        biens_fin_vie = self.db.query(Amortissement).filter(
-            Amortissement.valeur_nette_comptable <= Amortissement.valeur_origine * 0.10,
-            Amortissement.statut == StatutAmortissement.EN_COURS
+        if total_ecart == 0 and total_amort > 0:
+            latest_exercice = self.db.query(func.max(Amortissement.exercice)).scalar()
+            if latest_exercice:
+                total_ecart = self.db.query(func.sum(Amortissement.ecart_a_reintegrer)).filter(
+                    Amortissement.exercice == latest_exercice
+                ).scalar() or 0
+
+        # Total annuités fiscales pour le calcul de l'économie d'impôt (30%)
+        total_fiscal = self.db.query(func.sum(Amortissement.annuite_fiscale)).filter(
+            Amortissement.exercice == annee_courante
+        ).scalar() or 0
+        if total_fiscal == 0 and total_amort > 0:
+            latest_exercice = self.db.query(func.max(Amortissement.exercice)).scalar()
+            if latest_exercice:
+                total_fiscal = self.db.query(func.sum(Amortissement.annuite_fiscale)).filter(
+                    Amortissement.exercice == latest_exercice
+                ).scalar() or 0
+            if total_fiscal == 0:
+                total_fiscal = total_amort
+
+        # Biens en fin de vie (VNC <= 10% de la valeur d'origine)
+        biens_fin_vie_bien = self.db.query(Bien).filter(
+            Bien.prix_acquisition > 0,
+            (Bien.prix_acquisition - Bien.cumul_amortissement) <= Bien.prix_acquisition * 0.10
         ).count()
         
-        sept_jours = datetime.utcnow() - timedelta(days=7)
+        biens_fin_vie_amort = self.db.query(Amortissement).filter(
+            Amortissement.valeur_nette_comptable <= Amortissement.valeur_origine * 0.10
+        ).count()
+        
+        biens_fin_vie = max(biens_fin_vie_bien, biens_fin_vie_amort)
+        
+        # Écritures comptables en attente de validation
         ecritures_attente = self.db.query(EcritureComptable).filter(
-            EcritureComptable.validee == False,
-            EcritureComptable.date_creation <= sept_jours
+            EcritureComptable.validee == False
         ).count()
         
-        economie_impot = total_amort * 0.30
+        economie_impot = float(total_fiscal) * 0.30
         
         repartition = self.db.query(
             Bien.type_bien,
@@ -920,12 +956,12 @@ class AmortissementService:
         ).group_by(Bien.type_bien).all()
         
         return {
-            "total_amortissements_exercice": round(total_amort, 2),
-            "ecart_fiscal_total": round(total_ecart, 2),
+            "total_amortissements_exercice": round(float(total_amort), 2),
+            "ecart_fiscal_total": round(float(total_ecart), 2),
             "biens_fin_vie": biens_fin_vie,
             "ecritures_attente_validation": ecritures_attente,
-            "economie_impot_annuelle": round(economie_impot, 2),
-            "repartition_par_categorie": {t: c for t, c in repartition},
+            "economie_impot_annuelle": round(float(economie_impot), 2),
+            "repartition_par_categorie": {t: c for t, c in repartition if t},
             "annee_courante": annee_courante
         }
 
