@@ -106,9 +106,19 @@ jobs:
 
           pm2 save --force
 
-          echo "Test backend..."
-          sleep 5
-          curl -f http://127.0.0.1:8000/health
+echo "Attente du démarrage backend..."
+for i in {1..60}; do
+  if curl -fsS http://127.0.0.1:8000/health; then
+    echo "Backend déployé avec succès."
+    exit 0
+  fi
 
-          echo "Backend déployé avec succès."
-          EOF
+  echo "Backend pas encore prêt... tentative $i/60"
+  sleep 2
+done
+
+echo "ERREUR: le backend ne répond pas après attente."
+pm2 list
+pm2 logs okapi-backend --lines 80 --nostream
+sudo lsof -i :8000 || true
+exit 1
