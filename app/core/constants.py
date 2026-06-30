@@ -3,6 +3,7 @@
 Fichier de configuration des constantes globales pour l'application.
 Contient les seuils, facteurs de calcul et paramètres de scheduling.
 """
+# bonjour 
 
 # ============================================================
 # SEUILS DE FIABILITÉ - TÂCHE 3
