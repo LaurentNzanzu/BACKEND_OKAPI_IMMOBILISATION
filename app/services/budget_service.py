@@ -189,14 +189,14 @@ class BudgetService:
     def verifier_tresorerie(self, montant: Decimal) -> Dict:
         """
         Vérifie si la trésorerie est suffisante pour un montant donné.
-        Cette méthode sera implémentée avec la vraie logique de trésorerie.
+        Interroge dynamiquement CaisseService.verifier_tresorerie().
         """
-        # TODO: Implémenter la vraie vérification de trésorerie
-        tresorerie_disponible = Decimal('1000000')
-        
+        from .caisse_service import CaisseService
+        caisse_service = CaisseService(self.db)
+        res = caisse_service.verifier_tresorerie(float(montant))
         return {
-            "est_suffisante": tresorerie_disponible >= montant,
-            "tresorerie_disponible": tresorerie_disponible,
+            "est_suffisante": res["est_suffisante"],
+            "tresorerie_disponible": Decimal(str(res["solde_disponible"])),
             "montant_demande": montant,
-            "manque": max(Decimal('0'), montant - tresorerie_disponible)
+            "manque": max(Decimal('0'), montant - Decimal(str(res["solde_disponible"])))
         }

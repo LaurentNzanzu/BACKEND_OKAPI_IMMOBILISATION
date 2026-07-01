@@ -25,6 +25,9 @@ from .roles import router as roles_router
 from .auth import router as auth_router
 from .budgets import router as budgets_router  # NOUVEAU
 from .validations import router as validations_router  # MODIFIÉ
+from .mouvements_caisse import router as mouvements_caisse_router
+from .pieces_justificatives import router as pieces_justificatives_router
+
 
 
 AVAILABLE_ROUTERS: list[str] = [
@@ -54,6 +57,8 @@ AVAILABLE_ROUTERS: list[str] = [
     "auth",
     "budgets",  # NOUVEAU
     "validations",  # MODIFIÉ
+    "mouvements_caisse",
+    "pieces_justificatives",
 ]
 
 
@@ -89,6 +94,8 @@ def get_router(name: str):
         "auth": auth_router,
         "budgets": budgets_router,
         "validations": validations_router,
+        "mouvements_caisse": mouvements_caisse_router,
+        "pieces_justificatives": pieces_justificatives_router,
     }
     return routers.get(name)
 
@@ -147,4 +154,6 @@ __all__ = [
     "auth_router",
     "budgets_router",
     "validations_router",
+    "mouvements_caisse_router",
+    "pieces_justificatives_router",
 ]

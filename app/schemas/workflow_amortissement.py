@@ -1,25 +1,39 @@
 # backend/app/schemas/workflow_amortissement.py
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional, List
 
 
-class VerifierTresorerieRequest(BaseModel):
-    tresorerie_disponible: bool = Field(..., description="Vrai si les fonds physiques sont disponibles en caisse")
-    commentaire: Optional[str] = Field(None, description="Commentaire ou observation du caissier")
+class VerificationTresorerieRequest(BaseModel):
+    tresorerie_disponible: Optional[bool] = None
+    commentaire: Optional[str] = None
 
 
-class ValiderDecaissementRequest(BaseModel):
-    approuve: bool = Field(..., description="Vrai si le DG approuve le décaissement")
-    motif: Optional[str] = Field(None, description="Motif de la décision ou instructions du DG")
+class VerificationTresorerieResponse(BaseModel):
+    est_suffisante: bool
+    solde_disponible: float
+    message: str
+    statut_actuel: str
 
 
-class ValiderEcritureRequest(BaseModel):
-    piece_justificative_url: Optional[str] = Field(None, description="URL de la pièce justificative attachée")
-    commentaire: Optional[str] = Field(None, description="Commentaire final du comptable")
+class ValidationDecaissementRequest(BaseModel):
+    approuve: bool
+    motif: Optional[str] = None
+    commentaire: Optional[str] = None
 
 
-class ValidationWorkflowItem(BaseModel):
+class ValidationDecaissementResponse(BaseModel):
+    statut: str
+    message: str
+    bon_decaissement_url: Optional[str] = None
+
+
+class ValidationEcritureRequest(BaseModel):
+    piece_justificative_url: Optional[str] = None
+    commentaire: Optional[str] = None
+
+
+class WorkflowValidationDetail(BaseModel):
     id_workflow: int
     etape: str
     statut: str
@@ -30,12 +44,9 @@ class ValidationWorkflowItem(BaseModel):
     piece_justificative_url: Optional[str] = None
     bon_decaissement_pdf: Optional[str] = None
 
-    class Config:
-        from_attributes = True
 
-
-class WorkflowStatusResponse(BaseModel):
+class WorkflowAmortissementStatus(BaseModel):
     id_amortissement: int
     etape_actuelle: str
     statut_global: str
-    historique_validations: List[ValidationWorkflowItem]
+    historique_validations: List[WorkflowValidationDetail]

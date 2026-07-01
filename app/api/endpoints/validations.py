@@ -494,3 +494,50 @@ async def rejeter_besoin(  # ✅ async
     except SQLAlchemyError as e:
         logger.error(f"Erreur BDD rejet besoin {besoin_id}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
+
+# backend/app/api/endpoints/validations.py
+
+# Ajouter après les autres endpoints GET
+
+@router.get("/amortissements", response_model=List[dict])
+async def get_amortissements_a_valider(
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère les amortissements en attente de validation.
+    """
+    if not check_validation_permission(current_user, "view"):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    
+    service = ValidationService(db)
+    return service.get_amortissements_en_attente()
+
+@router.get("/amortissements", response_model=List[dict])
+async def get_amortissements_a_valider(
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère les amortissements en attente de validation.
+    """
+    if not check_validation_permission(current_user, "view"):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    
+    service = ValidationService(db)
+    return service.get_amortissements_en_attente()
+
+
+@router.get("/cessions", response_model=List[dict])
+async def get_cessions_a_valider(
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    """
+    Récupère les cessions en attente de validation.
+    """
+    if not check_validation_permission(current_user, "view"):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+    
+    service = ValidationService(db)
+    return service.get_cessions_en_attente()

@@ -385,4 +385,147 @@ def generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif: str = "") 
     
     doc.build(elements)
     buffer.seek(0)
+    return buffer.getvalue()
+
+
+def generer_bec_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> bytes:
+    """Génère un Bon d'Entrée en Caisse (BEC) au format PDF."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5*cm,
+        leftMargin=1.5*cm,
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
+    )
+    styles = getSampleStyleSheet()
+    style_titre = ParagraphStyle(
+        'BecTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        leading=24,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#15803d'),
+        spaceAfter=15
+    )
+    style_label = ParagraphStyle('BecLabel', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold')
+    style_val = ParagraphStyle('BecVal', parent=styles['Normal'], fontSize=11)
+    
+    elements = []
+    elements.append(Paragraph("OKAPI IMMOBILISATIONS", ParagraphStyle('SubHeader', parent=styles['Heading2'], alignment=TA_CENTER, textColor=colors.HexColor('#475569'))))
+    elements.append(Paragraph("BON D'ENTRÉE EN CAISSE", style_titre))
+    elements.append(Paragraph(f"N° : {mouvement.numero_piece} | Date : {mouvement.date_mouvement.strftime('%d/%m/%Y')}", ParagraphStyle('Ref', parent=styles['Normal'], alignment=TA_CENTER, textColor=colors.gray)))
+    elements.append(Spacer(1, 20))
+    
+    table_data = [
+        [Paragraph("Montant en chiffres :", style_label), Paragraph(f"{mouvement.montant:,.2f} {mouvement.caisse.devise if mouvement.caisse else 'USD'}", ParagraphStyle('Mnt', parent=style_val, fontName='Helvetica-Bold'))],
+        [Paragraph("Versé par / Payeur :", style_label), Paragraph(mouvement.beneficiaire or "Non spécifié", style_val)],
+        [Paragraph("Motif de la rentrée :", style_label), Paragraph(mouvement.motif, style_val)],
+        [Paragraph("Mode de règlement :", style_label), Paragraph(mouvement.mode_reglement, style_val)],
+        [Paragraph("Pièce justificative :", style_label), Paragraph(mouvement.piece_jointe_url or "Aucune", style_val)],
+    ]
+    t = Table(table_data, colWidths=[6*cm, 11*cm])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('PADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 25))
+    
+    # Signatures
+    sig_caissier = "En attente..."
+    sig_dg = "En attente..."
+    if mouvement.statut in ['VALIDE', 'VALIDEE']:
+        sig_caissier = f"Signé par : {caissier_nom or 'Caissier'}"
+    if mouvement.piece_justificative and mouvement.piece_justificative.signature_dg:
+        sig_dg = f"Signé par : {dg_nom or 'DG'}"
+        
+    signatures = [
+        [Paragraph("Signature du Caissier", style_label), Paragraph("Signature du DG", style_label)],
+        [Paragraph(sig_caissier, style_val), Paragraph(sig_dg, style_val)]
+    ]
+    tsig = Table(signatures, colWidths=[8.5*cm, 8.5*cm])
+    tsig.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('PADDING', (0, 0), (-1, -1), 10),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#cbd5e1')),
+    ]))
+    elements.append(tsig)
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def generer_bsc_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> bytes:
+    """Génère un Bon de Sortie de Caisse (BSC) au format PDF."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5*cm,
+        leftMargin=1.5*cm,
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
+    )
+    styles = getSampleStyleSheet()
+    style_titre = ParagraphStyle(
+        'BscTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        leading=24,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#b91c1c'),
+        spaceAfter=15
+    )
+    style_label = ParagraphStyle('BscLabel', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold')
+    style_val = ParagraphStyle('BscVal', parent=styles['Normal'], fontSize=11)
+    
+    elements = []
+    elements.append(Paragraph("OKAPI IMMOBILISATIONS", ParagraphStyle('SubHeader', parent=styles['Heading2'], alignment=TA_CENTER, textColor=colors.HexColor('#475569'))))
+    elements.append(Paragraph("BON DE SORTIE DE CAISSE", style_titre))
+    elements.append(Paragraph(f"N° : {mouvement.numero_piece} | Date : {mouvement.date_mouvement.strftime('%d/%m/%Y')}", ParagraphStyle('Ref', parent=styles['Normal'], alignment=TA_CENTER, textColor=colors.gray)))
+    elements.append(Spacer(1, 20))
+    
+    table_data = [
+        [Paragraph("Montant en chiffres :", style_label), Paragraph(f"{mouvement.montant:,.2f} {mouvement.caisse.devise if mouvement.caisse else 'USD'}", ParagraphStyle('Mnt', parent=style_val, fontName='Helvetica-Bold', textColor=colors.HexColor('#b91c1c')))],
+        [Paragraph("Bénéficiaire / Fournisseur :", style_label), Paragraph(mouvement.beneficiaire or "Non spécifié", style_val)],
+        [Paragraph("Motif de la sortie :", style_label), Paragraph(mouvement.motif, style_val)],
+        [Paragraph("Origine :", style_label), Paragraph(mouvement.origine_type, style_val)],
+        [Paragraph("Référence origine :", style_label), Paragraph(str(mouvement.origine_id), style_val)],
+        [Paragraph("Pièce justificative :", style_label), Paragraph(mouvement.piece_jointe_url or "Aucune", style_val)],
+    ]
+    t = Table(table_data, colWidths=[6*cm, 11*cm])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('PADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 25))
+    
+    # Signatures
+    sig_caissier = "En attente..."
+    sig_dg = "En attente..."
+    if mouvement.statut in ['VALIDE', 'VALIDEE']:
+        sig_caissier = f"Signé par : {caissier_nom or 'Caissier'}"
+    if mouvement.piece_justificative and mouvement.piece_justificative.signature_dg:
+        sig_dg = f"Approuvé par : {dg_nom or 'DG'}"
+        
+    signatures = [
+        [Paragraph("Signature du Caissier", style_label), Paragraph("Signature du DG", style_label)],
+        [Paragraph(sig_caissier, style_val), Paragraph(sig_dg, style_val)]
+    ]
+    tsig = Table(signatures, colWidths=[8.5*cm, 8.5*cm])
+    tsig.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('PADDING', (0, 0), (-1, -1), 10),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#cbd5e1')),
+    ]))
+    elements.append(tsig)
+    
+    doc.build(elements)
+    buffer.seek(0)
     return buffer.getvalue()

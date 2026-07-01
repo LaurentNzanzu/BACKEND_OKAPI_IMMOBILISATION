@@ -273,6 +273,17 @@ class ValidationService:
             # Générer le bon de décaissement (numérique)
             bon_decaissement = self._generer_bon_decaissement(besoin, id_validateur)
 
+            # Ordonner le mouvement de caisse réel (sortie)
+            from .caisse_service import CaisseService
+            caisse_service = CaisseService(self.db)
+            caisse_service.ordonner_mouvement_caisse(
+                type_mouvement="SORTIE",
+                montant=float(besoin.montant_total),
+                origine_type="BESOIN",
+                origine_id=besoin.id_besoin,
+                motif=f"Décaissement besoin {besoin.numero_demande} : {getattr(besoin, 'observations', '') or ''}"
+            )
+
             # Notifier le caissier pour le paiement effectif
             caissiers = self._get_utilisateurs_par_roles("CAISSE")
             for caissier in caissiers:
@@ -494,6 +505,18 @@ class ValidationService:
             # ✅ À CE MOMENT PRÉCIS, le bien passe à CEDE
             bien.statut_comptable = "CEDE"
             bien.date_sortie = datetime.utcnow()
+
+            # Ordonner le mouvement de caisse réel (entrée)
+            from .caisse_service import CaisseService
+            caisse_service = CaisseService(self.db)
+            caisse_service.ordonner_mouvement_caisse(
+                type_mouvement="ENTREE",
+                montant=float(cession.prix_cession or 0.0),
+                origine_type="CESSION",
+                origine_id=cession.id_cession,
+                motif=f"Encaissement cession bien #{bien.id_bien} : {bien.nom_bien or bien.designation or ''}",
+                beneficiaire=cession.acheteur or "Acheteur externe"
+            )
 
             # Journaliser l'événement
             self.audit_service.log_action(
@@ -913,3 +936,88 @@ class ValidationService:
     def valider(self, *args, **kwargs):
         """Méthode legacy de validation."""
         pass
+
+# backend/app/services/validation_service.py
+
+# Ajouter ces méthodes à la classe ValidationService
+
+def get_amortissements_en_attente(self) -> List[dict]:
+    """
+    Récupère les amortissements en attente de validation.
+    """
+    from ..models.amortissement import Amortissement, StatutAmortissement
+    
+    amortissements = self.db.query(Amortissement).filter(
+        Amortissement.statut == StatutAmortissement.EN_ATTENTE
+    ).all()
+    
+    result = []
+    for a in amortissements:
+        bien = None
+        if a.id_bien:
+            bien = self.db.query(Bien).filter(Bien.id_bien == a.id_bien).first()
+        
+        designation = "Bien non spécifié"
+        if bien:
+            designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip()
+            if not designation:
+                designation = f"Bien #{bien.id_bien}"
+        
+        result.append({
+            "id_amortissement": a.id_amortissement,
+            "id_bien": a.id_bien,
+            "bien_designation": designation,
+            "exercice": a.exercice,
+            "annuite_comptable": float(a.annuite_comptable) if a.annuite_comptable else 0,
+            "date_debut": a.date_debut.isoformat() if a.date_debut else None,
+            "date_fin": a.date_fin.isoformat() if a.date_fin else None,
+            "statut": a.statut.value if a.statut else None,
+            "date_creation": a.date_creation.isoformat() if a.date_creation else None
+        })
+    
+    return result
+
+
+def get_cessions_en_attente(self) -> List[dict]:
+    """
+    Récupère les cessions en attente de validation.
+    """
+    from ..models.cession import Cession, StatutCession
+    
+    cessions = self.db.query(Cession).filter(
+        Cession.statut.in_([StatutCession.EN_ATTENTE_VALIDATION, StatutCession.EN_COURS])
+    ).all()
+    
+    result = []
+    for c in cessions:
+        bien = None
+        if c.id_bien:
+            bien = self.db.query(Bien).filter(Bien.id_bien == c.id_bien).first()
+        
+        designation = "Bien non spécifié"
+        if bien:
+            designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip()
+            if not designation:
+                designation = f"Bien #{bien.id_bien}"
+        
+        # Déterminer l'étape actuelle
+        etape = "DEMANDE"
+        if c.date_validation_finale:
+            etape = "TERMINE"
+        elif c.date_validation_dg:
+            etape = "CAISSE"
+        elif c.date_validation_caissier:
+            etape = "COMPTABLE"
+        
+        result.append({
+            "id_cession": c.id_cession,
+            "id_bien": c.id_bien,
+            "bien_designation": designation,
+            "prix_cession": float(c.prix_cession) if c.prix_cession else 0,
+            "acheteur": c.acheteur,
+            "date_demande": c.date_demande.isoformat() if c.date_demande else None,
+            "statut": c.statut.value if c.statut else None,
+            "etape_actuelle": etape
+        })
+    
+    return result

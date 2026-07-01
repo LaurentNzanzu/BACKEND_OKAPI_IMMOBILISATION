@@ -1,110 +1,63 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+# backend/app/api/endpoints/pieces_justificatives.py
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from typing import List, Optional
+import os
 
 from ...core.database import get_db
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
-from ...schemas.piece_justificative import (
-    PieceJustificativeCreate, PieceJustificativeUpdate,
-    PieceJustificativeResponse, PieceJustificativeValidation,
-    PieceJustificativeSignature
-)
+from ...schemas.piece_justificative import PieceJustificativeResponse
 from ...services.piece_justificative_service import PieceJustificativeService
 
 router = APIRouter(prefix="/pieces-justificatives", tags=["Pièces Justificatives"])
 
 
-def _serialize_piece(piece) -> dict:
-    data = PieceJustificativeResponse.model_validate(piece).model_dump()
-    if piece.upload_par:
-        data["upload_par_nom"] = getattr(piece.upload_par, "nom", str(piece.upload_par_id))
-    if piece.valide_par:
-        data["valide_par_nom"] = getattr(piece.valide_par, "nom", str(piece.valide_par_id))
-    if piece.signe_par:
-        data["signe_par_nom"] = getattr(piece.signe_par, "nom", str(piece.signe_par_id))
-    return data
-
-
-@router.post("", response_model=PieceJustificativeResponse, status_code=status.HTTP_201_CREATED)
-async def create_piece(
-    data: PieceJustificativeCreate,
+@router.get("/{id_piece}/download")
+def telecharger_piece(
+    id_piece: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Crée une nouvelle pièce justificative."""
     service = PieceJustificativeService(db)
-    piece = service.create(data, current_user.id)
-    return _serialize_piece(piece)
-
-
-@router.get("/transaction/{transaction_type}/{transaction_id}", response_model=List[PieceJustificativeResponse])
-async def get_pieces_by_transaction(
-    transaction_type: str,
-    transaction_id: int,
-    db: Session = Depends(get_db),
-    current_user: Utilisateur = Depends(get_current_user)
-):
-    """Récupère les pièces liées à une transaction."""
-    service = PieceJustificativeService(db)
-    try:
-        pieces = service.get_by_transaction(transaction_type, transaction_id)
-        return [_serialize_piece(p) for p in pieces]
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.get("/{piece_id}", response_model=PieceJustificativeResponse)
-async def get_piece(
-    piece_id: int,
-    db: Session = Depends(get_db),
-    current_user: Utilisateur = Depends(get_current_user)
-):
-    """Récupère une pièce justificative."""
-    from ...models.piece_justificative import PieceJustificative
-    piece = db.query(PieceJustificative).filter(
-        PieceJustificative.id_piece == piece_id
-    ).first()
-    
-    if not piece:
+    pdf_url = service.get_pdf_url(id_piece)
+    if not pdf_url:
         raise HTTPException(status_code=404, detail="Pièce non trouvée")
     
-    return _serialize_piece(piece)
+    filepath = os.path.join(os.getcwd(), pdf_url.lstrip("/"))
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Fichier inexistant sur le disque")
+    
+    return FileResponse(filepath, media_type="application/pdf", filename=os.path.basename(filepath))
 
 
-@router.post("/{piece_id}/valider", response_model=PieceJustificativeResponse)
-async def valider_piece(
-    piece_id: int,
-    data: PieceJustificativeValidation,
+@router.post("/{id_piece}/sign-caissier", response_model=PieceJustificativeResponse)
+def signature_caissier(
+    id_piece: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Valide ou rejette une pièce justificative."""
+    role = current_user.role.nom.upper() if current_user.role else "USER"
+    if role not in ["ADMIN", "CAISSE"]:
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = PieceJustificativeService(db)
     try:
-        if data.decision == "VALIDER":
-            piece = service.valider(piece_id, current_user.id)
-        else:
-            if not data.motif:
-                raise HTTPException(status_code=400, detail="Le motif de rejet est obligatoire")
-            piece = service.rejeter(piece_id, current_user.id, data.motif)
-        
-        return _serialize_piece(piece)
+        return service.signer_caissier(id_piece)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{piece_id}/signer", response_model=PieceJustificativeResponse)
-async def signer_piece(
-    piece_id: int,
-    data: PieceJustificativeSignature,
+@router.post("/{id_piece}/sign-dg", response_model=PieceJustificativeResponse)
+def signature_dg(
+    id_piece: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Signe électroniquement une pièce justificative."""
+    role = current_user.role.nom.upper() if current_user.role else "USER"
+    if role not in ["ADMIN", "DG"]:
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = PieceJustificativeService(db)
     try:
-        piece = service.signer(piece_id, current_user.id, data.signature)
-        return _serialize_piece(piece)
+        return service.signer_dg(id_piece)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
