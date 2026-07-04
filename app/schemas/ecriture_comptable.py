@@ -11,6 +11,9 @@ class StatutEcritureEnum(str, Enum):
     REJETEE = "REJETEE"
     MODIFIEE = "MODIFIEE"
     EN_ATTENTE_PAIEMENT = "EN_ATTENTE_PAIEMENT"
+    EN_ATTENTE_FONDS = "EN_ATTENTE_FONDS"
+    CAISSE_VALIDE = "CAISSE_VALIDE"
+    DG_VALIDE = "DG_VALIDE"
 
 
 class TypeOpEnum(str, Enum):
@@ -75,4 +78,21 @@ class EcritureResponse(BaseModel):
     cree_par: Optional[int] = None
     valide_par: Optional[int] = None
     bien_designation: Optional[str] = None
+    
+    piece_justificative_url: Optional[str] = None
+    statut_workflow: Optional[str] = None
+    est_verrouillee: bool = False
+    date_verification_caisse: Optional[datetime] = None
+    date_validation_dg: Optional[datetime] = None
+    workflow_etape: Optional[str] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def map_verrouille(cls, data):
+        if hasattr(data, 'verrouille_definitivement'):
+            setattr(data, 'est_verrouillee', getattr(data, 'verrouille_definitivement') or False)
+        elif isinstance(data, dict):
+            data['est_verrouillee'] = data.get('verrouille_definitivement') or False
+        return data
+
     model_config = ConfigDict(from_attributes=True)

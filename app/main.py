@@ -53,6 +53,7 @@ from app.api.endpoints import (
     localisations,
     budgets,
     caisse,
+    mouvements_caisse,
     pieces_justificatives,
     etats_financiers,
 )
@@ -382,6 +383,7 @@ app.include_router(fournisseurs.router, prefix=API_V1_PREFIX)
 app.include_router(localisations.router, prefix=API_V1_PREFIX)
 app.include_router(budgets.router, prefix=API_V1_PREFIX)
 app.include_router(caisse.router, prefix=API_V1_PREFIX)
+app.include_router(mouvements_caisse.router, prefix=API_V1_PREFIX)
 app.include_router(pieces_justificatives.router, prefix=API_V1_PREFIX)
 app.include_router(etats_financiers.router, prefix=API_V1_PREFIX)
 

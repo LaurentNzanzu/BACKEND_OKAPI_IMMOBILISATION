@@ -512,11 +512,33 @@ class ComptabiliteService:
         if not ecriture or ecriture.validee:
             return None
 
+        # Vérification du workflow de validation
+        if ecriture.statut_workflow != "DG_VALIDE":
+            raise ValueError("L'écriture doit d'abord être validée par le DG (statut DG_VALIDE) avant d'être validée par le comptable.")
+
+        # Vérification de la présence de la pièce justificative
+        if not ecriture.piece_justificative_url:
+            raise ValueError("La pièce justificative (Bon de décaissement) est obligatoire pour valider l'écriture.")
+
+        ancien_statut = ecriture.statut.value if hasattr(ecriture.statut, 'value') else str(ecriture.statut)
+
         ecriture.validee = True
         ecriture.statut = StatutEcriture.VALIDEE
         ecriture.date_validation = datetime.utcnow()
         ecriture.valide_par = id_validateur
         ecriture.id_validateur = id_validateur
+        ecriture.verrouille_definitivement = True
+
+        # Enregistrer l'historique de statut
+        from ..models.historique_statut_ecriture import HistoriqueStatutEcriture
+        log = HistoriqueStatutEcriture(
+            id_ecriture=ecriture.id_ecriture,
+            ancien_statut=ancien_statut,
+            nouveau_statut="VALIDEE",
+            utilisateur_id=id_validateur,
+            commentaire="Validation finale du comptable et verrouillage définitif."
+        )
+        self.db.add(log)
 
         if ecriture.id_amortissement:
             amort = self.db.query(Amortissement).filter(
@@ -524,6 +546,8 @@ class ComptabiliteService:
             ).first()
             if amort:
                 amort.statut = StatutAmortissement.EN_COURS
+                # Verrouiller définitivement l'amortissement
+                amort.verrouiller(utilisateur_id=id_validateur, raison="Validation définitive de l'écriture comptable.")
 
         self.db.commit()
         self.db.refresh(ecriture)

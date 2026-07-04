@@ -21,6 +21,9 @@ class StatutEcriture(enum.Enum):
     REJETEE = "REJETEE"
     MODIFIEE = "MODIFIEE"
     EN_ATTENTE_PAIEMENT = "EN_ATTENTE_PAIEMENT"
+    EN_ATTENTE_FONDS = "EN_ATTENTE_FONDS"
+    CAISSE_VALIDE = "CAISSE_VALIDE"
+    DG_VALIDE = "DG_VALIDE"
 
 class EcritureComptable(Base):
     __tablename__ = "ecritures_comptables"
@@ -30,6 +33,14 @@ class EcritureComptable(Base):
     id_amortissement = Column(Integer, ForeignKey("amortissements.id_amortissement"), nullable=True)
     # === NOUVEAU CHAMP PHASE 2 ===
     id_validation = Column(Integer, ForeignKey("validations.id_validation", ondelete="SET NULL"), nullable=True)
+
+    # Nouveaux champs pour la gestion de caisse et workflow
+    piece_justificative_url = Column(String(255), nullable=True)
+    id_caisse = Column(Integer, ForeignKey("caisses.id_caisse", ondelete="SET NULL"), nullable=True)
+    statut_workflow = Column(String(30), default="BROUILLON")
+    date_verification_caisse = Column(DateTime, nullable=True)
+    date_validation_dg = Column(DateTime, nullable=True)
+    verrouille_definitivement = Column(Boolean, default=False)
 
     date_ecriture = Column(DateTime, nullable=False, default=datetime.utcnow)
     exercice = Column(Integer, nullable=False)

@@ -66,21 +66,22 @@ class AmortissementResponse(BaseModel):
     id_bien: int
     exercice: int
     methode: MethodeEnum
-    annuite_comptable: float
-    annuite_fiscale: float
-    ecart_a_reintegrer: float
-    cumul_comptable: float
-    cumul_fiscal: float
-    valeur_nette_comptable: float
-    valeur_nette_fiscale: float
-    statut: StatutEnum
-    date_creation: datetime
+    annuite_comptable: Optional[float] = 0.0
+    annuite_fiscale: Optional[float] = 0.0
+    ecart_a_reintegrer: Optional[float] = 0.0
+    cumul_comptable: Optional[float] = 0.0
+    cumul_fiscal: Optional[float] = 0.0
+    valeur_nette_comptable: Optional[float] = 0.0
+    valeur_nette_fiscale: Optional[float] = 0.0
+    statut: Optional[StatutEnum] = StatutEnum.EN_COURS
+    date_creation: Optional[datetime] = Field(default_factory=datetime.utcnow)
     est_verrouille: bool = False
     date_verrouillage: Optional[datetime] = None
     verrouille_par_id: Optional[int] = None
     verrouille_par_nom: Optional[str] = None
     raison_verrouillage: Optional[str] = None
     est_modifiable: bool = True
+    montant_depreciation: Optional[float] = 0.0
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -104,13 +105,13 @@ class PlanAmortissementRow(BaseModel):
 
 
 class StatistiquesAmortissements(BaseModel):
-    total_amortissements_comptables: float
-    total_amortissements_fiscaux: float
-    total_ecarts_a_reintegrer: float
-    economie_impot_annuelle: float
-    details_par_categorie: dict
-    details_par_methode: dict
-    alertes_fin_vie: int
+    total_amortissements_comptables: float = 0.0
+    total_amortissements_fiscaux: float = 0.0
+    total_ecarts_a_reintegrer: float = 0.0
+    economie_impot_annuelle: float = 0.0
+    details_par_categorie: dict = Field(default_factory=dict)
+    details_par_methode: dict = Field(default_factory=dict)
+    alertes_fin_vie: int = 0
 
 
 class AmortissementValidate(BaseModel):
@@ -145,15 +146,14 @@ class AmortissementVerrouilleResponse(BaseModel):
     est_modifiable: bool
 
 
-
 class AmortissementValidationStatus(BaseModel):
     id_amortissement: int
     statut_validation: str
     validations: List[dict] = Field(default_factory=list)
     ecritures_generees: List[dict] = Field(default_factory=list)
-    montant_total_dotations: float
-    besoins_tresorerie: float
-    tresorerie_disponible: bool
+    montant_total_dotations: float = 0.0
+    besoins_tresorerie: float = 0.0
+    tresorerie_disponible: bool = False
     validation_caissier: Optional[dict] = None
     validation_dg: Optional[dict] = None
 
@@ -161,8 +161,8 @@ class AmortissementValidationStatus(BaseModel):
 class AmortissementPeriodClosure(BaseModel):
     exercice: int
     periode: str
-    total_dotations: float
-    ecritures_generees: int
+    total_dotations: float = 0.0
+    ecritures_generees: int = 0
     statut: str
     date_cloture: Optional[datetime] = None
     message: Optional[str] = None
@@ -170,11 +170,11 @@ class AmortissementPeriodClosure(BaseModel):
 
 class AmortissementTresorerieCheck(BaseModel):
     id_amortissement: int
-    montant_dotation: float
-    tresorerie_disponible: float
-    est_suffisante: bool
-    manque: float
-    recommandation: str
+    montant_dotation: float = 0.0
+    tresorerie_disponible: float = 0.0
+    est_suffisante: bool = False
+    manque: float = 0.0
+    recommandation: str = ""
 
 
 class AmortissementComptableIntegration(BaseModel):
@@ -183,9 +183,17 @@ class AmortissementComptableIntegration(BaseModel):
     id_ecriture_credit: int
     compte_debit: str
     compte_credit: str
-    montant: float
+    montant: float = 0.0
     exercice: int
     date_integration: datetime
     integre_par: int
     statut: str
     message: Optional[str] = None
+
+
+class AmortissementWorkflowResponse(BaseModel):
+    """Schéma pour la réponse du workflow d'amortissement"""
+    id_amortissement: int
+    etape_actuelle: str
+    statut_global: str
+    historique_validations: List[dict] = Field(default_factory=list)

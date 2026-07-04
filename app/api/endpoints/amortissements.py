@@ -20,7 +20,7 @@ from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
 from ...services.amortissement_workflow_service import AmortissementWorkflowService
 from ...schemas.workflow_amortissement import (
-    VerifierTresorerieRequest, ValiderDecaissementRequest, ValiderEcritureRequest, WorkflowStatusResponse
+    VerificationTresorerieRequest, ValidationDecaissementRequest, ValidationEcritureRequest, WorkflowAmortissementStatus
 )
 from ...models.bien import Bien
 from ...models.vehicule import Vehicule
@@ -971,7 +971,7 @@ async def verrouiller_amortissement_endpoint(
 # ENDPOINTS WORKFLOW DE VALIDATION EN 4 ÉTAPES
 # ============================================================
 
-@router.get("/{id_amortissement}/workflow-status", response_model=WorkflowStatusResponse)
+@router.get("/{id_amortissement}/workflow-status", response_model=WorkflowAmortissementStatus)
 async def get_workflow_status(
     id_amortissement: int,
     db: Session = Depends(get_db),
@@ -985,7 +985,7 @@ async def get_workflow_status(
 @router.post("/{id_amortissement}/verifier-tresorerie")
 async def verifier_tresorerie_caisse(
     id_amortissement: int,
-    data: VerifierTresorerieRequest,
+    data: VerificationTresorerieRequest,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
@@ -1007,7 +1007,7 @@ async def verifier_tresorerie_caisse(
 @router.post("/{id_amortissement}/valider-decaissement")
 async def valider_decaissement_dg(
     id_amortissement: int,
-    data: ValiderDecaissementRequest,
+    data: ValidationDecaissementRequest,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
@@ -1034,7 +1034,7 @@ async def valider_decaissement_dg(
 @router.post("/{id_amortissement}/valider-ecriture")
 async def valider_ecriture_comptable(
     id_amortissement: int,
-    data: ValiderEcritureRequest,
+    data: ValidationEcritureRequest,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):

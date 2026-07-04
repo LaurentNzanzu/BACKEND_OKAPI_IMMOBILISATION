@@ -77,3 +77,71 @@ class CaisseService:
         self.db.commit()
         self.db.refresh(caisse)
         return caisse
+
+    def ordonner_mouvement_caisse(
+        self,
+        type_mouvement: str,  # 'ENTREE' ou 'SORTIE'
+        montant: float,
+        origine_type: str,    # 'BESOIN', 'MAINTENANCE', 'STOCK', 'ACQUISITION', 'CESSION', 'AMORTISSEMENT'
+        origine_id: int,
+        motif: str,
+        beneficiaire: str = None,
+        mode_reglement: str = 'ESPECES'
+    ) -> dict:
+        """
+        Fonction centrale qui orchestre un mouvement de caisse.
+        - Vérifie le solde si SORTIE
+        - Crée le mouvement
+        - Génère le PDF (BEC ou BSC)
+        - Met à jour le solde
+        - Retourne le mouvement créé
+        """
+        from .mouvement_caisse_service import MouvementCaisseService
+        from ..schemas.mouvement_caisse import MouvementCaisseCreate
+        
+        caisse = self.get_caisse_principale()
+        if not caisse:
+            caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="USD", statut="ACTIF")
+            self.db.add(caisse)
+            self.db.commit()
+            self.db.refresh(caisse)
+
+        mvt_create = MouvementCaisseCreate(
+            id_caisse=caisse.id_caisse,
+            type_mouvement=type_mouvement,
+            montant=montant,
+            motif=motif,
+            origine_type=origine_type,
+            origine_id=origine_id,
+            mode_reglement=mode_reglement,
+            beneficiaire=beneficiaire
+        )
+        
+        mvt_service = MouvementCaisseService(self.db)
+        mvt = mvt_service.creer_mouvement(mvt_create)
+        
+        if type_mouvement == "SORTIE" and caisse.solde_physique < montant:
+            mvt.statut = "EN_ATTENTE_FONDS"
+            self.db.commit()
+            return {"success": False, "mouvement": mvt, "message": "Solde insuffisant"}
+            
+        if type_mouvement == "SORTIE":
+            caisse.solde_physique -= montant
+            caisse.solde_theorique -= montant
+        else:
+            caisse.solde_physique += montant
+            caisse.solde_theorique += montant
+            
+        mvt.statut = "VALIDE"
+        mvt.date_validation = datetime.utcnow()
+        if mvt.piece_justificative:
+            mvt.piece_justificative.signature_caissier = True
+            mvt.piece_justificative.date_signature_caissier = datetime.utcnow()
+            
+        pdf_url = mvt_service.generer_pdf_mouvement(mvt)
+        mvt.piece_jointe_url = pdf_url
+        if mvt.piece_justificative:
+            mvt.piece_justificative.url_fichier = pdf_url
+            
+        self.db.commit()
+        return {"success": True, "mouvement": mvt}

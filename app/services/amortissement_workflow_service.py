@@ -12,10 +12,11 @@ from ..models.workflow_amortissement import (
 )
 from ..models.amortissement import Amortissement, StatutAmortissement
 from ..models.ecriture_comptable import EcritureComptable, StatutEcriture
+from ..models.historique_statut_ecriture import HistoriqueStatutEcriture
 from ..models.bien import Bien
 from ..models.utilisateur import Utilisateur
-from ..utils.pdf_generator import generer_bon_decaissement_pdf
-from .notification_service import NotificationService
+from ..services.caisse_service import CaisseService
+from ..services.notification_service import NotificationService
 from ..models.notification import TypeNotificationEnum
 import logging
 
@@ -26,6 +27,7 @@ class AmortissementWorkflowService:
     def __init__(self, db: Session):
         self.db = db
         self.notification_service = NotificationService(db)
+        self.caisse_service = CaisseService(db)
 
     def initialiser_workflow(self, id_amortissement: int, user_id: int) -> WorkflowValidationAmortissement:
         """
@@ -48,7 +50,7 @@ class AmortissementWorkflowService:
             statut=StatutWorkflowAmortissement.APPROUVE,
             id_validateur=user_id,
             date_validation=datetime.utcnow(),
-            commentaire="Amortissement calculé et écriture en brouillon générée (Montant verrouillé)"
+            commentaire="Amortissement calculé et écriture en brouillon générée"
         )
         self.db.add(step1)
 
@@ -59,14 +61,23 @@ class AmortissementWorkflowService:
             statut=StatutWorkflowAmortissement.EN_ATTENTE
         )
         self.db.add(step2)
+
+        # Mettre à jour l'écriture comptable associée à l'amortissement
+        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_amortissement == id_amortissement).first()
+        if ecriture:
+            ecriture.statut = StatutEcriture.BROUILLON
+            ecriture.statut_workflow = "BROUILLON"
+
         self.db.flush()
 
         # Notification pour la caisse
         try:
-            self._notifier_role(
-                role="CAISSE",
+            self.notification_service.envoyer_notification_par_role(
+                role_nom="CAISSE",
+                type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                 titre="Nouvel amortissement à vérifier",
-                message=f"Un amortissement de {amortissement.annuite_comptable:,.2f} USD (#{amortissement.id_amortissement}) requiert votre vérification de trésorerie."
+                contenu=f"Un amortissement de {amortissement.annuite_comptable:,.2f} USD (#{amortissement.id_amortissement}) requiert votre vérification de trésorerie.",
+                priorite="importante"
             )
         except Exception as e:
             logger.warning(f"Erreur notification caisse: {e}")
@@ -89,43 +100,81 @@ class AmortissementWorkflowService:
             raise ValueError("Cette étape a déjà été traitée.")
 
         amortissement = self.db.query(Amortissement).filter(Amortissement.id_amortissement == id_amortissement).first()
+        if not amortissement:
+            raise ValueError("Amortissement non trouvé")
+
+        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_amortissement == id_amortissement).first()
+        if not ecriture:
+            raise ValueError("Écriture comptable associée non trouvée")
+
+        # Vérification dynamique de la caisse
+        tresorerie_info = self.caisse_service.verifier_tresorerie(float(amortissement.annuite_comptable))
+        real_tresorerie_disponible = tresorerie_info["est_suffisante"]
+
+        # Si les fonds réels sont insuffisants, l'opération est bloquée en EN_ATTENTE_FONDS
+        if not real_tresorerie_disponible:
+            tresorerie_disponible = False
 
         step_caisse.id_validateur = user_id
         step_caisse.date_validation = datetime.utcnow()
         step_caisse.commentaire = commentaire
 
+        ancien_statut = ecriture.statut.value if hasattr(ecriture.statut, 'value') else str(ecriture.statut)
+
         if tresorerie_disponible:
             step_caisse.statut = StatutWorkflowAmortissement.APPROUVE
-            
-            # Créer étape 3 DG
+            ecriture.statut = StatutEcriture.CAISSE_VALIDE
+            ecriture.statut_workflow = "CAISSE_VALIDE"
+            ecriture.date_verification_caisse = datetime.utcnow()
+
+            # Créer étape 3 DG en attente
             step_dg = WorkflowValidationAmortissement(
                 id_amortissement=id_amortissement,
                 etape=EtapeWorkflowAmortissement.DG,
                 statut=StatutWorkflowAmortissement.EN_ATTENTE
             )
             self.db.add(step_dg)
-            self.db.flush()
 
-            # Notifications (OUI - Fonds disponibles)
+            # Notification DG : DECAISSEMENT_A_VALIDER
             try:
-                msg = f"VÉRIFICATION CAISSE : OUI (Fonds disponibles) - Amortissement #{amortissement.id_amortissement} ({amortissement.annuite_comptable:,.2f} USD). Observation : {commentaire or 'Fonds vérifiés.'}"
-                self._notifier_role(role="DG", titre="Trésorerie Caisse : FONDS DISPONIBLES (OUI)", message=msg)
-                self._notifier_role(role="COMPTABLE", titre="Trésorerie Caisse : FONDS DISPONIBLES (OUI)", message=msg)
+                self.notification_service.envoyer_notification_par_role(
+                    role_nom="DG",
+                    type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
+                    titre="Décaissement à valider",
+                    contenu=f"La caisse a confirmé la disponibilité des fonds pour l'amortissement {id_amortissement}. Veuillez autoriser le décaissement.",
+                    priorite="importante"
+                )
             except Exception as e:
-                logger.warning(f"Erreur notification Caisse OUI: {e}")
+                logger.warning(f"Erreur notification DG: {e}")
         else:
             step_caisse.statut = StatutWorkflowAmortissement.SUSPENDU
-            if amortissement:
-                amortissement.statut = StatutAmortissement.SUSPENDU
-            self.db.flush()
+            amortissement.statut = StatutAmortissement.SUSPENDU
+            ecriture.statut = StatutEcriture.EN_ATTENTE_FONDS
+            ecriture.statut_workflow = "EN_ATTENTE_FONDS"
+            ecriture.date_verification_caisse = datetime.utcnow()
 
-            # Notifications (NON - Fonds insuffisants)
+            # Notification DG : TRESORERIE_INSUFFISANTE
             try:
-                msg = f"VÉRIFICATION CAISSE : NON (Fonds insuffisants) - Amortissement #{amortissement.id_amortissement} ({amortissement.annuite_comptable:,.2f} USD). Motif : {commentaire or 'Insuffisance de trésorerie.'}"
-                self._notifier_role(role="COMPTABLE", titre="Trésorerie Caisse : FONDS INSUFFISANTS (NON)", message=msg)
-                self._notifier_role(role="DG", titre="Trésorerie Caisse : FONDS INSUFFISANTS (NON)", message=msg)
+                self.notification_service.envoyer_notification_par_role(
+                    role_nom="DG",
+                    type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
+                    titre="Réapprovisionnement nécessaire",
+                    contenu=f"Fonds insuffisants en caisse pour l'amortissement {id_amortissement}. Réapprovisionnement nécessaire.",
+                    priorite="importante"
+                )
             except Exception as e:
-                logger.warning(f"Erreur notification Caisse NON: {e}")
+                logger.warning(f"Erreur notification DG: {e}")
+
+        # Journaliser le changement de statut
+        log = HistoriqueStatutEcriture(
+            id_ecriture=ecriture.id_ecriture,
+            ancien_statut=ancien_statut,
+            nouveau_statut=ecriture.statut_workflow,
+            utilisateur_id=user_id,
+            commentaire=commentaire or "Vérification trésorerie par la caisse."
+        )
+        self.db.add(log)
+        self.db.flush()
 
         return step_caisse
 
@@ -148,33 +197,50 @@ class AmortissementWorkflowService:
         if not amortissement:
             raise ValueError("Amortissement introuvable.")
 
-        bien = self.db.query(Bien).filter(Bien.id_bien == amortissement.id_bien).first()
+        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_amortissement == id_amortissement).first()
+        if not ecriture:
+            raise ValueError("Écriture associée non trouvée.")
+
         dg_user = self.db.query(Utilisateur).filter(Utilisateur.id == user_id).first()
 
         step_dg.id_validateur = user_id
         step_dg.date_validation = datetime.utcnow()
         step_dg.commentaire = motif
 
+        ancien_statut = ecriture.statut.value if hasattr(ecriture.statut, 'value') else str(ecriture.statut)
+
         if approuve:
+            # 1. Ordonner le décaissement dans la caisse
+            caisse_res = self.caisse_service.ordonner_mouvement_caisse(
+                type_mouvement="SORTIE",
+                montant=float(amortissement.annuite_comptable),
+                origine_type="AMORTISSEMENT",
+                origine_id=id_amortissement,
+                motif=f"Dotation aux amortissements exercice {amortissement.exercice} - Bien #{amortissement.id_bien}",
+                beneficiaire="COMPTABILITE IMMOBILISATIONS",
+                mode_reglement="ESPECES"
+            )
+
+            if not caisse_res["success"]:
+                # Si le solde était insuffisant lors du décaissement réel
+                ecriture.statut = StatutEcriture.EN_ATTENTE_FONDS
+                ecriture.statut_workflow = "EN_ATTENTE_FONDS"
+                step_dg.statut = StatutWorkflowAmortissement.SUSPENDU
+                amortissement.statut = StatutAmortissement.SUSPENDU
+                self.db.flush()
+                raise ValueError("Décaissement impossible : solde de caisse insuffisant au moment du décaissement.")
+
+            mouvement = caisse_res["mouvement"]
+            pdf_url = mouvement.piece_jointe_url
+
             step_dg.statut = StatutWorkflowAmortissement.APPROUVE
-            
-            # Génération du PDF Bon de Décaissement
-            try:
-                pdf_bytes = generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif)
-                
-                # Sauvegarde sur disque (dossier static / uploads)
-                upload_dir = os.path.join(os.getcwd(), "static", "bons_decaissement")
-                os.makedirs(upload_dir, exist_ok=True)
-                filename = f"bon_decaissement_{amortissement.id_amortissement}_{int(datetime.utcnow().timestamp())}.pdf"
-                filepath = os.path.join(upload_dir, filename)
-                
-                with open(filepath, "wb") as f:
-                    f.write(pdf_bytes)
-                
-                pdf_url = f"/static/bons_decaissement/{filename}"
-                step_dg.bon_decaissement_pdf = pdf_url
-            except Exception as e:
-                logger.error(f"Erreur lors de la génération du PDF Bon de Décaissement: {e}")
+            step_dg.bon_decaissement_pdf = pdf_url
+
+            # 2. Mettre à jour l'écriture comptable
+            ecriture.statut = StatutEcriture.DG_VALIDE
+            ecriture.statut_workflow = "DG_VALIDE"
+            ecriture.date_validation_dg = datetime.utcnow()
+            ecriture.piece_justificative_url = pdf_url
 
             # Créer étape 4 COMPTABLE_VALIDATION
             step_comp = WorkflowValidationAmortissement(
@@ -183,31 +249,46 @@ class AmortissementWorkflowService:
                 statut=StatutWorkflowAmortissement.EN_ATTENTE
             )
             self.db.add(step_comp)
-            self.db.flush()
 
-            # Notification au Comptable
+            # Notification COMPTABLE : ECRITURE_A_VALIDER
             try:
-                self._notifier_role(
-                    role="COMPTABLE",
-                    titre="Écriture prête à valider",
-                    message=f"Le décaissement pour l'amortissement #{amortissement.id_amortissement} a été approuvé par le DG. Le Bon de décaissement est joint. Veuillez procéder à la validation finale de l'écriture."
+                self.notification_service.envoyer_notification_par_role(
+                    role_nom="COMPTABLE",
+                    type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
+                    titre="Écriture à valider",
+                    contenu=f"Le décaissement pour l'amortissement {id_amortissement} est approuvé. Pièce justificative disponible. Veuillez valider l'écriture.",
+                    priorite="importante"
                 )
             except Exception as e:
                 logger.warning(f"Erreur notification: {e}")
         else:
             step_dg.statut = StatutWorkflowAmortissement.REJETE
             amortissement.statut = StatutAmortissement.SUSPENDU
-            self.db.flush()
+            ecriture.statut = StatutEcriture.REJETEE
+            ecriture.statut_workflow = "REJETEE"
 
-            # Notification rejet
+            # Notification COMPTABLE : AMORTISSEMENT_REJETE
             try:
-                self._notifier_role(
-                    role="COMPTABLE",
-                    titre="Décaissement rejeté par le DG",
-                    message=f"Le décaissement pour l'amortissement #{amortissement.id_amortissement} a été rejeté par le DG. Motif : {motif}"
+                self.notification_service.envoyer_notification_par_role(
+                    role_nom="COMPTABLE",
+                    type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
+                    titre="Amortissement rejeté",
+                    contenu=f"L'amortissement {id_amortissement} a été rejeté à l'étape DG. Motif : {motif}",
+                    priorite="importante"
                 )
             except Exception as e:
                 logger.warning(f"Erreur notification: {e}")
+
+        # Journaliser le changement de statut
+        log = HistoriqueStatutEcriture(
+            id_ecriture=ecriture.id_ecriture,
+            ancien_statut=ancien_statut,
+            nouveau_statut=ecriture.statut_workflow,
+            utilisateur_id=user_id,
+            commentaire=motif or "Décision du Directeur Général."
+        )
+        self.db.add(log)
+        self.db.flush()
 
         return step_dg
 
@@ -230,35 +311,58 @@ class AmortissementWorkflowService:
         if not amortissement:
             raise ValueError("Amortissement introuvable.")
 
+        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_amortissement == id_amortissement).first()
+        if not ecriture:
+            raise ValueError("Écriture associée non trouvée.")
+
+        # RÈGLE R6: L'écriture comptable ne peut être validée que si statut_workflow == DG_VALIDE
+        if ecriture.statut_workflow != "DG_VALIDE":
+            raise ValueError("L'écriture doit être en statut DG_VALIDE avant de pouvoir être validée.")
+
+        # RÈGLE R5: Un BSC ne peut être généré sans pièce justificative attachée
+        if not ecriture.piece_justificative_url and not piece_justificative_url:
+            raise ValueError("Une pièce justificative (Bon de décaissement) est obligatoire.")
+
         step_final.id_validateur = user_id
         step_final.date_validation = datetime.utcnow()
         step_final.statut = StatutWorkflowAmortissement.APPROUVE
         step_final.commentaire = commentaire
-        step_final.piece_justificative_url = piece_justificative_url
+        if piece_justificative_url:
+            step_final.piece_justificative_url = piece_justificative_url
+
+        ancien_statut = ecriture.statut.value if hasattr(ecriture.statut, 'value') else str(ecriture.statut)
 
         # Mettre à jour l'écriture comptable associée
-        ecriture = self.db.query(EcritureComptable).filter(EcritureComptable.id_amortissement == id_amortissement).first()
-        if ecriture:
-            ecriture.validee = True
-            ecriture.statut = StatutEcriture.VALIDEE
-            if piece_justificative_url:
-                ecriture.piece_justificative_url = piece_justificative_url
+        ecriture.validee = True
+        ecriture.statut = StatutEcriture.VALIDEE
+        ecriture.statut_workflow = "VALIDEE"
+        ecriture.verrouille_definitivement = True
+        if piece_justificative_url:
+            ecriture.piece_justificative_url = piece_justificative_url
 
         # Verrouillage définitif de l'amortissement
-        amortissement.est_verrouille = True
-        amortissement.date_verrouillage = datetime.utcnow()
-        amortissement.verrouille_par_id = user_id
-        amortissement.raison_verrouillage = commentaire or "Validation finale du workflow séquentiel COMPTABLE-CAISSE-DG-COMPTABLE"
+        amortissement.verrouiller(utilisateur_id=user_id, raison=commentaire or "Validation définitive du workflow.")
         amortissement.statut = StatutAmortissement.EN_COURS
 
+        # Journaliser le changement de statut
+        log = HistoriqueStatutEcriture(
+            id_ecriture=ecriture.id_ecriture,
+            ancien_statut=ancien_statut,
+            nouveau_statut="VALIDEE",
+            utilisateur_id=user_id,
+            commentaire=commentaire or "Validation finale du comptable et verrouillage de l'amortissement."
+        )
+        self.db.add(log)
         self.db.flush()
 
-        # Notification de fin
+        # Notification de fin : AMORTISSEMENT_VALIDE
         try:
-            self._notifier_role(
-                role="COMPTABLE",
-                titre="Amortissement validé et verrouillé",
-                message=f"L'amortissement #{amortissement.id_amortissement} a été entièrement validé et verrouillé définitivement en comptabilité."
+            self.notification_service.envoyer_notification_par_role(
+                role_nom="COMPTABLE",
+                type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
+                titre="Amortissement verrouillé",
+                contenu=f"L'amortissement {id_amortissement} a été validé et verrouillé définitivement.",
+                priorite="importante"
             )
         except Exception as e:
             logger.warning(f"Erreur notification finale: {e}")
@@ -285,7 +389,6 @@ class AmortissementWorkflowService:
         statut_global = derniere.statut.value if hasattr(derniere.statut, 'value') else str(derniere.statut)
         etape_actuelle = derniere.etape.value if hasattr(derniere.etape, 'value') else str(derniere.etape)
 
-        # Si la dernière étape est APPROUVE et qu'il s'agit de la validation finale, le workflow est complet
         if derniere.etape == EtapeWorkflowAmortissement.COMPTABLE_VALIDATION and derniere.statut == StatutWorkflowAmortissement.APPROUVE:
             statut_global = "VALIDE_DEFINITIF"
 
@@ -293,7 +396,7 @@ class AmortissementWorkflowService:
         for v in validations:
             val_name = None
             if v.id_validateur:
-                user_obj = v.validateur or self.db.query(Utilisateur).filter(Utilisateur.id == v.id_validateur).first()
+                user_obj = self.db.query(Utilisateur).filter(Utilisateur.id == v.id_validateur).first()
                 if user_obj:
                     val_name = user_obj.nom_complet
             
@@ -315,16 +418,3 @@ class AmortissementWorkflowService:
             "statut_global": statut_global,
             "historique_validations": historique
         }
-
-    def _notifier_role(self, role: str, titre: str, message: str):
-        """Helper pour notifier tous les utilisateurs ayant un rôle donné."""
-        try:
-            self.notification_service.envoyer_notification_par_role(
-                role_nom=role,
-                type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
-                titre=titre,
-                contenu=message,
-                priorite="importante"
-            )
-        except Exception as e:
-            logger.warning(f"Erreur envoi notification pour role {role}: {e}")
