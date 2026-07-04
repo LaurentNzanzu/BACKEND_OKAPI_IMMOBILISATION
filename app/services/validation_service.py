@@ -97,49 +97,54 @@ class ValidationService:
         ordre_enum = self._get_ordre_enum(ordre_validateur)
         decision_enum = self._get_decision_enum(decision)
 
+        is_nested = self.db.in_transaction()
+        transaction = self.db.begin_nested() if is_nested else self.db.begin()
+
         try:
-            # ============================================================
-            # 🔐 TRANSACTION ACID UNIQUE
-            # ============================================================
-            with self.db.begin():
-                # 1. Récupérer le besoin avec verrou pessimiste
-                besoin = self.db.query(Besoin).filter(
-                    Besoin.id_besoin == besoin_id
-                ).with_for_update().first()
+            # 1. Récupérer le besoin avec verrou pessimiste
+            besoin = self.db.query(Besoin).filter(
+                Besoin.id_besoin == besoin_id
+            ).with_for_update().first()
 
-                if not besoin:
-                    raise ValueError("Besoin non trouvé")
+            if not besoin:
+                raise ValueError("Besoin non trouvé")
 
-                # 2. Vérifier que le besoin est en attente de ce validateur
-                if not self._est_en_attente_de(besoin, ordre_validateur):
-                    raise ValueError(f"Ce besoin n'est pas en attente de validation par {ordre_validateur}")
+            # 2. Vérifier que le besoin est en attente de ce validateur
+            if not self._est_en_attente_de(besoin, ordre_validateur):
+                raise ValueError(f"Ce besoin n'est pas en attente de validation par {ordre_validateur}")
 
-                # 3. Créer la validation
-                validation = Validation(
-                    id_besoin=besoin_id,
-                    id_validateur=id_validateur,
-                    ordre_validateur=ordre_enum,
-                    type_validation=TypeValidation.BESOIN,
-                    decision=decision_enum,
-                    commentaire=commentaire,
-                    piece_justificative_url=piece_justificative_url,
-                    date_validation=datetime.utcnow()
-                )
-                self.db.add(validation)
+            # 3. Créer la validation
+            validation = Validation(
+                id_besoin=besoin_id,
+                id_validateur=id_validateur,
+                ordre_validateur=ordre_enum,
+                type_validation=TypeValidation.BESOIN,
+                decision=decision_enum,
+                commentaire=commentaire,
+                piece_justificative_url=piece_justificative_url,
+                date_validation=datetime.utcnow()
+            )
+            self.db.add(validation)
 
-                # 4. Traiter la décision
-                if decision_enum == DecisionValidation.REJETE:
-                    result = self._traiter_rejet_besoin(besoin, validation, id_validateur, ordre_validateur, commentaire)
-                else:
-                    result = self._traiter_approbation_besoin(besoin, validation, id_validateur, ordre_validateur)
+            # 4. Traiter la décision
+            if decision_enum == DecisionValidation.REJETE:
+                result = self._traiter_rejet_besoin(besoin, validation, id_validateur, ordre_validateur, commentaire)
+            else:
+                result = self._traiter_approbation_besoin(besoin, validation, id_validateur, ordre_validateur)
 
-                # 5. Mettre à jour le besoin
-                self.db.add(besoin)
+            # 5. Mettre à jour le besoin
+            self.db.add(besoin)
+
+            transaction.commit()
+            if is_nested:
+                self.db.commit()
 
         except SQLAlchemyError as e:
+            transaction.rollback()
             logger.error(f"Erreur transaction validation besoin {besoin_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
         except ValueError as e:
+            transaction.rollback()
             raise
 
         # Rafraîchir et journaliser
@@ -397,51 +402,58 @@ class ValidationService:
         ordre_enum = self._get_ordre_enum(ordre_validateur)
         decision_enum = self._get_decision_enum(decision)
 
+        is_nested = self.db.in_transaction()
+        transaction = self.db.begin_nested() if is_nested else self.db.begin()
+
         try:
-            with self.db.begin():
-                # 1. Récupérer la cession avec verrou
-                cession = self.db.query(Cession).filter(
-                    Cession.id_cession == cession_id
-                ).with_for_update().first()
+            # 1. Récupérer la cession avec verrou
+            cession = self.db.query(Cession).filter(
+                Cession.id_cession == cession_id
+            ).with_for_update().first()
 
-                if not cession:
-                    raise ValueError("Cession non trouvée")
+            if not cession:
+                raise ValueError("Cession non trouvée")
 
-                # 2. Récupérer le bien avec verrou
-                bien = self.db.query(Bien).filter(
-                    Bien.id_bien == cession.id_bien
-                ).with_for_update().first()
+            # 2. Récupérer le bien avec verrou
+            bien = self.db.query(Bien).filter(
+                Bien.id_bien == cession.id_bien
+            ).with_for_update().first()
 
-                if not bien:
-                    raise ValueError(f"Bien associé à la cession non trouvé")
+            if not bien:
+                raise ValueError(f"Bien associé à la cession non trouvé")
 
-                # 3. Vérifier que la cession est dans le bon statut
-                if not self._est_en_attente_de_cession(cession, ordre_validateur):
-                    raise ValueError(f"Cette cession n'est pas en attente de validation par {ordre_validateur}")
+            # 3. Vérifier que la cession est dans le bon statut
+            if not self._est_en_attente_de_cession(cession, ordre_validateur):
+                raise ValueError(f"Cette cession n'est pas en attente de validation par {ordre_validateur}")
 
-                # 4. Créer la validation
-                validation = Validation(
-                    id_bien=cession.id_bien,
-                    id_validateur=id_validateur,
-                    ordre_validateur=ordre_enum,
-                    type_validation=TypeValidation.CESSION,
-                    decision=decision_enum,
-                    commentaire=commentaire,
-                    piece_justificative_url=piece_justificative_url,
-                    date_validation=datetime.utcnow()
-                )
-                self.db.add(validation)
+            # 4. Créer la validation
+            validation = Validation(
+                id_bien=cession.id_bien,
+                id_validateur=id_validateur,
+                ordre_validateur=ordre_enum,
+                type_validation=TypeValidation.CESSION,
+                decision=decision_enum,
+                commentaire=commentaire,
+                piece_justificative_url=piece_justificative_url,
+                date_validation=datetime.utcnow()
+            )
+            self.db.add(validation)
 
-                # 5. Traiter la décision
-                if decision_enum == DecisionValidation.REJETE:
-                    result = self._traiter_rejet_cession(cession, validation, id_validateur, ordre_validateur, commentaire)
-                else:
-                    result = self._traiter_approbation_cession(cession, bien, validation, id_validateur, ordre_validateur)
+            # 5. Traiter la décision
+            if decision_enum == DecisionValidation.REJETE:
+                result = self._traiter_rejet_cession(cession, validation, id_validateur, ordre_validateur, commentaire)
+            else:
+                result = self._traiter_approbation_cession(cession, bien, validation, id_validateur, ordre_validateur)
 
-                self.db.add(cession)
-                self.db.add(bien)
+            self.db.add(cession)
+            self.db.add(bien)
+
+            transaction.commit()
+            if is_nested:
+                self.db.commit()
 
         except SQLAlchemyError as e:
+            transaction.rollback()
             logger.error(f"Erreur transaction validation cession {cession_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
 
@@ -583,21 +595,29 @@ class ValidationService:
         """
         decision_enum = self._get_decision_enum(decision)
 
+        is_nested = self.db.in_transaction()
+        transaction = self.db.begin_nested() if is_nested else self.db.begin()
+
         try:
-            with self.db.begin():
-                amortissement = self.db.query(Amortissement).filter(
-                    Amortissement.id_amortissement == amortissement_id
-                ).with_for_update().first()
+            amortissement = self.db.query(Amortissement).filter(
+                Amortissement.id_amortissement == amortissement_id
+            ).with_for_update().first()
 
-                if not amortissement:
-                    raise ValueError("Amortissement non trouvé")
+            if not amortissement:
+                raise ValueError("Amortissement non trouvé")
 
-                if decision_enum == DecisionValidation.REJETE:
-                    return self._traiter_rejet_amortissement(amortissement, id_validateur, commentaire)
-                else:
-                    return self._traiter_approbation_amortissement(amortissement, id_validateur, commentaire, piece_justificative_url)
+            if decision_enum == DecisionValidation.REJETE:
+                result = self._traiter_rejet_amortissement(amortissement, id_validateur, commentaire)
+            else:
+                result = self._traiter_approbation_amortissement(amortissement, id_validateur, commentaire, piece_justificative_url)
+
+            transaction.commit()
+            if is_nested:
+                self.db.commit()
+            return result
 
         except SQLAlchemyError as e:
+            transaction.rollback()
             logger.error(f"Erreur transaction validation amortissement {amortissement_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
 
