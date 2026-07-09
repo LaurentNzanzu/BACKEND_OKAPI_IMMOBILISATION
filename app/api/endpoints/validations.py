@@ -194,7 +194,7 @@ async def approuver_validation(
                 piece_justificative_url=data.piece_justificative_url
             )
             
-            # Audit
+            # ✅ Audit - SUPPRESSION de request=request
             audit_service.log_action(
                 user_id=current_user.id,
                 table_name="validations",
@@ -204,8 +204,7 @@ async def approuver_validation(
                     "besoin_id": validation.id_besoin,
                     "ordre": ordre,
                     "commentaire": data.commentaire
-                },
-                request=request
+                }
             )
             
         elif validation.type_validation == TypeValidation.CESSION and validation.id_bien:
@@ -227,7 +226,7 @@ async def approuver_validation(
                 piece_justificative_url=data.piece_justificative_url
             )
             
-            # Audit
+            # ✅ Audit - SUPPRESSION de request=request
             audit_service.log_action(
                 user_id=current_user.id,
                 table_name="cessions",
@@ -237,8 +236,7 @@ async def approuver_validation(
                     "bien_id": validation.id_bien,
                     "ordre": ordre,
                     "statut": cession.statut.value if cession.statut else None
-                },
-                request=request
+                }
             )
             
         else:
@@ -303,7 +301,7 @@ async def rejeter_validation(
                 piece_justificative_url=data.piece_justificative_url
             )
             
-            # Audit
+            # ✅ Audit - SUPPRESSION de request=request
             audit_service.log_action(
                 user_id=current_user.id,
                 table_name="validations",
@@ -313,8 +311,7 @@ async def rejeter_validation(
                     "besoin_id": validation.id_besoin,
                     "ordre": ordre,
                     "motif": data.motif_rejet
-                },
-                request=request
+                }
             )
             
         elif validation.type_validation == TypeValidation.CESSION and validation.id_bien:
@@ -335,7 +332,7 @@ async def rejeter_validation(
                 piece_justificative_url=data.piece_justificative_url
             )
             
-            # Audit
+            # ✅ Audit - SUPPRESSION de request=request
             audit_service.log_action(
                 user_id=current_user.id,
                 table_name="cessions",
@@ -345,8 +342,7 @@ async def rejeter_validation(
                     "bien_id": validation.id_bien,
                     "ordre": ordre,
                     "motif": data.motif_rejet
-                },
-                request=request
+                }
             )
             
         else:
@@ -364,12 +360,13 @@ async def rejeter_validation(
         logger.error(f"Erreur BDD rejet validation {validation_id}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
 
+
 # ============================================================
 # ENDPOINTS D'APPROBATION PAR BESOIN_ID
 # ============================================================
 
 @router.post("/besoin/{besoin_id}/approuver", response_model=dict)
-async def approuver_besoin(  # ✅ async
+async def approuver_besoin(
     besoin_id: int,
     data: ValidationApprove,
     db: Session = Depends(get_db),
@@ -406,6 +403,7 @@ async def approuver_besoin(  # ✅ async
             piece_justificative_url=data.piece_justificative_url
         )
         
+        # ✅ Audit - SUPPRESSION de request=request
         audit_service.log_action(
             user_id=current_user.id,
             table_name="besoins",
@@ -415,8 +413,7 @@ async def approuver_besoin(  # ✅ async
                 "besoin_id": besoin_id,
                 "ordre": ordre,
                 "commentaire": data.commentaire
-            },
-            request=request
+            }
         )
         
         return {
@@ -433,7 +430,7 @@ async def approuver_besoin(  # ✅ async
 
 
 @router.post("/besoin/{besoin_id}/rejeter", response_model=dict)
-async def rejeter_besoin(  # ✅ async
+async def rejeter_besoin(
     besoin_id: int,
     data: ValidationReject,
     db: Session = Depends(get_db),
@@ -470,6 +467,7 @@ async def rejeter_besoin(  # ✅ async
             piece_justificative_url=data.piece_justificative_url
         )
         
+        # ✅ Audit - SUPPRESSION de request=request
         audit_service.log_action(
             user_id=current_user.id,
             table_name="besoins",
@@ -479,8 +477,7 @@ async def rejeter_besoin(  # ✅ async
                 "besoin_id": besoin_id,
                 "ordre": ordre,
                 "motif": data.motif_rejet
-            },
-            request=request
+            }
         )
         
         return {
@@ -495,23 +492,10 @@ async def rejeter_besoin(  # ✅ async
         logger.error(f"Erreur BDD rejet besoin {besoin_id}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
 
-# backend/app/api/endpoints/validations.py
 
-# Ajouter après les autres endpoints GET
-
-@router.get("/amortissements", response_model=List[dict])
-async def get_amortissements_a_valider(
-    db: Session = Depends(get_db),
-    current_user: Utilisateur = Depends(get_current_user)
-):
-    """
-    Récupère les amortissements en attente de validation.
-    """
-    if not check_validation_permission(current_user, "view"):
-        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    
-    service = ValidationService(db)
-    return service.get_amortissements_en_attente()
+# ============================================================
+# ENDPOINTS POUR AMORTISSEMENTS ET CESSIONS EN ATTENTE
+# ============================================================
 
 @router.get("/amortissements", response_model=List[dict])
 async def get_amortissements_a_valider(

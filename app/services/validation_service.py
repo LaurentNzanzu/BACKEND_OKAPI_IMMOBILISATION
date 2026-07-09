@@ -73,6 +73,27 @@ class ValidationService:
             return None
         return f"{getattr(bien, 'marque', None) or getattr(bien, 'fabricant', None) or ''} {getattr(bien, 'modele', '')}".strip() or f"Bien #{bien.id_bien}"
 
+    def _get_default_bien(self) -> int:
+        """Récupère ou crée un bien générique pour les besoins sans bien associé."""
+        bien = self.db.query(Bien).filter(
+            Bien.designation == "Générique - Sans bien",
+            Bien.type_bien == "autre"
+        ).first()
+        
+        if not bien:
+            bien = Bien(
+                designation="Générique - Sans bien",
+                type_bien="autre",
+                statut_comptable="ACTIF",
+                prix_acquisition=0,
+                date_acquisition=datetime.utcnow()
+            )
+            self.db.add(bien)
+            self.db.flush()
+            logger.info(f"Bien générique créé avec l'ID {bien.id_bien}")
+        
+        return bien.id_bien
+
     # ============================================================
     # WORKFLOW BESOIN – AVEC TRANSACTION ACID
     # ============================================================
@@ -88,66 +109,57 @@ class ValidationService:
     ) -> dict:
         """
         Valide ou rejette un besoin dans le workflow séquentiel.
-        Workflow: BROUILLON/EN_VALIDATION → DG → COMPTABLE → CAISSE → APPROUVEE
+        Workflow: COMPTABLE → CAISSE → DG
         
-        ✅ TRANSACTION ACID englobante
-        ✅ Budget engagé dans la transaction
+        ✅ TRANSACTION ACID avec with self.db.begin()
         ✅ Verrous pessimistes sur les lignes
         """
         ordre_enum = self._get_ordre_enum(ordre_validateur)
         decision_enum = self._get_decision_enum(decision)
 
-        is_nested = self.db.in_transaction()
-        transaction = self.db.begin_nested() if is_nested else self.db.begin()
-
         try:
-            # 1. Récupérer le besoin avec verrou pessimiste
-            besoin = self.db.query(Besoin).filter(
-                Besoin.id_besoin == besoin_id
-            ).with_for_update().first()
+            with self.db.begin():
+                # 1. Récupérer le besoin avec verrou pessimiste
+                besoin = self.db.query(Besoin).filter(
+                    Besoin.id_besoin == besoin_id
+                ).with_for_update().first()
 
-            if not besoin:
-                raise ValueError("Besoin non trouvé")
+                if not besoin:
+                    raise ValueError("Besoin non trouvé")
 
-            # 2. Vérifier que le besoin est en attente de ce validateur
-            if not self._est_en_attente_de(besoin, ordre_validateur):
-                raise ValueError(f"Ce besoin n'est pas en attente de validation par {ordre_validateur}")
+                # 2. Vérifier que le besoin est en attente de ce validateur
+                if not self._est_en_attente_de(besoin, ordre_validateur):
+                    raise ValueError(f"Ce besoin n'est pas en attente de validation par {ordre_validateur}")
 
-            # 3. Créer la validation
-            validation = Validation(
-                id_besoin=besoin_id,
-                id_validateur=id_validateur,
-                ordre_validateur=ordre_enum,
-                type_validation=TypeValidation.BESOIN,
-                decision=decision_enum,
-                commentaire=commentaire,
-                piece_justificative_url=piece_justificative_url,
-                date_validation=datetime.utcnow()
-            )
-            self.db.add(validation)
+                # 3. Créer la validation
+                validation = Validation(
+                    id_besoin=besoin_id,
+                    id_validateur=id_validateur,
+                    ordre_validateur=ordre_enum,
+                    type_validation=TypeValidation.BESOIN,
+                    decision=decision_enum,
+                    commentaire=commentaire,
+                    piece_justificative_url=piece_justificative_url,
+                    date_validation=datetime.utcnow()
+                )
+                self.db.add(validation)
 
-            # 4. Traiter la décision
-            if decision_enum == DecisionValidation.REJETE:
-                result = self._traiter_rejet_besoin(besoin, validation, id_validateur, ordre_validateur, commentaire)
-            else:
-                result = self._traiter_approbation_besoin(besoin, validation, id_validateur, ordre_validateur)
+                # 4. Traiter la décision
+                if decision_enum == DecisionValidation.REJETE:
+                    result = self._traiter_rejet_besoin(besoin, validation, id_validateur, ordre_validateur, commentaire)
+                else:
+                    result = self._traiter_approbation_besoin(besoin, validation, id_validateur, ordre_validateur)
 
-            # 5. Mettre à jour le besoin
-            self.db.add(besoin)
-
-            transaction.commit()
-            if is_nested:
-                self.db.commit()
+                # 5. Mettre à jour le besoin
+                self.db.add(besoin)
 
         except SQLAlchemyError as e:
-            transaction.rollback()
             logger.error(f"Erreur transaction validation besoin {besoin_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
         except ValueError as e:
-            transaction.rollback()
             raise
 
-        # Rafraîchir et journaliser
+        # Rafraîchir et journaliser (hors transaction)
         self.db.refresh(besoin)
         self.audit_service.log_action(
             user_id=id_validateur,
@@ -198,7 +210,8 @@ class ValidationService:
                 type_notif=TypeNotificationEnum.BESOIN_REJETE,
                 titre=f"❌ Besoin rejeté - {besoin.numero_demande}",
                 contenu=f"Votre demande {besoin.numero_demande} a été rejetée par {ordre}. Motif: {motif or 'Non spécifié'}",
-                lien=f"/pannes/{besoin.id_panne}"
+                lien=f"/pannes/{besoin.id_panne}",
+                commit=False
             )
 
         return {
@@ -244,8 +257,7 @@ class ValidationService:
                 centre_cout=centre_cout,
                 exercice=annee,
                 montant=besoin.montant_total,
-                validation_id=validation.id_validation,
-                commit=False
+                validation_id=validation.id_validation
             )
             if engagement and hasattr(engagement, "id_budget"):
                 besoin.id_budget = engagement.id_budget
@@ -297,7 +309,8 @@ class ValidationService:
                     type_notif=TypeNotificationEnum.FOURNITURE_EN_ATTENTE,
                     titre=f"💰 Bon de décaissement généré - {besoin.numero_demande}",
                     contenu=f"Le besoin {besoin.numero_demande} a reçu la validation finale de la DG. Montant: {besoin.montant_total:,.0f} USD. Veuillez procéder au décaissement.",
-                    lien=f"/besoins/{besoin.id_besoin}"
+                    lien=f"/besoins/{besoin.id_besoin}",
+                    commit=False
                 )
 
         # Notifier le prochain validateur
@@ -321,9 +334,25 @@ class ValidationService:
         return "SERVICE_GENERAL"
 
     def _generer_bon_decaissement(self, besoin: Besoin, validateur_id: int) -> dict:
-        """Génère un bon de décaissement numérique."""
+        """
+        Génère un bon de décaissement numérique.
+        """
+        # Récupérer le bien associé au besoin
+        bien_id = None
+        
+        if besoin.id_panne:
+            panne = self.db.query(Panne).filter(Panne.id_panne == besoin.id_panne).first()
+            if panne and panne.id_bien:
+                bien_id = panne.id_bien
+                logger.info(f"Bien trouvé via la panne: {bien_id}")
+        
+        # Si pas de bien trouvé, utiliser un bien générique
+        if bien_id is None:
+            logger.warning(f"Aucun bien associé au besoin {besoin.id_besoin}, utilisation du bien générique")
+            bien_id = self._get_default_bien()
+        
         ecriture = EcritureComptable(
-            id_bien=None,
+            id_bien=bien_id,
             date_ecriture=datetime.utcnow(),
             exercice=datetime.utcnow().year,
             type_operation=TypeOperationEnum.DECAISSEMENT,
@@ -377,7 +406,8 @@ class ValidationService:
                 type_notif=TypeNotificationEnum.BESOIN_VALIDE,
                 titre=titre,
                 contenu=contenu,
-                lien=f"/validations/besoins/{besoin.id_besoin}"
+                lien=f"/validations/besoins/{besoin.id_besoin}",
+                commit=False
             )
 
     # ============================================================
@@ -402,60 +432,55 @@ class ValidationService:
         ordre_enum = self._get_ordre_enum(ordre_validateur)
         decision_enum = self._get_decision_enum(decision)
 
-        is_nested = self.db.in_transaction()
-        transaction = self.db.begin_nested() if is_nested else self.db.begin()
-
         try:
-            # 1. Récupérer la cession avec verrou
-            cession = self.db.query(Cession).filter(
-                Cession.id_cession == cession_id
-            ).with_for_update().first()
+            with self.db.begin():
+                # 1. Récupérer la cession avec verrou
+                cession = self.db.query(Cession).filter(
+                    Cession.id_cession == cession_id
+                ).with_for_update().first()
 
-            if not cession:
-                raise ValueError("Cession non trouvée")
+                if not cession:
+                    raise ValueError("Cession non trouvée")
 
-            # 2. Récupérer le bien avec verrou
-            bien = self.db.query(Bien).filter(
-                Bien.id_bien == cession.id_bien
-            ).with_for_update().first()
+                # 2. Récupérer le bien avec verrou
+                bien = self.db.query(Bien).filter(
+                    Bien.id_bien == cession.id_bien
+                ).with_for_update().first()
 
-            if not bien:
-                raise ValueError(f"Bien associé à la cession non trouvé")
+                if not bien:
+                    raise ValueError(f"Bien associé à la cession non trouvé")
 
-            # 3. Vérifier que la cession est dans le bon statut
-            if not self._est_en_attente_de_cession(cession, ordre_validateur):
-                raise ValueError(f"Cette cession n'est pas en attente de validation par {ordre_validateur}")
+                # 3. Vérifier que la cession est dans le bon statut
+                if not self._est_en_attente_de_cession(cession, ordre_validateur):
+                    raise ValueError(f"Cette cession n'est pas en attente de validation par {ordre_validateur}")
 
-            # 4. Créer la validation
-            validation = Validation(
-                id_bien=cession.id_bien,
-                id_validateur=id_validateur,
-                ordre_validateur=ordre_enum,
-                type_validation=TypeValidation.CESSION,
-                decision=decision_enum,
-                commentaire=commentaire,
-                piece_justificative_url=piece_justificative_url,
-                date_validation=datetime.utcnow()
-            )
-            self.db.add(validation)
+                # 4. Créer la validation
+                validation = Validation(
+                    id_bien=cession.id_bien,
+                    id_validateur=id_validateur,
+                    ordre_validateur=ordre_enum,
+                    type_validation=TypeValidation.CESSION,
+                    decision=decision_enum,
+                    commentaire=commentaire,
+                    piece_justificative_url=piece_justificative_url,
+                    date_validation=datetime.utcnow()
+                )
+                self.db.add(validation)
 
-            # 5. Traiter la décision
-            if decision_enum == DecisionValidation.REJETE:
-                result = self._traiter_rejet_cession(cession, validation, id_validateur, ordre_validateur, commentaire)
-            else:
-                result = self._traiter_approbation_cession(cession, bien, validation, id_validateur, ordre_validateur)
+                # 5. Traiter la décision
+                if decision_enum == DecisionValidation.REJETE:
+                    result = self._traiter_rejet_cession(cession, validation, id_validateur, ordre_validateur, commentaire)
+                else:
+                    result = self._traiter_approbation_cession(cession, bien, validation, id_validateur, ordre_validateur)
 
-            self.db.add(cession)
-            self.db.add(bien)
-
-            transaction.commit()
-            if is_nested:
-                self.db.commit()
+                self.db.add(cession)
+                self.db.add(bien)
 
         except SQLAlchemyError as e:
-            transaction.rollback()
             logger.error(f"Erreur transaction validation cession {cession_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
+        except ValueError as e:
+            raise
 
         self.db.refresh(cession)
         self.audit_service.log_action(
@@ -488,7 +513,8 @@ class ValidationService:
             type_notif=TypeNotificationEnum.BESOIN_REJETE,
             titre=f"❌ Cession rejetée - Bien #{cession.id_bien}",
             contenu=f"La demande de cession a été rejetée par {ordre}. Motif: {motif or 'Non spécifié'}",
-            lien=f"/cessions/{cession.id_cession}"
+            lien=f"/cessions/{cession.id_cession}",
+            commit=False
         )
 
         return {
@@ -575,7 +601,8 @@ class ValidationService:
                 type_notif=TypeNotificationEnum.BESOIN_VALIDE,
                 titre=f"📋 Cession à valider - Bien #{cession.id_bien}",
                 contenu=f"La demande de cession est en attente de validation par {prochain.value}.",
-                lien=f"/cessions/{cession.id_cession}"
+                lien=f"/cessions/{cession.id_cession}",
+                commit=False
             )
 
     # ============================================================
@@ -595,31 +622,27 @@ class ValidationService:
         """
         decision_enum = self._get_decision_enum(decision)
 
-        is_nested = self.db.in_transaction()
-        transaction = self.db.begin_nested() if is_nested else self.db.begin()
-
         try:
-            amortissement = self.db.query(Amortissement).filter(
-                Amortissement.id_amortissement == amortissement_id
-            ).with_for_update().first()
+            with self.db.begin():
+                amortissement = self.db.query(Amortissement).filter(
+                    Amortissement.id_amortissement == amortissement_id
+                ).with_for_update().first()
 
-            if not amortissement:
-                raise ValueError("Amortissement non trouvé")
+                if not amortissement:
+                    raise ValueError("Amortissement non trouvé")
 
-            if decision_enum == DecisionValidation.REJETE:
-                result = self._traiter_rejet_amortissement(amortissement, id_validateur, commentaire)
-            else:
-                result = self._traiter_approbation_amortissement(amortissement, id_validateur, commentaire, piece_justificative_url)
-
-            transaction.commit()
-            if is_nested:
-                self.db.commit()
-            return result
+                if decision_enum == DecisionValidation.REJETE:
+                    result = self._traiter_rejet_amortissement(amortissement, id_validateur, commentaire)
+                else:
+                    result = self._traiter_approbation_amortissement(amortissement, id_validateur, commentaire, piece_justificative_url)
 
         except SQLAlchemyError as e:
-            transaction.rollback()
             logger.error(f"Erreur transaction validation amortissement {amortissement_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
+        except ValueError as e:
+            raise
+
+        return result
 
     def _traiter_rejet_amortissement(self, amortissement: Amortissement, id_validateur: int, motif: str):
         """Traite le rejet d'un amortissement."""
@@ -630,7 +653,8 @@ class ValidationService:
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
             titre=f"⚠️ Amortissement rejeté - Exercice {amortissement.exercice}",
             contenu=f"L'amortissement a été rejeté. Motif: {motif or 'Non spécifié'}",
-            lien=f"/amortissements/{amortissement.id_amortissement}"
+            lien=f"/amortissements/{amortissement.id_amortissement}",
+            commit=False
         )
 
         return {
@@ -656,7 +680,8 @@ class ValidationService:
                     type_notif=TypeNotificationEnum.ALERTE_STOCK,
                     titre=f"💰 Trésorerie insuffisante - Amortissement {amortissement.exercice}",
                     contenu=f"La trésorerie est insuffisante pour l'amortissement. Manque: {tresorerie['manque']:,.0f} USD",
-                    lien=f"/amortissements/{amortissement.id_amortissement}"
+                    lien=f"/amortissements/{amortissement.id_amortissement}",
+                    commit=False
                 )
 
             return {
@@ -957,87 +982,86 @@ class ValidationService:
         """Méthode legacy de validation."""
         pass
 
-# backend/app/services/validation_service.py
+    # ============================================================
+    # MÉTHODES POUR AMORTISSEMENTS ET CESSIONS EN ATTENTE
+    # ============================================================
 
-# Ajouter ces méthodes à la classe ValidationService
+    def get_amortissements_en_attente(self) -> List[dict]:
+        """
+        Récupère les amortissements en attente de validation.
+        """
+        from ..models.amortissement import Amortissement, StatutAmortissement
+        
+        amortissements = self.db.query(Amortissement).filter(
+            Amortissement.statut == StatutAmortissement.EN_ATTENTE
+        ).all()
+        
+        result = []
+        for a in amortissements:
+            bien = None
+            if a.id_bien:
+                bien = self.db.query(Bien).filter(Bien.id_bien == a.id_bien).first()
+            
+            designation = "Bien non spécifié"
+            if bien:
+                designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip()
+                if not designation:
+                    designation = f"Bien #{bien.id_bien}"
+            
+            result.append({
+                "id_amortissement": a.id_amortissement,
+                "id_bien": a.id_bien,
+                "bien_designation": designation,
+                "exercice": a.exercice,
+                "annuite_comptable": float(a.annuite_comptable) if a.annuite_comptable else 0,
+                "date_debut": a.date_debut.isoformat() if a.date_debut else None,
+                "date_fin": a.date_fin.isoformat() if a.date_fin else None,
+                "statut": a.statut.value if a.statut else None,
+                "date_creation": a.date_creation.isoformat() if a.date_creation else None
+            })
+        
+        return result
 
-def get_amortissements_en_attente(self) -> List[dict]:
-    """
-    Récupère les amortissements en attente de validation.
-    """
-    from ..models.amortissement import Amortissement, StatutAmortissement
-    
-    amortissements = self.db.query(Amortissement).filter(
-        Amortissement.statut == StatutAmortissement.EN_ATTENTE
-    ).all()
-    
-    result = []
-    for a in amortissements:
-        bien = None
-        if a.id_bien:
-            bien = self.db.query(Bien).filter(Bien.id_bien == a.id_bien).first()
+    def get_cessions_en_attente(self) -> List[dict]:
+        """
+        Récupère les cessions en attente de validation.
+        """
+        from ..models.cession import Cession, StatutCession
         
-        designation = "Bien non spécifié"
-        if bien:
-            designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip()
-            if not designation:
-                designation = f"Bien #{bien.id_bien}"
+        cessions = self.db.query(Cession).filter(
+            Cession.statut.in_([StatutCession.EN_ATTENTE_VALIDATION, StatutCession.EN_COURS])
+        ).all()
         
-        result.append({
-            "id_amortissement": a.id_amortissement,
-            "id_bien": a.id_bien,
-            "bien_designation": designation,
-            "exercice": a.exercice,
-            "annuite_comptable": float(a.annuite_comptable) if a.annuite_comptable else 0,
-            "date_debut": a.date_debut.isoformat() if a.date_debut else None,
-            "date_fin": a.date_fin.isoformat() if a.date_fin else None,
-            "statut": a.statut.value if a.statut else None,
-            "date_creation": a.date_creation.isoformat() if a.date_creation else None
-        })
-    
-    return result
-
-
-def get_cessions_en_attente(self) -> List[dict]:
-    """
-    Récupère les cessions en attente de validation.
-    """
-    from ..models.cession import Cession, StatutCession
-    
-    cessions = self.db.query(Cession).filter(
-        Cession.statut.in_([StatutCession.EN_ATTENTE_VALIDATION, StatutCession.EN_COURS])
-    ).all()
-    
-    result = []
-    for c in cessions:
-        bien = None
-        if c.id_bien:
-            bien = self.db.query(Bien).filter(Bien.id_bien == c.id_bien).first()
+        result = []
+        for c in cessions:
+            bien = None
+            if c.id_bien:
+                bien = self.db.query(Bien).filter(Bien.id_bien == c.id_bien).first()
+            
+            designation = "Bien non spécifié"
+            if bien:
+                designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip()
+                if not designation:
+                    designation = f"Bien #{bien.id_bien}"
+            
+            # Déterminer l'étape actuelle
+            etape = "DEMANDE"
+            if c.date_validation_finale:
+                etape = "TERMINE"
+            elif c.date_validation_dg:
+                etape = "CAISSE"
+            elif c.date_validation_caissier:
+                etape = "COMPTABLE"
+            
+            result.append({
+                "id_cession": c.id_cession,
+                "id_bien": c.id_bien,
+                "bien_designation": designation,
+                "prix_cession": float(c.prix_cession) if c.prix_cession else 0,
+                "acheteur": c.acheteur,
+                "date_demande": c.date_demande.isoformat() if c.date_demande else None,
+                "statut": c.statut.value if c.statut else None,
+                "etape_actuelle": etape
+            })
         
-        designation = "Bien non spécifié"
-        if bien:
-            designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip()
-            if not designation:
-                designation = f"Bien #{bien.id_bien}"
-        
-        # Déterminer l'étape actuelle
-        etape = "DEMANDE"
-        if c.date_validation_finale:
-            etape = "TERMINE"
-        elif c.date_validation_dg:
-            etape = "CAISSE"
-        elif c.date_validation_caissier:
-            etape = "COMPTABLE"
-        
-        result.append({
-            "id_cession": c.id_cession,
-            "id_bien": c.id_bien,
-            "bien_designation": designation,
-            "prix_cession": float(c.prix_cession) if c.prix_cession else 0,
-            "acheteur": c.acheteur,
-            "date_demande": c.date_demande.isoformat() if c.date_demande else None,
-            "statut": c.statut.value if c.statut else None,
-            "etape_actuelle": etape
-        })
-    
-    return result
+        return result

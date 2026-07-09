@@ -70,6 +70,7 @@ class NotificationService:
         contenu: str,
         lien: Optional[str] = None,
         priorite: Optional[str] = None,
+        commit: bool = True
     ) -> Optional[Notification]:
         if isinstance(ids_destinataires, int):
             ids_destinataires = [ids_destinataires]
@@ -102,8 +103,11 @@ class NotificationService:
                 )
             )
 
-        self.db.commit()
-        self.db.refresh(notif)
+        if commit:
+            self.db.commit()
+            self.db.refresh(notif)
+        else:
+            self.db.flush()
 
         import asyncio
         for id_dest in ids_destinataires:
