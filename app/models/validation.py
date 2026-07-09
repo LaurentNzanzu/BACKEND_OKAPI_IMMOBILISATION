@@ -24,7 +24,6 @@ class TypeValidation(enum.Enum):
 
 # Ordre strict du workflow
 WORKFLOW_ORDER = [
-    OrdreValidation.TECHNICIEN,
     OrdreValidation.COMPTABLE,
     OrdreValidation.CAISSE,
     OrdreValidation.DG

@@ -182,7 +182,7 @@ async def value_error_handler(request: Request, exc: ValueError):
             "success": False,
             "code": "BUSINESS_ERROR",
             "message": str(exc),
-            "detail": None
+            "detail": str(exc)
         }
     )
 

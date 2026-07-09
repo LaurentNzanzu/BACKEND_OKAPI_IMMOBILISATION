@@ -23,13 +23,19 @@ class ValidationCreate(ValidationBase):
 
 class ValidationApprove(BaseModel):
     """Schéma pour approuver une validation"""
-    decision: DecisionValidation = DecisionValidation.APPROUVE
+    decision: Optional[DecisionValidation] = Field(
+        default=DecisionValidation.APPROUVE,
+        description="Décision d'approbation"
+    )
     commentaire: Optional[str] = Field(None, max_length=500)
     piece_justificative_url: Optional[str] = None
 
 class ValidationReject(BaseModel):
     """Schéma pour rejeter une validation (motif obligatoire)"""
-    decision: DecisionValidation = DecisionValidation.REJETE
+    decision: Optional[DecisionValidation] = Field(
+        default=DecisionValidation.REJETE,
+        description="Décision de rejet"
+    )
     motif_rejet: str = Field(..., min_length=5, max_length=1000, description="Motif du rejet (obligatoire)")
     commentaire: Optional[str] = Field(None, max_length=500)
     piece_justificative_url: Optional[str] = None
@@ -99,11 +105,20 @@ class ValidationListResponse(BaseModel):
 
 class ValidationWorkflowStatus(BaseModel):
     """Schéma pour le statut du workflow de validation"""
-    etape_actuelle: str
-    progression: float  # Pourcentage de progression
-    est_termine: bool
-    est_approuve: bool
-    validations: List[dict]
-    etapes_suivantes: List[str]
+    id_besoin: Optional[int] = None
+    numero_demande: Optional[str] = None
+    statut_actuel: Optional[str] = None
+    montant_total: Optional[float] = 0.0
+    etape_actuelle: Optional[str] = None
+    progression: float = 0.0
+    est_termine: bool = False
+    est_approuve: bool = False
+    etapes: List[dict] = Field(default_factory=list)
+    validations: List[dict] = Field(default_factory=list)
+    validations_realisees: List[dict] = Field(default_factory=list)
+    etapes_suivantes: List[str] = Field(default_factory=list)
     verification_budget: Optional[dict] = Field(None, description="Infos de vérification budgétaire")
     verification_tresorerie: Optional[dict] = Field(None, description="Infos de vérification de trésorerie")
+    
+    class Config:
+        from_attributes = True

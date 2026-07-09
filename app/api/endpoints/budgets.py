@@ -62,31 +62,36 @@ async def create_budget(
     audit_service = AuditService(db)
     
     try:
-        # ✅ with db.begin() gère automatiquement le commit/rollback
-        with db.begin():
+        with db.begin_nested() if db.in_transaction() else db.begin():
             budget = service.creer_budget(data)
-            
-            audit_service.log_create(
-                user_id=current_user.id,
-                table_name="budgets",
-                record_id=budget.id_budget,
-                new_values={
-                    "centre_cout": budget.centre_cout,
-                    "exercice": budget.exercice,
-                    "montant_alloue": float(budget.montant_alloue)
-                },
-                request=request
-            )
-            
-        # ✅ Rafraîchir après le commit
-        db.refresh(budget)
-        return budget
-        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SQLAlchemyError as e:
         logger.error(f"Erreur BDD création budget: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
+
+    # Logging audit outside the transaction block to avoid db.commit() conflict inside with db.begin()
+    try:
+        audit_service.log_create(
+            user_id=current_user.id,
+            table_name="budgets",
+            record_id=budget.id_budget,
+            new_values={
+                "centre_cout": budget.centre_cout,
+                "exercice": budget.exercice,
+                "montant_alloue": float(budget.montant_alloue)
+            },
+            request=request
+        )
+    except Exception as e:
+        logger.error(f"Erreur d'enregistrement de l'audit pour la création du budget: {e}")
+
+    try:
+        db.refresh(budget)
+    except SQLAlchemyError as e:
+        logger.error(f"Erreur lors du rafraîchissement du budget: {e}")
+
+    return budget
 
 
 @router.get("/", response_model=List[BudgetResponse])
@@ -149,34 +154,43 @@ async def update_budget(
     if not old_budget:
         raise HTTPException(status_code=404, detail="Budget non trouvé")
     
+    old_montant_alloue = float(old_budget.montant_alloue) if old_budget.montant_alloue is not None else 0.0
+    old_montant_utilise = float(old_budget.montant_utilise) if old_budget.montant_utilise is not None else 0.0
+    
     try:
-        # ✅ with db.begin() gère automatiquement le commit/rollback
-        with db.begin():
+        with db.begin_nested() if db.in_transaction() else db.begin():
             budget = service.update_budget(id_budget, data)
-            
-            audit_service.log_update(
-                user_id=current_user.id,
-                table_name="budgets",
-                record_id=id_budget,
-                old_values={
-                    "montant_alloue": float(old_budget.montant_alloue),
-                    "montant_utilise": float(old_budget.montant_utilise)
-                },
-                new_values={
-                    "montant_alloue": float(budget.montant_alloue),
-                    "montant_utilise": float(budget.montant_utilise)
-                },
-                request=request
-            )
-            
-        db.refresh(budget)
-        return budget
-        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SQLAlchemyError as e:
         logger.error(f"Erreur BDD mise à jour budget {id_budget}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
+
+    # Logging audit outside the transaction block to avoid db.commit() conflict inside with db.begin()
+    try:
+        audit_service.log_update(
+            user_id=current_user.id,
+            table_name="budgets",
+            record_id=id_budget,
+            old_values={
+                "montant_alloue": old_montant_alloue,
+                "montant_utilise": old_montant_utilise
+            },
+            new_values={
+                "montant_alloue": float(budget.montant_alloue),
+                "montant_utilise": float(budget.montant_utilise)
+            },
+            request=request
+        )
+    except Exception as e:
+        logger.error(f"Erreur d'enregistrement de l'audit pour la mise à jour du budget {id_budget}: {e}")
+
+    try:
+        db.refresh(budget)
+    except SQLAlchemyError as e:
+        logger.error(f"Erreur lors du rafraîchissement du budget: {e}")
+        
+    return budget
 
 
 @router.delete("/{id_budget}", status_code=status.HTTP_204_NO_CONTENT)
@@ -194,26 +208,31 @@ async def delete_budget(
     if not budget:
         raise HTTPException(status_code=404, detail="Budget non trouvé")
     
+    old_values = {
+        "centre_cout": budget.centre_cout,
+        "exercice": budget.exercice,
+        "montant_alloue": float(budget.montant_alloue) if budget.montant_alloue is not None else 0.0
+    }
+    
     try:
-        # ✅ with db.begin() pour la suppression
-        with db.begin():
-            audit_service = AuditService(db)
-            audit_service.log_delete(
-                user_id=current_user.id,
-                table_name="budgets",
-                record_id=id_budget,
-                old_values={
-                    "centre_cout": budget.centre_cout,
-                    "exercice": budget.exercice,
-                    "montant_alloue": float(budget.montant_alloue)
-                },
-                request=request
-            )
+        with db.begin_nested() if db.in_transaction() else db.begin():
             db.delete(budget)
-            
     except SQLAlchemyError as e:
         logger.error(f"Erreur BDD suppression budget {id_budget}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
+
+    # Logging audit outside the transaction block to avoid db.commit() conflict inside with db.begin()
+    try:
+        audit_service = AuditService(db)
+        audit_service.log_delete(
+            user_id=current_user.id,
+            table_name="budgets",
+            record_id=id_budget,
+            old_values=old_values,
+            request=request
+        )
+    except Exception as e:
+        logger.error(f"Erreur d'enregistrement de l'audit pour la suppression du budget {id_budget}: {e}")
 
 
 # ============================================================
