@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 import io
 from typing import List, Optional
 import logging
+from pydantic import ValidationError
 
 from ...models.validation import DecisionValidation, OrdreValidation, TypeValidation, Validation
 from ...schemas.notification import TypeNotificationEnum
@@ -163,28 +164,45 @@ def get_biens(
                 detail=f"État invalide. Valeurs possibles: {[e.value for e in EtatBien]}",
             )
 
-    if get_user_role(current_user) == "TECHNICIEN":
-        biens = service.get_biens_for_technicien(
-            current_user.id,
-            skip=skip,
-            limit=limit,
-            type_bien=type_bien,
-            etat=etat_enum,
-            search=search,
-        )
-    else:
-        biens = service.get_all_biens(
-            skip=skip, limit=limit, type_bien=type_bien, etat=etat_enum, search=search
-        )
+    try:
+        if get_user_role(current_user) == "TECHNICIEN":
+            biens = service.get_biens_for_technicien(
+                current_user.id,
+                skip=skip,
+                limit=limit,
+                type_bien=type_bien,
+                etat=etat_enum,
+                search=search,
+            )
+        else:
+            biens = service.get_all_biens(
+                skip=skip, limit=limit, type_bien=type_bien, etat=etat_enum, search=search
+            )
 
-    total_count = service.get_biens_count(type_bien=type_bien, etat=etat_enum, search=search)
+        total_count = service.get_biens_count(type_bien=type_bien, etat=etat_enum, search=search)
 
-    return BienListResponse(
-        total=total_count,
-        page=(skip // limit) + 1,
-        page_size=limit,
-        biens=[_to_bien_response(b, current_user) for b in biens],
-    )
+        return BienListResponse(
+            total=total_count,
+            page=(skip // limit) + 1,
+            page_size=limit,
+            biens=[_to_bien_response(b, current_user) for b in biens],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des biens: {str(e)}", exc_info=True)
+        if isinstance(e, ValidationError):
+            logger.error(f"Détails de l'erreur de validation Pydantic : {e.errors()}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Erreur de validation de schéma (Pydantic): {e.errors()}"
+            )
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur interne: {str(e)}"
+        )
 
 
 @router.get("/{bien_id}", response_model=BienResponse)
@@ -199,28 +217,45 @@ async def get_bien(
         _deny(current_user, "view_bien", "Permissions insuffisantes pour voir ce bien", request, bien_id)
 
     service = BienService(db)
-    bien = service.get_bien_by_id(bien_id)
-    if not bien:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Bien {bien_id} non trouvé")
+    try:
+        bien = service.get_bien_by_id(bien_id)
+        if not bien:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Bien {bien_id} non trouvé")
 
-    if not can_view_bien_detail(current_user, bien, db, panne_id):
-        _deny(
+        if not can_view_bien_detail(current_user, bien, db, panne_id):
+            _deny(
+                current_user,
+                "view_bien_detail",
+                "Accès refusé : ce bien n'est pas dans votre périmètre technicien",
+                request,
+                bien_id,
+            )
+
+        log_access_granted(
             current_user,
             "view_bien_detail",
-            "Accès refusé : ce bien n'est pas dans votre périmètre technicien",
-            request,
-            bien_id,
+            resource_id=bien_id,
+            detail=f"panne_id={panne_id}" if panne_id else None,
+            request=request,
         )
 
-    log_access_granted(
-        current_user,
-        "view_bien_detail",
-        resource_id=bien_id,
-        detail=f"panne_id={panne_id}" if panne_id else None,
-        request=request,
-    )
-
-    return _to_bien_response(bien, current_user)
+        return _to_bien_response(bien, current_user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération du bien: {str(e)}", exc_info=True)
+        if isinstance(e, ValidationError):
+            logger.error(f"Détails de l'erreur de validation Pydantic : {e.errors()}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Erreur de validation de schéma (Pydantic): {e.errors()}"
+            )
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur interne: {str(e)}"
+        )
 
 
 @router.put("/{bien_id}", response_model=BienResponse)

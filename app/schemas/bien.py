@@ -15,6 +15,7 @@ class EtatBienEnum(str, Enum):
     PANNE = "PANNE"
     REFORME = "REFORME"
     MAINTENANCE = "MAINTENANCE"
+    EN_TEST = "EN_TEST"
 
 
 class ModePaiementEnum(str, Enum):
