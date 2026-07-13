@@ -446,7 +446,6 @@ class EtatsService:
                 "date_creation": besoin.date_creation.strftime("%d/%m/%Y") if besoin.date_creation else "",
                 "statut": self._statut_besoin_label(besoin.statut),
                 "montant_total": float(besoin.montant_total or 0),
-                "observations": besoin.observations or "",
             },
             "panne": {
                 "id_panne": panne.id_panne if panne else None,

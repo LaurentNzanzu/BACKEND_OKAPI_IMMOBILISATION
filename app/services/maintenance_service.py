@@ -51,7 +51,7 @@ class MaintenanceService:
         ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 bien = self.db.query(Bien).filter(
                     Bien.id_bien == data.id_bien
                 ).with_for_update().first()
@@ -171,7 +171,7 @@ class MaintenanceService:
         ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 maintenance = self.db.query(Maintenance).filter(
                     Maintenance.id_maintenance == id_maintenance
                 ).with_for_update().first()
@@ -197,7 +197,7 @@ class MaintenanceService:
         ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 maintenance = self.db.query(Maintenance).filter(
                     Maintenance.id_maintenance == id_maintenance
                 ).with_for_update().first()
@@ -230,7 +230,7 @@ class MaintenanceService:
         ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 maintenance = self.db.query(Maintenance).filter(
                     Maintenance.id_maintenance == id_maintenance
                 ).with_for_update().first()
@@ -252,11 +252,10 @@ class MaintenanceService:
                 # Mise à jour de l'état du bien
                 self._mettre_a_jour_etat_bien_apres_maintenance(maintenance, bien)
 
+            self.db.refresh(maintenance)
         except SQLAlchemyError as e:
             logger.error(f"Erreur terminaison maintenance {id_maintenance}: {e}")
             raise ValueError(f"Échec de la terminaison: {str(e)}")
-
-        self.db.refresh(maintenance)
 
         # Journaliser la fin de maintenance (hors transaction)
         try:
@@ -307,7 +306,7 @@ class MaintenanceService:
     def _planifier_prochaine_maintenance_preventive(self, maintenance: Maintenance):
         """Planifie automatiquement la prochaine maintenance préventive."""
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 nouvelle_date = maintenance.date_fin_reelle + timedelta(days=maintenance.periodicite_jours)
                 prochaine_maintenance = Maintenance(
                     id_bien=maintenance.id_bien,
@@ -330,7 +329,7 @@ class MaintenanceService:
         ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 maintenance = self.db.query(Maintenance).filter(
                     Maintenance.id_maintenance == id_maintenance
                 ).with_for_update().first()
@@ -364,7 +363,7 @@ class MaintenanceService:
         ✅ TRANSACTION ACID avec with db.begin()
         """
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 maintenance = self.db.query(Maintenance).filter(
                     Maintenance.id_maintenance == id_maintenance
                 ).with_for_update().first()
@@ -569,7 +568,7 @@ class MaintenanceService:
                 date_planifiee = datetime.now(timezone.utc) + timedelta(days=DELAI_PLANIFICATION_AUTO)
 
                 try:
-                    with self.db.begin():
+                    with self.db.begin_nested():
                         nouvelle_maintenance = Maintenance(
                             id_bien=bien_id,
                             type_maintenance=TypeMaintenance.PREVENTIVE,
@@ -634,7 +633,7 @@ class MaintenanceService:
 
         if ratio_vnc <= seuil_ratio:
             try:
-                with self.db.begin():
+                with self.db.begin_nested():
                     alerte = AlerteVNC(
                         bien_id=bien_id,
                         seuil_atteint=f"{seuil}%",
@@ -698,7 +697,7 @@ class MaintenanceService:
             raise ValueError(f"Bien {bien_id} non trouvé")
 
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 # Supprimer les anciennes projections
                 self.db.query(ProjectionInvestissement).filter(
                     ProjectionInvestissement.bien_id == bien_id
@@ -832,7 +831,7 @@ class MaintenanceService:
                 metadonnees=metadonnees
             )
             self.db.add(journal)
-            self.db.commit()
+            self.db.flush()
         except Exception as e:
             # 🔴 Ne pas rollback — laisser la transaction parente gérer
             logger.error(f"Erreur lors de la journalisation: {e}")

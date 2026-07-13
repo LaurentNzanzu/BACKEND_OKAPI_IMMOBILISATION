@@ -118,7 +118,7 @@ class ValidationService:
         decision_enum = self._get_decision_enum(decision)
 
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 # 1. Récupérer le besoin avec verrou pessimiste
                 besoin = self.db.query(Besoin).filter(
                     Besoin.id_besoin == besoin_id
@@ -153,14 +153,14 @@ class ValidationService:
                 # 5. Mettre à jour le besoin
                 self.db.add(besoin)
 
+            self.db.refresh(besoin)
         except SQLAlchemyError as e:
             logger.error(f"Erreur transaction validation besoin {besoin_id}: {e}")
             raise ValueError(f"Échec de la validation : {str(e)}")
         except ValueError as e:
             raise
 
-        # Rafraîchir et journaliser (hors transaction)
-        self.db.refresh(besoin)
+        # Journaliser (hors transaction)
         self.audit_service.log_action(
             user_id=id_validateur,
             table_name="besoins",
@@ -291,15 +291,19 @@ class ValidationService:
             bon_decaissement = self._generer_bon_decaissement(besoin, id_validateur)
 
             # Ordonner le mouvement de caisse réel (sortie)
-            from .caisse_service import CaisseService
+            from ..services.caisse_service import CaisseService
             caisse_service = CaisseService(self.db)
-            caisse_service.ordonner_mouvement_caisse(
-                type_mouvement="SORTIE",
-                montant=float(besoin.montant_total),
-                origine_type="BESOIN",
-                origine_id=besoin.id_besoin,
-                motif=f"Décaissement besoin {besoin.numero_demande} : {getattr(besoin, 'observations', '') or ''}"
-            )
+            try:
+                caisse_service.ordonner_mouvement_caisse(
+                    type_mouvement="SORTIE",
+                    montant=float(besoin.montant_total),
+                    origine_type="BESOIN",
+                    origine_id=besoin.id_besoin,
+                    motif=f"Décaissement besoin {besoin.numero_demande} : {getattr(besoin, 'observations', '') or ''}"
+                )
+            except Exception as e:
+                logger.error(f"Échec de l'ordonnancement du mouvement de caisse pour le besoin {besoin.id_besoin}: {e}")
+                raise ValueError(f"Erreur de caisse lors de l'ordonnancement du mouvement : {str(e)}")
 
             # Notifier le caissier pour le paiement effectif
             caissiers = self._get_utilisateurs_par_roles("CAISSE")
@@ -433,7 +437,7 @@ class ValidationService:
         decision_enum = self._get_decision_enum(decision)
 
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 # 1. Récupérer la cession avec verrou
                 cession = self.db.query(Cession).filter(
                     Cession.id_cession == cession_id
@@ -623,7 +627,7 @@ class ValidationService:
         decision_enum = self._get_decision_enum(decision)
 
         try:
-            with self.db.begin():
+            with self.db.begin_nested():
                 amortissement = self.db.query(Amortissement).filter(
                     Amortissement.id_amortissement == amortissement_id
                 ).with_for_update().first()
