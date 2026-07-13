@@ -182,7 +182,7 @@ async def value_error_handler(request: Request, exc: ValueError):
             "success": False,
             "code": "BUSINESS_ERROR",
             "message": str(exc),
-            "detail": str(exc)
+            "detail": None
         }
     )
 
@@ -391,7 +391,7 @@ app.include_router(etats_financiers.router, prefix=API_V1_PREFIX)
 # ============================================================
 # ENDPOINTS ROOT ET HEALTH
 # ============================================================
-#je suis desormais le root de l'API
+
 @app.get("/", tags=["Root"])
 def read_root():
     return {
