@@ -34,7 +34,7 @@ class BienBase(BaseModel):
     date_acquisition: Optional[date] = None
     prix_acquisition: Optional[Decimal] = Field(None, gt=0, description="Prix d'acquisition (strictement positif)")
     etat: EtatBienEnum = EtatBienEnum.NEUF
-    id_localisation: int = Field(..., gt=0, description="ID de la localisation (FK)")
+    id_localisation: Optional[int] = Field(None, gt=0, description="ID de la localisation (FK)")  # ✅ Rendre optionnel
     date_fin_garantie: Optional[date] = None
     description: Optional[str] = None
     image: Optional[str] = None
@@ -122,7 +122,7 @@ class BienCreate(BienBase):
 
 class BienUpdate(BaseModel):
     date_acquisition: Optional[date] = None
-    prix_acquisition: Optional[Decimal] = Field(None, ge=0)  # ✅ ge=0 pour update (permet annulation)
+    prix_acquisition: Optional[Decimal] = Field(None, ge=0)
     etat: Optional[EtatBienEnum] = None
     id_localisation: Optional[int] = Field(None, gt=0)
     date_fin_garantie: Optional[date] = None
@@ -191,7 +191,7 @@ class LocalisationBrief(BaseModel):
 
 class BienResponse(BienBase):
     id_bien: int
-    qr_code: str
+    qr_code: Optional[str] = None  # ✅ Rendre optionnel
     date_creation: datetime
     type_bien: str
     statut_comptable: Optional[str] = "ACTIF"
