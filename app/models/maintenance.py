@@ -2,6 +2,7 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, Enum as SQLEnum, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from typing import Optional
 from ..core.database import Base
 import enum
 
@@ -93,3 +94,21 @@ class Maintenance(Base):
     def generer_alerte(self):
         """Marque cette maintenance comme ayant généré une alerte"""
         self.a_genere_alerte = True
+
+    @property
+    def bien_designation(self) -> Optional[str]:
+        if self.bien:
+            marque = getattr(self.bien, 'marque', None)
+            fabricant = getattr(self.bien, 'fabricant', None)
+            modele = getattr(self.bien, 'modele', None)
+            brand = marque or fabricant
+            if brand:
+                return f"{brand} {modele or ''}".strip()
+            return self.bien.description or f"Bien #{self.id_bien}"
+        return f"Bien #{self.id_bien}"
+
+    @property
+    def technicien_nom(self) -> Optional[str]:
+        if self.technicien:
+            return self.technicien.nom_complet
+        return f"ID: {self.id_technicien}"

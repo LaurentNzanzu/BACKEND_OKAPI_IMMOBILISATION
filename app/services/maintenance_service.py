@@ -296,6 +296,7 @@ class MaintenanceService:
                     "Le bien est maintenant en phase de test."
                 ),
                 lien=f"/pannes/{maintenance.id_panne}",
+                commit=False
             )
         else:
             nouvel_etat = EtatBien.BON

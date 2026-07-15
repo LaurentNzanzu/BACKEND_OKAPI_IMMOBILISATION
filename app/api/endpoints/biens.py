@@ -53,9 +53,10 @@ router = APIRouter(prefix="/biens", tags=["Biens"])
 
 
 def _to_bien_response(bien, user: Utilisateur) -> BienResponse:
-    obj_dict = bien.__dict__.copy()
-    if getattr(bien, "localisation_ref", None):
-        obj_dict["localisation"] = bien.localisation_ref
+    resp_obj = BienResponse.model_validate(bien)
+    if getattr(bien, "localisation_ref", None) and not resp_obj.localisation:
+        resp_obj.localisation = bien.localisation_ref
+    obj_dict = resp_obj.model_dump()
     sanitized = sanitize_bien_dict(obj_dict, user)
     return BienResponse.model_validate(sanitized)
 
@@ -146,6 +147,7 @@ def get_biens(
     type_bien: Optional[str] = None,
     etat: Optional[str] = None,
     search: Optional[str] = Query(None, description="Recherche par désignation"),
+    disponible_maintenance: bool = Query(False, description="Filtrer pour n'avoir que les biens disponibles pour la maintenance"),
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
     request: Request = None,
@@ -173,13 +175,24 @@ def get_biens(
                 type_bien=type_bien,
                 etat=etat_enum,
                 search=search,
+                disponible_maintenance=disponible_maintenance,
             )
         else:
             biens = service.get_all_biens(
-                skip=skip, limit=limit, type_bien=type_bien, etat=etat_enum, search=search
+                skip=skip,
+                limit=limit,
+                type_bien=type_bien,
+                etat=etat_enum,
+                search=search,
+                disponible_maintenance=disponible_maintenance,
             )
 
-        total_count = service.get_biens_count(type_bien=type_bien, etat=etat_enum, search=search)
+        total_count = service.get_biens_count(
+            type_bien=type_bien,
+            etat=etat_enum,
+            search=search,
+            disponible_maintenance=disponible_maintenance,
+        )
 
         return BienListResponse(
             total=total_count,
