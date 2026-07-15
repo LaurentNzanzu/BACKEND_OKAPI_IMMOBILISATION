@@ -203,13 +203,34 @@ class BienResponse(BienBase):
     localisation: Optional[LocalisationBrief] = None
 
     type_vehicule: Optional[str] = None
+    marque: Optional[str] = None
+    modele: Optional[str] = None
     immatriculation: Optional[str] = None
+    poids: Optional[float] = None
+    dimension: Optional[str] = None
+    type_carburant: Optional[str] = None
+    consommation_carburant: Optional[float] = None
+    consommation_huile: Optional[float] = None
+    type_propulsion: Optional[str] = None
+
     fabricant: Optional[str] = None
-    processeur: Optional[str] = None
+    puissance: Optional[float] = None
+    type_alimentation: Optional[str] = None
+    tension_normal: Optional[str] = None
+    service_affecte: Optional[str] = None
+    responsable: Optional[str] = None
+    consommation_elec: Optional[float] = None
+    frequence_maintenance: Optional[str] = None
     prix_base: Optional[Decimal] = None
     unites_totales_prevues: Optional[int] = None
     unites_consommees: Optional[int] = None
     duree_fournisseur: Optional[int] = None
+
+    processeur: Optional[str] = None
+    ram: Optional[str] = None
+    stockage: Optional[str] = None
+    adresse_ip: Optional[str] = None
+    utilisateur_affecte: Optional[str] = None
 
     class Config:
         from_attributes = True

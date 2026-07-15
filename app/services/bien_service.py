@@ -182,6 +182,7 @@ class BienService:
         type_bien: Optional[str] = None,
         etat: Optional[EtatBien] = None,
         search: Optional[str] = None,
+        disponible_maintenance: bool = False,
     ) -> List[Bien]:
         query = self.db.query(Bien).options(joinedload(Bien.localisation_ref))
 
@@ -189,6 +190,8 @@ class BienService:
             query = query.filter(Bien.type_bien == type_bien)
         if etat:
             query = query.filter(Bien.etat == etat)
+        if disponible_maintenance:
+            query = query.filter(Bien.etat != EtatBien.MAINTENANCE).filter(Bien.etat != EtatBien.REFORME)
         if search:
             term = f"%{search.strip()}%"
             query = query.filter(
@@ -208,6 +211,7 @@ class BienService:
             type_bien: Optional[str] = None,
             etat: Optional[EtatBien] = None,
             search: Optional[str] = None,
+            disponible_maintenance: bool = False,
         ) -> List[Bien]:
             """Récupère tous les biens (le technicien peut tout voir)."""
             query = self.db.query(Bien).options(joinedload(Bien.localisation_ref))
@@ -216,6 +220,8 @@ class BienService:
                 query = query.filter(Bien.type_bien == type_bien)
             if etat:
                 query = query.filter(Bien.etat == etat)
+            if disponible_maintenance:
+                query = query.filter(Bien.etat != EtatBien.MAINTENANCE).filter(Bien.etat != EtatBien.REFORME)
             if search:
                 term = f"%{search.strip()}%"
                 query = query.filter(
@@ -231,12 +237,15 @@ class BienService:
         type_bien: Optional[str] = None,
         etat: Optional[EtatBien] = None,
         search: Optional[str] = None,
+        disponible_maintenance: bool = False,
     ) -> int:
         query = self.db.query(func.count(Bien.id_bien))
         if type_bien:
             query = query.filter(Bien.type_bien == type_bien)
         if etat:
             query = query.filter(Bien.etat == etat)
+        if disponible_maintenance:
+            query = query.filter(Bien.etat != EtatBien.MAINTENANCE).filter(Bien.etat != EtatBien.REFORME)
         if search:
             term = f"%{search.strip()}%"
             query = query.filter(
@@ -607,3 +616,12 @@ class BienService:
         self.db.refresh(bien_cede)
         
         return bien_cede
+
+    def get_biens_disponibles_pour_maintenance(self) -> List[Bien]:
+        """Récupère uniquement les biens dont l'état n'est pas MAINTENANCE ni REFORME."""
+        return (
+            self.db.query(Bien)
+            .filter(Bien.etat != EtatBien.MAINTENANCE)
+            .filter(Bien.etat != EtatBien.REFORME)
+            .all()
+        )
