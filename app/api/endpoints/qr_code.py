@@ -1,15 +1,18 @@
 # backend/app/api/endpoints/qr_code.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from io import BytesIO
+from pydantic import BaseModel
 
 from ...core.database import get_db
 from ...models.bien import Bien
 from ...services.qr_code_service import QRCodeService
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
+from ...core.bien_permissions import can_view_biens
+from .biens import _to_bien_response
 
 router = APIRouter(prefix="/qr-code", tags=["QR Code"])
 
@@ -83,9 +86,12 @@ async def view_qr_code(
         "image_base64": qr_base64
     }
 
+class QRScanRequest(BaseModel):
+    qr_data: str
+
 @router.post("/scan")
 async def scan_qr_code(
-    qr_data: str,
+    request: QRScanRequest,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
@@ -93,31 +99,35 @@ async def scan_qr_code(
     Recherche un bien à partir de son QR code scanné
     
     Args:
-        qr_data: Contenu du QR code scanné
+        request: Contenu du QR code scanné dans le corps de la requête
         
     Returns:
         dict: Informations du bien trouvé
     """
-    # Recherche du bien par QR code
-    bien = db.query(Bien).filter(Bien.qr_code == qr_data).first()
+    if not can_view_biens(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissions insuffisantes pour voir ce bien"
+        )
+
+    qr_data = request.qr_data
+
+    # Recherche du bien par QR code avec jointure sur la localisation
+    bien = db.query(Bien).options(joinedload(Bien.localisation_ref)).filter(Bien.qr_code == qr_data).first()
     if not bien:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Aucun bien trouvé avec le QR code: {qr_data}"
         )
     
+    # Sérialisation et sanitisation identiques aux autres endpoints de biens
+    serialized_bien = _to_bien_response(bien, current_user)
+    
     return {
         "found": True,
-        "bien": {
-            "id_bien": bien.id_bien,
-            "qr_code": bien.qr_code,
-            "type_bien": bien.type_bien,
-            "marque": getattr(bien, 'marque', None),
-            "modele": getattr(bien, 'modele', None),
-            "etat": bien.etat,
-            "localisation": bien.localisation
-        }
+        "bien": serialized_bien
     }
+
 
 @router.get("/{bien_id}/print")
 async def print_qr_code_label(
