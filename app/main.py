@@ -56,13 +56,15 @@ from app.api.endpoints import (
     mouvements_caisse,
     pieces_justificatives,
     etats_financiers,
+    concertations
 )
 
 # Import des tâches CRON
 from .tasks import (
     init_scores_scheduler,
     init_alertes_scheduler,
-    init_projections_scheduler
+    init_projections_scheduler,
+    init_concertations_scheduler
 )
 
 logger = logging.getLogger(__name__)
@@ -263,7 +265,10 @@ async def lifespan(app: FastAPI):
         
         scheduler = init_projections_scheduler(scheduler)
         logger.info("✅ Scheduler des projections initialisé")
-        
+
+        scheduler = init_concertations_scheduler(scheduler)
+        logger.info("✅ Scheduler de détection concertations initialisé")
+
         # Démarrer le scheduler
         scheduler.start()
         app.state.scheduler = scheduler
@@ -386,6 +391,8 @@ app.include_router(caisse.router, prefix=API_V1_PREFIX)
 app.include_router(mouvements_caisse.router, prefix=API_V1_PREFIX)
 app.include_router(pieces_justificatives.router, prefix=API_V1_PREFIX)
 app.include_router(etats_financiers.router, prefix=API_V1_PREFIX)
+app.include_router(concertations.router, prefix=API_V1_PREFIX)
+
 
 
 # ============================================================

@@ -1069,3 +1069,187 @@ class ValidationService:
             })
         
         return result
+
+
+    def _get_validations_for_bien(self, bien_id: int, type_validation: TypeValidation) -> dict:
+        """
+        Récupère les validations pour un bien et un type donné.
+        Retourne un dictionnaire {OrdreValidation: Validation}
+        """
+        validations = self.db.query(Validation).filter(
+            Validation.id_bien == bien_id,
+            Validation.type_validation == type_validation
+        ).all()
+        return {v.ordre_validateur: v for v in validations}
+
+    def verifier_eligibilite_cession(self, bien_id: int) -> dict:
+        """
+        Vérifie si le bien est éligible à la cession (double validation DG + Comptable).
+        Retourne un dict avec :
+            eligible: bool,
+            validation_comptable: bool,
+            validation_dg: bool,
+            raison: str
+        """
+        validations = self._get_validations_for_bien(bien_id, TypeValidation.CESSION)
+        val_comptable = validations.get(OrdreValidation.COMPTABLE)
+        val_dg = validations.get(OrdreValidation.DG)
+
+        comptable_ok = val_comptable and val_comptable.decision == DecisionValidation.APPROUVE
+        dg_ok = val_dg and val_dg.decision == DecisionValidation.APPROUVE
+        eligible = comptable_ok and dg_ok
+
+        raison = ""
+        if not eligible:
+            if not comptable_ok and not dg_ok:
+                raison = "En attente de la validation conjointe du DG et du Comptable"
+            elif not comptable_ok:
+                raison = "En attente de la validation du Comptable"
+            elif not dg_ok:
+                raison = "En attente de la validation du DG"
+
+        return {
+            "eligible": eligible,
+            "validation_comptable": comptable_ok,
+            "validation_dg": dg_ok,
+            "raison": raison
+        }
+
+    # ============================================================
+    # ✅ MÉTHODE MODIFIÉE : verifier_eligibilite_rebut()
+    # Utilise désormais les validations de concertation
+    # ============================================================
+
+    # app/services/validation_service.py
+
+    def verifier_eligibilite_rebut(self, bien_id: int) -> dict:
+        from ..models.discussion_concertation import ValidationConcertation, DiscussionConcertation
+        from ..models.discussion_concertation import TypeValidationEnum
+        from ..models.panne import Panne
+        from ..models.maintenance import Maintenance
+
+        # 1. Récupérer la discussion de concertation
+        discussion = self.db.query(DiscussionConcertation).filter(
+            DiscussionConcertation.id_bien == bien_id,
+            DiscussionConcertation.type_validation == TypeValidationEnum.REBUT,
+            DiscussionConcertation.est_active == False
+        ).order_by(DiscussionConcertation.date_creation.desc()).first()
+
+        if not discussion:
+            return {
+                "eligible": False,
+                "raison": "Aucune discussion de concertation REBUT complétée",
+                "validation_comptable": False,
+                "validation_dg": False,
+                "diagnostic_irrecuperable": False
+            }
+
+        # 2. Récupérer les validations
+        validations = self.db.query(ValidationConcertation).filter(
+            ValidationConcertation.id_discussion == discussion.id
+        ).all()
+
+        validation_dg = False
+        validation_comptable = False
+
+        for v in validations:
+            validateur = self.db.query(Utilisateur).filter(Utilisateur.id == v.id_validateur).first()
+            if validateur and validateur.role and validateur.role.nom.upper() == "DG":
+                validation_dg = v.decision == "APPROUVE"
+            elif validateur and validateur.role and validateur.role.nom.upper() == "COMPTABLE":
+                validation_comptable = v.decision == "APPROUVE"
+
+        # 3. Vérifier le diagnostic irrécupérable - VERSION AVEC 20+ MOTS-CLÉS
+        panne_irrecup = self.db.query(Panne).filter(
+            Panne.id_bien == bien_id,
+            (Panne.diagnostic.ilike("%irrécupérable%") |
+            Panne.diagnostic.ilike("%irrecuperable%") |
+            Panne.diagnostic.ilike("%recuperable%") |
+            Panne.diagnostic.ilike("%hors d'usage%") |
+            Panne.diagnostic.ilike("%hors usage%") |
+            Panne.diagnostic.ilike("%hors service%") |
+            Panne.diagnostic.ilike("%irrecoverable%") |
+            Panne.diagnostic.ilike("%incident grave%") |
+            Panne.diagnostic.ilike("%accident grave%") |
+            Panne.diagnostic.ilike("%sinistre%") |
+            Panne.diagnostic.ilike("%détruit%") |
+            Panne.diagnostic.ilike("%detruit%") |
+            Panne.diagnostic.ilike("%HS%") |
+            Panne.diagnostic.ilike("%h.s%") |
+            Panne.diagnostic.ilike("%h.s.%") |
+            Panne.diagnostic.ilike("%irreparable%") |
+            Panne.diagnostic.ilike("%irréparable%") |
+            Panne.diagnostic.ilike("%non réparable%") |
+            Panne.diagnostic.ilike("%non reparables%") |
+            Panne.diagnostic.ilike("%non utilisable%") |
+            Panne.diagnostic.ilike("%inutilisable%") |
+            Panne.diagnostic.ilike("%obsolescence%") |
+            Panne.diagnostic.ilike("%obsolète%") |
+            Panne.diagnostic.ilike("%obsolète%") |
+            Panne.diagnostic.ilike("%usure totale%") |
+            Panne.diagnostic.ilike("%usé%") |
+            Panne.diagnostic.ilike("%usée%") |
+            Panne.diagnostic.ilike("%casse%") |
+            Panne.diagnostic.ilike("%cassé%") |
+            Panne.diagnostic.ilike("%brisé%") |
+            Panne.diagnostic.ilike("%bris%") |
+            Panne.diagnostic.ilike("%moteur hs%") |
+            Panne.diagnostic.ilike("%moteur cassé%") |
+            Panne.diagnostic.ilike("%châssis endommagé%") |
+            Panne.diagnostic.ilike("%endommagement%") |
+            Panne.diagnostic.ilike("%endommagé%"))
+        ).first()
+
+        maintenance_irrecup = self.db.query(Maintenance).filter(
+            Maintenance.id_bien == bien_id,
+            (Maintenance.rapport.ilike("%irrécupérable%") |
+            Maintenance.rapport.ilike("%irrecuperable%") |
+            Maintenance.rapport.ilike("%recuperable%") |
+            Maintenance.rapport.ilike("%hors d'usage%") |
+            Maintenance.rapport.ilike("%hors usage%") |
+            Maintenance.rapport.ilike("%hors service%") |
+            Maintenance.rapport.ilike("%irrecoverable%") |
+            Maintenance.rapport.ilike("%incident grave%") |
+            Maintenance.rapport.ilike("%accident grave%") |
+            Maintenance.rapport.ilike("%sinistre%") |
+            Maintenance.rapport.ilike("%détruit%") |
+            Maintenance.rapport.ilike("%detruit%") |
+            Maintenance.rapport.ilike("%HS%") |
+            Maintenance.rapport.ilike("%irreparable%") |
+            Maintenance.rapport.ilike("%irréparable%") |
+            Maintenance.rapport.ilike("%non réparable%") |
+            Maintenance.rapport.ilike("%non reparables%") |
+            Maintenance.rapport.ilike("%non utilisable%") |
+            Maintenance.rapport.ilike("%inutilisable%") |
+            Maintenance.rapport.ilike("%obsolescence%") |
+            Maintenance.rapport.ilike("%obsolète%") |
+            Maintenance.rapport.ilike("%usure totale%") |
+            Maintenance.rapport.ilike("%usé%") |
+            Maintenance.rapport.ilike("%usée%") |
+            Maintenance.rapport.ilike("%casse%") |
+            Maintenance.rapport.ilike("%cassé%") |
+            Maintenance.rapport.ilike("%brisé%") |
+            Maintenance.rapport.ilike("%bris%"))
+        ).first()
+
+        diagnostic_existe = panne_irrecup is not None or maintenance_irrecup is not None
+        eligible = diagnostic_existe and validation_dg and validation_comptable
+
+        raison = ""
+        if not eligible:
+            if not diagnostic_existe:
+                raison = "Un diagnostic technique irrécupérable est requis (panne/maintenance)"
+            elif not validation_comptable and not validation_dg:
+                raison = "En attente de la validation conjointe du DG et du Comptable pour le rebut"
+            elif not validation_comptable:
+                raison = "En attente de la validation du Comptable pour le rebut"
+            elif not validation_dg:
+                raison = "En attente de la validation du DG pour le rebut"
+
+        return {
+            "eligible": eligible,
+            "validation_comptable": validation_comptable,
+            "validation_dg": validation_dg,
+            "diagnostic_irrecuperable": diagnostic_existe,
+            "raison": raison
+        }

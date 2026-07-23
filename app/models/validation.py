@@ -21,6 +21,7 @@ class TypeValidation(enum.Enum):
     DEPRECIATION = "DEPRECIATION"
     CESSION = "CESSION"
     AMORTISSEMENT = "AMORTISSEMENT"
+    REBUT = "REBUT"
 
 # Ordre strict du workflow
 WORKFLOW_ORDER = [

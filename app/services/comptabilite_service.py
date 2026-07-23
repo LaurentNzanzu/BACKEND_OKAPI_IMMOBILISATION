@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..models.ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture
 from ..models.amortissement import Amortissement, StatutAmortissement
 from ..models.regles_amortissement import RegleAmortissement
-from ..models.bien import Bien
+from ..models.bien import Bien, EtatBien
 from ..models.cession import Cession
 from ..schemas.cession import CessionCreate, RebutCreate
 from ..schemas.ecriture_comptable import EcritureCreate
@@ -444,6 +444,97 @@ class ComptabiliteService:
         self._verifier_equilibre(ecritures)
 
         return ecritures
+
+    def enregistrer_rebut(self, data: RebutCreate) -> List[EcritureComptable]:
+        """
+        Enregistre une mise au rebut en générant l'écriture comptable.
+        """
+        logger.info(
+            "[SERVICE_REBUT] Début enregistrement | bien_id=%s | motif='%s'",
+            data.id_bien,
+            data.motif,
+        )
+
+        bien = self.db.query(Bien).filter(Bien.id_bien == data.id_bien).first()
+        if not bien:
+            logger.error("[SERVICE_REBUT] ❌ Bien introuvable | bien_id=%s", data.id_bien)
+            raise ValueError("Bien non trouvé")
+
+        logger.info(
+            "[SERVICE_REBUT] Bien trouvé | bien_id=%s | statut_comptable=%s | etat=%s",
+            bien.id_bien,
+            bien.statut_comptable,
+            bien.etat,
+        )
+
+        # Vérifier que le bien n'est pas déjà en rebut ou cédé
+        if bien.statut_comptable == "MIS_AU_REBUT":
+            logger.warning(
+                "[SERVICE_REBUT] ❌ Bien déjà mis au rebut | bien_id=%s",
+                bien.id_bien,
+            )
+            raise ValueError("Ce bien est déjà mis au rebut")
+        if bien.statut_comptable == "CEDE":
+            logger.warning(
+                "[SERVICE_REBUT] ❌ Bien déjà cédé | bien_id=%s",
+                bien.id_bien,
+            )
+            raise ValueError("Un bien cédé ne peut pas être mis au rebut")
+
+        # Calculer la VNC
+        vnc = self._calculer_vnc(bien)
+        logger.info(
+            "[SERVICE_REBUT] VNC calculée | bien_id=%s | vnc=%s",
+            bien.id_bien,
+            vnc,
+        )
+        if vnc <= 0:
+            logger.warning(
+                "[SERVICE_REBUT] ❌ VNC nulle ou négative | bien_id=%s | vnc=%s",
+                bien.id_bien,
+                vnc,
+            )
+            raise ValueError("La valeur nette comptable est nulle ou négative")
+
+        # Déterminer le compte immobilisation
+        compte_immobilisation = self._get_compte_immobilisation(bien.type_bien or "autre")
+
+        # Générer l'écriture de sortie (654 / compte immobilisation)
+        ecriture = EcritureComptable(
+            id_bien=bien.id_bien,
+            date_ecriture=datetime.utcnow(),
+            exercice=datetime.utcnow().year,
+            type_operation=TypeOperationEnum.CESSION,
+            statut=StatutEcriture.BROUILLON,
+            libelle=f"Mise au rebut - {self._get_bien_designation(bien)} - {data.motif}",
+            compte_debit="654",  # Sortie d'immobilisation
+            compte_credit=compte_immobilisation,
+            montant=self._round(vnc),
+            montant_original=self._round(vnc),
+            validee=False,
+        )
+        ecriture.commentaire = data.motif
+
+        self._appliquer_tracabilite_creation(ecriture, reference_id=bien.id_bien)
+
+        # Mettre à jour le statut du bien
+        bien.statut_comptable = "MIS_AU_REBUT"
+        bien.etat = EtatBien.REFORME
+        bien.date_rebut = datetime.utcnow()
+        bien.motif_rebut = data.motif
+
+        self.db.add(ecriture)
+        self.db.commit()
+        self.db.refresh(ecriture)
+
+        logger.info(
+            "[SERVICE_REBUT] ✅ Rebut enregistré | bien_id=%s | ecriture_id=%s | montant=%s",
+            bien.id_bien,
+            ecriture.id_ecriture,
+            ecriture.montant,
+        )
+
+        return [ecriture]
 
     # ============================================================
     # MÉTHODE ENREGISTRER_CESSION – DÉPRÉCIÉE
