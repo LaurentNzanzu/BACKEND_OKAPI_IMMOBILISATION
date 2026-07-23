@@ -39,7 +39,7 @@ from .mouvement_caisse import MouvementCaisse
 from .historique_statut_ecriture import HistoriqueStatutEcriture
 from .cession import Cession
 from .workflow_amortissement import WorkflowValidationAmortissement, EtapeWorkflowAmortissement, StatutWorkflowAmortissement
-
+from .discussion_concertation import DiscussionConcertation, MessageConcertation, ValidationConcertation, TypeValidationEnum, DecisionValidationConcertation
 
 
 __all__ = [
@@ -124,4 +124,7 @@ __all__ = [
     # Ordres de remplacement
     "OrdreRemplacement",
     "StatutOrdreRemplacement",
+    "DiscussionConcertation",
+    "MessageConcertation",
+    "ValidationConcertation"
 ]

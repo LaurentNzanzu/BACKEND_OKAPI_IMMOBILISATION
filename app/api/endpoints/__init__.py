@@ -27,6 +27,7 @@ from .budgets import router as budgets_router  # NOUVEAU
 from .validations import router as validations_router  # MODIFIÉ
 from .mouvements_caisse import router as mouvements_caisse_router
 from .pieces_justificatives import router as pieces_justificatives_router
+from .concertations import router as concertations_router
 
 
 
@@ -59,6 +60,7 @@ AVAILABLE_ROUTERS: list[str] = [
     "validations",  # MODIFIÉ
     "mouvements_caisse",
     "pieces_justificatives",
+    "concertations",
 ]
 
 
@@ -96,6 +98,7 @@ def get_router(name: str):
         "validations": validations_router,
         "mouvements_caisse": mouvements_caisse_router,
         "pieces_justificatives": pieces_justificatives_router,
+        "concertations": concertations_router,
     }
     return routers.get(name)
 
@@ -156,4 +159,5 @@ __all__ = [
     "validations_router",
     "mouvements_caisse_router",
     "pieces_justificatives_router",
+    "concertations_router",
 ]

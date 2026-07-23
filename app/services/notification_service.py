@@ -28,14 +28,12 @@ IMPORTANT_NOTIFICATION_TYPES = {
     TypeNotificationEnum.RAPPEL_AMORTISSEMENT_MANQUANT,
 }
 
-
 def _default_priorite_for_type(type_notif: TypeNotificationEnum) -> str:
     if type_notif in CRITICAL_NOTIFICATION_TYPES:
         return "critique"
     if type_notif in IMPORTANT_NOTIFICATION_TYPES:
         return "importante"
     return "information"
-
 
 def _serialize_notification(
     notification: Notification,
@@ -56,7 +54,6 @@ def _serialize_notification(
         "est_lu": bool(est_lu),
         "est_archivee": bool(est_archivee),
     }
-
 
 class NotificationService:
     def __init__(self, db: Session):
@@ -140,6 +137,35 @@ class NotificationService:
 
         ids_destinataires = [user.id for user in users]
         return self.envoyer_notification(ids_destinataires, type_notif, titre, contenu, lien, priorite)
+
+    def envoyer_proposition_cession(
+        self,
+        bien_id: int,
+        type_validation: str,
+        motif: str,
+        designation: str,
+        prix_acquisition: float,
+        vnc: float
+    ):
+        titre = f"🔔 Proposition de {type_validation} - {designation}"
+        contenu = f"Le système a détecté que le bien {designation} est éligible à la {type_validation}.\nMotif : {motif}\nPrix d'acquisition : {prix_acquisition:.2f} USD\nVNC : {vnc:.2f} USD"
+        lien = f"/biens/{bien_id}"
+        
+        self.envoyer_notification_par_role(
+            role_nom="DG",
+            type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
+            titre=titre,
+            contenu=contenu,
+            lien=lien
+        )
+        
+        self.envoyer_notification_par_role(
+            role_nom="COMPTABLE",
+            type_notif=TypeNotificationEnum.ALERTE_STOCK,
+            titre=titre,
+            contenu=contenu,
+            lien=lien
+        )
 
     def _envoyer_email(self, id_destinataire: int, titre: str, contenu: str, lien: Optional[str]):
         if not all([settings.SMTP_USER, settings.SMTP_PASSWORD, settings.MAIL_FROM]):
@@ -350,16 +376,9 @@ class NotificationService:
             include_archivees=include_archivees,
         )
 
-    # ============================================================
-    # MÉTHODES TÂCHE 2 - NOTIFICATIONS WORKFLOW
-    # ============================================================
-    
     def notifier_validation_etape(self, objet_type: str, objet_id: int, 
                                    etape: str, decision: str,
                                    validateur_nom: str, motif: str = None):
-        """
-        Notifie les parties prenantes d'une étape de validation.
-        """
         titre = f"{'✅' if decision == 'APPROUVE' else '❌'} Validation {decision} - {objet_type} #{objet_id}"
         
         if decision == 'APPROUVE':
@@ -367,11 +386,6 @@ class NotificationService:
         else:
             contenu = f"La validation de {objet_type} a été rejetée par {validateur_nom} (étape: {etape}). Motif: {motif or 'Non spécifié'}"
         
-        # Notifier le créateur
-        # Note: Dans une implémentation réelle, il faudrait récupérer l'ID du créateur
-        # pour l'objet concerné. Cette méthode est générique et nécessite que l'appelant
-        # fournisse l'ID du créateur ou que la méthode le récupère via l'objet.
-        # Pour l'instant, on notifie par rôle "ADMIN" comme fallback
         self.envoyer_notification_par_role(
             role_nom="ADMIN",
             type_notif=TypeNotificationEnum.BESOIN_VALIDE if decision == 'APPROUVE' else TypeNotificationEnum.BESOIN_REJETE,
@@ -382,13 +396,9 @@ class NotificationService:
 
     def notifier_nouvelle_etape_validation(self, objet_type: str, objet_id: int,
                                             etape: str, prochain_validateur: str):
-        """
-        Notifie le prochain validateur qu'une nouvelle étape est disponible.
-        """
         titre = f"📋 Nouvelle validation requise - {objet_type} #{objet_id}"
         contenu = f"Un {objet_type} est en attente de votre validation ({etape})."
         
-        # Récupérer les utilisateurs avec le rôle du prochain validateur
         if prochain_validateur == "COMPTABLE":
             type_notif = TypeNotificationEnum.BESOIN_VALIDE
         elif prochain_validateur == "CAISSE":
@@ -398,7 +408,6 @@ class NotificationService:
         else:
             type_notif = TypeNotificationEnum.BESOIN_CREE
         
-        # Notifier par rôle
         self.envoyer_notification_par_role(
             role_nom=prochain_validateur,
             type_notif=type_notif,
@@ -408,13 +417,9 @@ class NotificationService:
         )
 
     def notifier_cession_eligible(self, bien_id: int, eligibilite: dict):
-        """
-        Notifie qu'un bien est éligible à la cession.
-        """
         if not eligibilite.get("est_eligible", False):
             return
         
-        # Récupérer la désignation du bien
         from ..models.bien import Bien
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         designation = "Bien"
@@ -426,7 +431,6 @@ class NotificationService:
             else:
                 designation = f"Bien #{bien_id}"
         
-        # Notifier le gestionnaire de parc (DG)
         self.envoyer_notification_par_role(
             role_nom="DG",
             type_notif=TypeNotificationEnum.ALERTE_VNC_ZERO,
@@ -435,7 +439,6 @@ class NotificationService:
             lien=f"/biens/{bien_id}/cession"
         )
         
-        # Notifier le comptable
         self.envoyer_notification_par_role(
             role_nom="COMPTABLE",
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
@@ -444,7 +447,6 @@ class NotificationService:
             lien=f"/biens/{bien_id}/cession"
         )
         
-        # Notifier l'administrateur
         self.envoyer_notification_par_role(
             role_nom="ADMIN",
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
@@ -455,14 +457,7 @@ class NotificationService:
         
         logger.info("Notifications de cession éligible envoyées pour le bien %s", bien_id)
 
-    # ============================================================
-    # MÉTHODES TÂCHE 3 - NOTIFICATIONS MAINTENANCE PRÉDICTIVE
-    # ============================================================
-
     def envoyer_alerte_techniciens(self, type_alerte: str, message: str, bien_id: int):
-        """
-        Envoie une alerte à tous les techniciens
-        """
         techniciens = self.db.query(Utilisateur).join(
             Utilisateur.roles
         ).filter(
@@ -473,7 +468,6 @@ class NotificationService:
             logger.warning("Aucun technicien trouvé pour l'alerte")
             return
         
-        # Déterminer le type de notification
         if "critique" in type_alerte.lower() or "MAINTENANCE_ALERTE" in type_alerte:
             type_notif = TypeNotificationEnum.MAINTENANCE_ALERTE
             priorite = "critique"
@@ -484,7 +478,6 @@ class NotificationService:
             type_notif = TypeNotificationEnum.MAINTENANCE_PLANIFIEE
             priorite = "normale"
         
-        # Notifier tous les techniciens
         for tech in techniciens:
             notification = Notification(
                 type_notification=type_notif,
@@ -497,7 +490,6 @@ class NotificationService:
             self.db.add(notification)
             self.db.flush()
             
-            # Lier la notification à l'utilisateur
             self.db.execute(
                 notification_user.insert().values(
                     id_notification=notification.id_notification,
@@ -512,9 +504,6 @@ class NotificationService:
         logger.info("Alerte techniciens envoyée: %s à %s technicien(s)", type_alerte, len(techniciens))
     
     def envoyer_alerte_dg(self, message: str, bien_id: int):
-        """
-        Envoie une alerte au Directeur Général
-        """
         dg = self.db.query(Utilisateur).join(
             Utilisateur.roles
         ).filter(
@@ -533,7 +522,6 @@ class NotificationService:
             self.db.add(notification)
             self.db.flush()
             
-            # Lier la notification à l'utilisateur
             self.db.execute(
                 notification_user.insert().values(
                     id_notification=notification.id_notification,
@@ -546,7 +534,6 @@ class NotificationService:
             
             self.db.commit()
             
-            # Envoyer également par email si configuré
             if dg.email:
                 self._envoyer_email(
                     dg.id,
@@ -560,10 +547,6 @@ class NotificationService:
             logger.warning("Aucun DG trouvé pour l'alerte")
     
     def envoyer_alerte_maintenance_auto(self, bien_id: int, score_fiabilite: float):
-        """
-        Envoie une alerte pour une maintenance automatique générée
-        """
-        # Récupérer la désignation du bien
         from ..models.bien import Bien
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         designation = "Bien"
@@ -575,27 +558,20 @@ class NotificationService:
             else:
                 designation = f"Bien #{bien_id}"
         
-        # Message pour les techniciens
         message_tech = f"Maintenance préventive automatique planifiée pour {designation} (Score: {score_fiabilite:.1f}%)"
         
-        # Envoyer aux techniciens
         self.envoyer_alerte_techniciens(
             type_alerte="MAINTENANCE_AUTO",
             message=message_tech,
             bien_id=bien_id
         )
         
-        # Envoyer au DG
         message_dg = f"Une maintenance préventive automatique a été générée pour {designation} (Score: {score_fiabilite:.1f}%)"
         self.envoyer_alerte_dg(message_dg, bien_id)
         
         logger.info("Alertes maintenance auto envoyées pour le bien %s", bien_id)
     
     def envoyer_alerte_vnc(self, bien_id: int, seuil: str, ratio: float, vnc: float):
-        """
-        Envoie une alerte VNC au DG et au Comptable
-        """
-        # Récupérer la désignation du bien
         from ..models.bien import Bien
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         designation = "Bien"
@@ -609,10 +585,8 @@ class NotificationService:
         
         message = f"Le bien {designation} a atteint le seuil VNC de {seuil}% (Ratio: {ratio*100:.1f}%, VNC: {vnc:.2f} USD). Remplacement recommandé."
         
-        # Envoyer au DG
         self.envoyer_alerte_dg(message, bien_id)
         
-        # Envoyer au Comptable
         comptables = self.db.query(Utilisateur).join(
             Utilisateur.roles
         ).filter(
@@ -646,9 +620,6 @@ class NotificationService:
             logger.info("Alerte VNC envoyée au comptable pour le bien %s", bien_id)
     
     def envoyer_alerte_remplacement(self, bien_id: int, bien_nouveau_id: int = None):
-        """
-        Envoie une alerte de remplacement de bien
-        """
         from ..models.bien import Bien
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         designation = "Bien"
@@ -671,10 +642,8 @@ class NotificationService:
                     nouveau_designation = f"{nouveau_bien.fabricant} {getattr(nouveau_bien, 'modele', '')}".strip() or f"Bien #{bien_nouveau_id}"
                 message += f" Remplacé par: {nouveau_designation}"
         
-        # Envoyer au DG
         self.envoyer_alerte_dg(message, bien_id)
         
-        # Envoyer au Comptable
         comptables = self.db.query(Utilisateur).join(
             Utilisateur.roles
         ).filter(

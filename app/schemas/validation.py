@@ -1,4 +1,4 @@
-# backend/app/schemas/validation.py
+# app/schemas/validation.py
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional, List
