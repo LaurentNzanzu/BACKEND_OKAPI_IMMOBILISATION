@@ -1,5 +1,5 @@
 # app/api/endpoints/concertations.py
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
@@ -369,3 +369,35 @@ async def enregistrer_validation(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/scheduler/status")
+async def get_scheduler_status(
+    request: Request,
+    current_user: Utilisateur = Depends(get_current_user)
+):
+    if not check_concertation_permission(current_user):
+        raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+        
+    scheduler = getattr(request.app.state, "scheduler", None)
+    
+    if not scheduler:
+        return {
+            "status": "not_initialized",
+            "running": False,
+            "jobs": []
+        }
+        
+    jobs_status = []
+    for job in scheduler.get_jobs():
+        jobs_status.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+            "trigger": str(job.trigger)
+        })
+        
+    return {
+        "status": "running" if scheduler.running else "stopped",
+        "running": scheduler.running,
+        "jobs": jobs_status
+    }

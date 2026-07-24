@@ -107,6 +107,9 @@ class PanneService:
             raise ValueError("Le diagnostic du technicien est obligatoire (minimum 5 caractères)")
 
         try:
+            from .concertation_service import ConcertationService
+            est_irrecuperable = ConcertationService.est_diagnostic_irrecuperable(data.diagnostic)
+
             panne = Panne(
                 id_bien=data.id_bien,
                 id_technicien=id_technicien,
@@ -115,52 +118,77 @@ class PanneService:
                 priorite=data.priorite,
                 description=data.diagnostic,
                 diagnostic=data.diagnostic,
-                statut=StatutPanne.DECLAREE,
+                statut=StatutPanne.EN_VALIDATION if est_irrecuperable else StatutPanne.DECLAREE,
                 date_declaration=datetime.utcnow(),
             )
             self.db.add(panne)
             self.db.flush()
 
-            self._creer_maintenance_corrective(panne, id_technicien)
-            self.bien_service.changer_etat_bien(data.id_bien, EtatBien.MAINTENANCE, commit=False)
+            if est_irrecuperable:
+                concertation_service = ConcertationService(self.db)
+                concertation_service.declencher_concertation_synchrone(data.id_bien, data.diagnostic, id_technicien)
+                self.bien_service.changer_etat_bien(data.id_bien, EtatBien.MAINTENANCE, commit=False)
+                
+                self.audit_service.log_update(
+                    user_id=id_technicien,
+                    table_name="pannes",
+                    record_id=panne.id_panne,
+                    old_values={},
+                    new_values={"action": "Interception irrécupérable", "statut": StatutPanne.EN_VALIDATION.value}
+                )
+                
+                # Notifications spécifiques
+                designation = _bien_designation(bien)
+                gestionnaires = self.db.query(Utilisateur).join(Role).filter(Role.nom.in_(["GESTIONNAIRE", "ADMIN"])).all()
+                if gestionnaires:
+                    self.notification_service.envoyer_notification(
+                        ids_destinataires=[g.id for g in gestionnaires],
+                        type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
+                        titre=f"🚨 Panne critique (Irrécupérable) - {designation}",
+                        contenu=f"Une panne déclarée irrécupérable sur {designation}. Une concertation de réforme/cession a été ouverte.",
+                        lien=f"/pannes/{panne.id_panne}",
+                    )
+            else:
+                self._creer_maintenance_corrective(panne, id_technicien)
+                self.bien_service.changer_etat_bien(data.id_bien, EtatBien.MAINTENANCE, commit=False)
+
+                designation = _bien_designation(bien)
+                techniciens = (
+                    self.db.query(Utilisateur).join(Role).filter(Role.nom == "TECHNICIEN").all()
+                )
+                if techniciens:
+                    self.notification_service.envoyer_notification(
+                        ids_destinataires=[t.id for t in techniciens],
+                        type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
+                        titre=f"🔧 Nouvelle panne déclarée - {designation}",
+                        contenu=(
+                            f"Une panne de type {data.type_panne.value} a été déclarée sur le bien "
+                            f"{designation}. Priorité: {data.priorite.value}. "
+                            "Une maintenance corrective a été créée."
+                        ),
+                        lien=f"/pannes/{panne.id_panne}",
+                    )
+
+                gestionnaires = (
+                    self.db.query(Utilisateur)
+                    .join(Role)
+                    .filter(Role.nom.in_(["GESTIONNAIRE", "ADMIN"]))
+                    .all()
+                )
+                if gestionnaires:
+                    self.notification_service.envoyer_notification(
+                        ids_destinataires=[g.id for g in gestionnaires],
+                        type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
+                        titre=f"🔧 Panne déclarée - {designation}",
+                        contenu=(
+                            f"Une panne {data.type_panne.value} (priorité {data.priorite.value}) "
+                            f"a été déclarée sur {designation}."
+                        ),
+                        lien=f"/pannes/{panne.id_panne}",
+                    )
 
             self.db.commit()
             self.db.refresh(panne)
-
-            designation = _bien_designation(bien)
-            techniciens = (
-                self.db.query(Utilisateur).join(Role).filter(Role.nom == "TECHNICIEN").all()
-            )
-            if techniciens:
-                self.notification_service.envoyer_notification(
-                    ids_destinataires=[t.id for t in techniciens],
-                    type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
-                    titre=f"🔧 Nouvelle panne déclarée - {designation}",
-                    contenu=(
-                        f"Une panne de type {data.type_panne.value} a été déclarée sur le bien "
-                        f"{designation}. Priorité: {data.priorite.value}. "
-                        "Une maintenance corrective a été créée."
-                    ),
-                    lien=f"/pannes/{panne.id_panne}",
-                )
-
-            gestionnaires = (
-                self.db.query(Utilisateur)
-                .join(Role)
-                .filter(Role.nom.in_(["GESTIONNAIRE", "ADMIN"]))
-                .all()
-            )
-            if gestionnaires:
-                self.notification_service.envoyer_notification(
-                    ids_destinataires=[g.id for g in gestionnaires],
-                    type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
-                    titre=f"🔧 Panne déclarée - {designation}",
-                    contenu=(
-                        f"Une panne {data.type_panne.value} (priorité {data.priorite.value}) "
-                        f"a été déclarée sur {designation}."
-                    ),
-                    lien=f"/pannes/{panne.id_panne}",
-                )
 
             return self._query_pannes_with_technicien().filter(Panne.id_panne == panne.id_panne).first()
         except Exception:

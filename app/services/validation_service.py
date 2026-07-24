@@ -2,13 +2,14 @@
 from decimal import Decimal
 from datetime import datetime
 import logging
+import re
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func
 
 from ..models.panne import Panne
-
+from typing import List, Dict, Optional, Any, Union
 from ..models.validation import Validation, OrdreValidation, DecisionValidation, TypeValidation
 from ..models.besoin import Besoin, StatutBesoin
 from ..models.bien import Bien, EtatBien
@@ -1082,45 +1083,127 @@ class ValidationService:
         ).all()
         return {v.ordre_validateur: v for v in validations}
 
-    def verifier_eligibilite_cession(self, bien_id: int) -> dict:
-        """
-        Vérifie si le bien est éligible à la cession (double validation DG + Comptable).
-        Retourne un dict avec :
-            eligible: bool,
-            validation_comptable: bool,
-            validation_dg: bool,
-            raison: str
-        """
-        validations = self._get_validations_for_bien(bien_id, TypeValidation.CESSION)
-        val_comptable = validations.get(OrdreValidation.COMPTABLE)
-        val_dg = validations.get(OrdreValidation.DG)
+    # app/services/validation_service.py
 
-        comptable_ok = val_comptable and val_comptable.decision == DecisionValidation.APPROUVE
-        dg_ok = val_dg and val_dg.decision == DecisionValidation.APPROUVE
-        eligible = comptable_ok and dg_ok
+    def verifier_eligibilite_cession(self, bien_id: int) -> dict:
+        from ..models.discussion_concertation import ValidationConcertation, DiscussionConcertation
+        from ..models.discussion_concertation import TypeValidationEnum
+
+        # ✅ RECHERCHER UNIQUEMENT UNE DISCUSSION CESSION CLÔTURÉE
+        discussion = self.db.query(DiscussionConcertation).filter(
+            DiscussionConcertation.id_bien == bien_id,
+            DiscussionConcertation.type_validation == TypeValidationEnum.CESSION,
+            DiscussionConcertation.est_active == False
+        ).order_by(DiscussionConcertation.date_creation.desc()).first()
+
+        # ✅ SI AUCUNE DISCUSSION CESSION, RETOURNER DIRECTEMENT FALSE
+        if not discussion:
+            return {
+                "eligible": False,
+                "raison": "Aucune discussion de concertation CESSION complétée",
+                "validation_comptable": False,
+                "validation_dg": False
+            }
+
+        # ✅ RÉCUPÉRER LES VALIDATIONS DE CETTE DISCUSSION UNIQUEMENT
+        validations = self.db.query(ValidationConcertation).filter(
+            ValidationConcertation.id_discussion == discussion.id
+        ).all()
+
+        validation_dg = False
+        validation_comptable = False
+
+        for v in validations:
+            validateur = self.db.query(Utilisateur).filter(Utilisateur.id == v.id_validateur).first()
+            if validateur and validateur.role and validateur.role.nom.upper() == "DG":
+                validation_dg = v.decision == "APPROUVE"
+            elif validateur and validateur.role and validateur.role.nom.upper() == "COMPTABLE":
+                validation_comptable = v.decision == "APPROUVE"
+
+        eligible = validation_dg and validation_comptable
 
         raison = ""
         if not eligible:
-            if not comptable_ok and not dg_ok:
+            if not validation_comptable and not validation_dg:
                 raison = "En attente de la validation conjointe du DG et du Comptable"
-            elif not comptable_ok:
+            elif not validation_comptable:
                 raison = "En attente de la validation du Comptable"
-            elif not dg_ok:
+            elif not validation_dg:
                 raison = "En attente de la validation du DG"
 
         return {
             "eligible": eligible,
-            "validation_comptable": comptable_ok,
-            "validation_dg": dg_ok,
+            "validation_comptable": validation_comptable,
+            "validation_dg": validation_dg,
             "raison": raison
         }
-
     # ============================================================
     # ✅ MÉTHODE MODIFIÉE : verifier_eligibilite_rebut()
-    # Utilise désormais les validations de concertation
+    # AVEC DÉTECTION INTELLIGENTE DES ERREURS D'ORTHOGRAPHE
     # ============================================================
 
-    # app/services/validation_service.py
+    def _distance_levenshtein(self, s1: str, s2: str) -> int:
+        """Calcule la distance de Levenshtein entre deux chaînes."""
+        if len(s1) < len(s2):
+            return self._distance_levenshtein(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
+
+    def _contient_mot_approchant(self, texte: str, mots_cles: List[str], seuil: int = 2) -> bool:
+        """
+        Vérifie si le texte contient un mot proche (approximatif) des mots-clés.
+        
+        Args:
+            texte: Le texte à analyser
+            mots_cles: Liste des mots-clés à rechercher
+            seuil: Distance de Levenshtein maximale autorisée (défaut: 2)
+        
+        Returns:
+            True si un mot approchant est trouvé
+        """
+        if not texte:
+            return False
+        
+        texte = texte.lower()
+        
+        # D'abord, vérifier les correspondances exactes partielles
+        for mot_cle in mots_cles:
+            if mot_cle.lower() in texte:
+                return True
+        
+        # Ensuite, vérifier mot par mot avec distance de Levenshtein
+        mots = re.findall(r"[a-zéèêëàâîôûç]+(?:[-\'][a-zéèêëàâîôûç]+)?", texte)
+        
+        for mot in mots:
+            if len(mot) < 3:
+                continue
+            
+            for mot_cle in mots_cles:
+                mot_cle_propre = re.sub(r"[^a-zéèêëàâîôûç]", "", mot_cle.lower())
+                if len(mot_cle_propre) < 3:
+                    continue
+                
+                # Si le mot-clé est beaucoup plus long que le mot, ajuster le seuil
+                if len(mot_cle_propre) > len(mot) + 2:
+                    continue
+                
+                distance = self._distance_levenshtein(mot, mot_cle_propre)
+                if distance <= seuil:
+                    return True
+        
+        return False
 
     def verifier_eligibilite_rebut(self, bien_id: int) -> dict:
         from ..models.discussion_concertation import ValidationConcertation, DiscussionConcertation
@@ -1159,80 +1242,59 @@ class ValidationService:
             elif validateur and validateur.role and validateur.role.nom.upper() == "COMPTABLE":
                 validation_comptable = v.decision == "APPROUVE"
 
-        # 3. Vérifier le diagnostic irrécupérable - VERSION AVEC 20+ MOTS-CLÉS
-        panne_irrecup = self.db.query(Panne).filter(
-            Panne.id_bien == bien_id,
-            (Panne.diagnostic.ilike("%irrécupérable%") |
-            Panne.diagnostic.ilike("%irrecuperable%") |
-            Panne.diagnostic.ilike("%recuperable%") |
-            Panne.diagnostic.ilike("%hors d'usage%") |
-            Panne.diagnostic.ilike("%hors usage%") |
-            Panne.diagnostic.ilike("%hors service%") |
-            Panne.diagnostic.ilike("%irrecoverable%") |
-            Panne.diagnostic.ilike("%incident grave%") |
-            Panne.diagnostic.ilike("%accident grave%") |
-            Panne.diagnostic.ilike("%sinistre%") |
-            Panne.diagnostic.ilike("%détruit%") |
-            Panne.diagnostic.ilike("%detruit%") |
-            Panne.diagnostic.ilike("%HS%") |
-            Panne.diagnostic.ilike("%h.s%") |
-            Panne.diagnostic.ilike("%h.s.%") |
-            Panne.diagnostic.ilike("%irreparable%") |
-            Panne.diagnostic.ilike("%irréparable%") |
-            Panne.diagnostic.ilike("%non réparable%") |
-            Panne.diagnostic.ilike("%non reparables%") |
-            Panne.diagnostic.ilike("%non utilisable%") |
-            Panne.diagnostic.ilike("%inutilisable%") |
-            Panne.diagnostic.ilike("%obsolescence%") |
-            Panne.diagnostic.ilike("%obsolète%") |
-            Panne.diagnostic.ilike("%obsolète%") |
-            Panne.diagnostic.ilike("%usure totale%") |
-            Panne.diagnostic.ilike("%usé%") |
-            Panne.diagnostic.ilike("%usée%") |
-            Panne.diagnostic.ilike("%casse%") |
-            Panne.diagnostic.ilike("%cassé%") |
-            Panne.diagnostic.ilike("%brisé%") |
-            Panne.diagnostic.ilike("%bris%") |
-            Panne.diagnostic.ilike("%moteur hs%") |
-            Panne.diagnostic.ilike("%moteur cassé%") |
-            Panne.diagnostic.ilike("%châssis endommagé%") |
-            Panne.diagnostic.ilike("%endommagement%") |
-            Panne.diagnostic.ilike("%endommagé%"))
-        ).first()
+        # 3. Liste étendue des mots-clés (avec erreurs d'orthographe possibles)
+        MOTS_IRRECUP = [
+            # Mot principal et ses variantes
+            "irrécupérable", "irrecuperable", "recuperable", "recupere",
+            "non recuperable", "plus recuperable", "n'est plus recuperable",
+            "non récupérable", "plus récupérable", "n'est plus récupérable",
+            
+            # Variantes avec fautes courantes
+            "irrecuperable", "irrecuperable", "irrécuperable", "irreccuperable",
+            "irecuperable", "irrecupere", "recuperable", "recuperable",
+            "recuperable", "recuperable", "recuper",
+            
+            # Autres expressions
+            "hors d'usage", "hors usage", "hors service",
+            "irrecoverable", "incident grave", "accident grave",
+            "sinistre", "détruit", "detruit", "HS", "h.s", "h.s.",
+            "irreparable", "irréparable", "non réparable", "non reparables",
+            "non utilisable", "inutilisable", "obsolescence", "obsolète",
+            "usure totale", "usé", "usée", "casse", "cassé", "brisé", "bris",
+            "moteur hs", "moteur cassé", "châssis endommagé",
+            "endommagement", "endommagé",
+            
+            # Mots supplémentaires pour couvrir plus de cas
+            "fini", "termine", "mort", "hors service", "epuise",
+            "out of service", "broken", "destroyed", "damaged",
+            "irremediable", "irremediable", "incurable", "perdu",
+        ]
 
-        maintenance_irrecup = self.db.query(Maintenance).filter(
-            Maintenance.id_bien == bien_id,
-            (Maintenance.rapport.ilike("%irrécupérable%") |
-            Maintenance.rapport.ilike("%irrecuperable%") |
-            Maintenance.rapport.ilike("%recuperable%") |
-            Maintenance.rapport.ilike("%hors d'usage%") |
-            Maintenance.rapport.ilike("%hors usage%") |
-            Maintenance.rapport.ilike("%hors service%") |
-            Maintenance.rapport.ilike("%irrecoverable%") |
-            Maintenance.rapport.ilike("%incident grave%") |
-            Maintenance.rapport.ilike("%accident grave%") |
-            Maintenance.rapport.ilike("%sinistre%") |
-            Maintenance.rapport.ilike("%détruit%") |
-            Maintenance.rapport.ilike("%detruit%") |
-            Maintenance.rapport.ilike("%HS%") |
-            Maintenance.rapport.ilike("%irreparable%") |
-            Maintenance.rapport.ilike("%irréparable%") |
-            Maintenance.rapport.ilike("%non réparable%") |
-            Maintenance.rapport.ilike("%non reparables%") |
-            Maintenance.rapport.ilike("%non utilisable%") |
-            Maintenance.rapport.ilike("%inutilisable%") |
-            Maintenance.rapport.ilike("%obsolescence%") |
-            Maintenance.rapport.ilike("%obsolète%") |
-            Maintenance.rapport.ilike("%usure totale%") |
-            Maintenance.rapport.ilike("%usé%") |
-            Maintenance.rapport.ilike("%usée%") |
-            Maintenance.rapport.ilike("%casse%") |
-            Maintenance.rapport.ilike("%cassé%") |
-            Maintenance.rapport.ilike("%brisé%") |
-            Maintenance.rapport.ilike("%bris%"))
-        ).first()
+        # 4. Vérification des pannes avec approche intelligente
+        pannes = self.db.query(Panne).filter(
+            Panne.id_bien == bien_id
+        ).all()
 
-        diagnostic_existe = panne_irrecup is not None or maintenance_irrecup is not None
+        panne_irrecup = False
+        for panne in pannes:
+            texte_complet = f"{panne.diagnostic or ''} {panne.description or ''}"
+            if self._contient_mot_approchant(texte_complet, MOTS_IRRECUP, seuil=2):
+                panne_irrecup = True
+                break
+
+        # 5. Vérification des maintenances
+        maintenances = self.db.query(Maintenance).filter(
+            Maintenance.id_bien == bien_id
+        ).all()
+
+        maintenance_irrecup = False
+        for maintenance in maintenances:
+            texte_complet = f"{maintenance.rapport or ''} {maintenance.observation or ''} {maintenance.description or ''}"
+            if self._contient_mot_approchant(texte_complet, MOTS_IRRECUP, seuil=2):
+                maintenance_irrecup = True
+                break
+
+        diagnostic_existe = panne_irrecup or maintenance_irrecup
         eligible = diagnostic_existe and validation_dg and validation_comptable
 
         raison = ""

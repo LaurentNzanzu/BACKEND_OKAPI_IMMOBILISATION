@@ -48,6 +48,26 @@ class ConcertationService:
 
     # app/services/concertation_service.py
 
+    MOTS_IRRECUP = [
+        "irrécupérable",
+        "irrecuperable",
+        "non récupérable",
+        "non recuperable",
+        "plus récupérable",
+        "plus recuperable",
+        "n'est plus recuperable",
+        "n'est plus récupérable",
+        "hors d'usage",
+        "hors usage",
+        "irreparable",
+        "irréparable",
+    ]
+
+    @classmethod
+    def est_diagnostic_irrecuperable(cls, texte: str) -> bool:
+        t = (texte or "").lower()
+        return any(mot in t for mot in cls.MOTS_IRRECUP)
+
     def detecter_biens_eligibles(self) -> List[Dict]:
         from datetime import datetime, timedelta
         
@@ -56,23 +76,6 @@ class ConcertationService:
             Bien.statut_comptable.in_(['ACTIF', 'EN_AMORTISSEMENT'])
         ).all()
         
-        # Mots-clés indiquant un bien irrécupérable (pannes + maintenances)
-        # Couvre : "irrécupérable", "irrecuperable", "non recuperable",
-        #          "plus recuperable", "non récupérable", "hors d'usage", etc.
-        MOTS_IRRECUP = [
-            "irrécupérable",
-            "irrecuperable",
-            "non récupérable",
-            "non recuperable",
-            "plus récupérable",
-            "plus recuperable",
-            "n'est plus recuperable",
-            "n'est plus récupérable",
-            "hors d'usage",
-            "hors usage",
-            "irreparable",
-            "irréparable",
-        ]
 
         for bien in biens:
             date_limite = datetime.utcnow() - timedelta(days=365)
@@ -96,12 +99,8 @@ class ConcertationService:
             cout_maintenance = sum(_cout_effectif(p) for p in pannes)
 
             # --- Correction #2 : élargissement des mots-clés irrécupérable
-            def _est_irrecup(texte: str) -> bool:
-                t = (texte or "").lower()
-                return any(mot in t for mot in MOTS_IRRECUP)
-
             panne_irrecup = any(
-                _est_irrecup(p.diagnostic) or _est_irrecup(p.description)
+                self.est_diagnostic_irrecuperable(p.diagnostic) or self.est_diagnostic_irrecuperable(p.description)
                 for p in pannes
             )
 
@@ -109,7 +108,7 @@ class ConcertationService:
                 Maintenance.id_bien == bien.id_bien,
                 or_(*[
                     Maintenance.rapport.ilike(f"%{mot}%")
-                    for mot in MOTS_IRRECUP
+                    for mot in self.MOTS_IRRECUP
                 ])
             ).all()
 
@@ -143,6 +142,63 @@ class ConcertationService:
         
         return resultats
 
+    def declencher_concertation_synchrone(self, id_bien: int, diagnostic: str, id_createur: int) -> Optional[DiscussionConcertation]:
+        """
+        Déclenche immédiatement une concertation (REBUT ou CESSION)
+        suite à la détection d'un diagnostic irrécupérable.
+        """
+        from ..schemas.concertation import DiscussionConcertationCreate
+
+        bien = self.db.query(Bien).filter(Bien.id_bien == id_bien).first()
+        if not bien:
+            return None
+
+        # Vérifier si une discussion active existe déjà
+        existante = self.db.query(DiscussionConcertation).filter(
+            DiscussionConcertation.id_bien == id_bien,
+            DiscussionConcertation.type_validation.in_(["REBUT", "CESSION"]),
+            DiscussionConcertation.est_active == True
+        ).first()
+
+        if existante:
+            logger.info(f"⏭️ [SYNCHRONE] Bien #{id_bien} : Discussion active #{existante.id} déjà existante")
+            return existante
+
+        # Un diagnostic irrécupérable déclaré par le technicien mène TOUJOURS au REBUT.
+        # La cession est réservée à d'autres critères (ex: plus de 3 pannes).
+        type_val = "REBUT"
+
+        designation = self._get_bien_designation(bien)
+        motif = f"Diagnostic technique irrécupérable: {diagnostic[:50]}..."
+
+        data = DiscussionConcertationCreate(
+            id_bien=id_bien,
+            type_validation=type_val,
+            titre=(f"[AUTO] {type_val} recommandée – {designation} | {motif}")
+        )
+        
+        try:
+            discussion = self.creer_discussion(data, id_createur)
+            logger.info(f"✅ [SYNCHRONE] Discussion #{discussion.id} créée automatiquement pour bien #{id_bien} ({type_val})")
+            
+            # Ajouter un message initial détaillant le diagnostic
+            createur = self.db.query(Utilisateur).filter(Utilisateur.id == id_createur).first()
+            nom_createur = f"{createur.prenom} {createur.nom}" if createur else "Le technicien"
+            
+            message = MessageConcertation(
+                id_discussion=discussion.id,
+                id_utilisateur=id_createur,
+                contenu=f"🚨 Alerte Système : {nom_createur} a déclaré ce bien irrécupérable.\n\nDiagnostic : \"{diagnostic}\"\n\nVeuillez procéder à la validation de la réforme ou cession.",
+                date_creation=datetime.utcnow()
+            )
+            self.db.add(message)
+            self.db.commit()
+            
+            return discussion
+        except Exception as exc:
+            logger.error(f"❌ [SYNCHRONE] Erreur création discussion auto pour bien #{id_bien}: {exc}")
+            return None
+
     def creer_discussions_automatiques(self) -> Dict:
         """
         Détecte les biens éligibles et crée automatiquement une discussion
@@ -169,9 +225,14 @@ class ConcertationService:
         if not createur:
             logger.error("creer_discussions_automatiques: aucun utilisateur DG/COMPTABLE actif trouvé")
             return {"creees": 0, "ignorees": 0, "erreurs": 0,
-                    "detail": "Aucun utilisateur DG ou COMPTABLE actif disponible"}
+                    "detail": "Aucun utilisateur DG ou COMPTABLE actif disponible", "total_eligibles": 0}
+        
+        role_createur = createur.role.nom.upper()
+        logger.info(f"👤 [CRON] Créateur système trouvé pour les discussions: {createur.nom} ({role_createur})")
 
         eligibles = self.detecter_biens_eligibles()
+        logger.info(f"🔍 [CRON] Détection terminée : {len(eligibles)} bien(s) éligible(s) trouvé(s)")
+
         creees, ignorees, erreurs = 0, 0, 0
         log_detail = []
 
@@ -190,6 +251,7 @@ class ConcertationService:
 
             if existante:
                 ignorees += 1
+                logger.info(f"⏭️ [CRON] Bien #{id_bien} ignoré : Discussion active #{existante.id} déjà existante")
                 log_detail.append({
                     "id_bien": id_bien,
                     "statut": "ignoree",
@@ -214,7 +276,7 @@ class ConcertationService:
                     "type": type_val
                 })
                 logger.info(
-                    f"Discussion #{discussion.id} créée automatiquement pour bien "
+                    f"✅ [CRON] Discussion #{discussion.id} créée automatiquement pour bien "
                     f"#{id_bien} ({type_val}) – {motif}"
                 )
             except Exception as exc:
@@ -224,9 +286,14 @@ class ConcertationService:
                     "statut": "erreur",
                     "raison": str(exc)
                 })
-                logger.warning(
-                    f"Erreur création discussion auto pour bien #{id_bien}: {exc}"
+                logger.error(
+                    f"❌ [CRON] Erreur création discussion auto pour bien #{id_bien}: {exc}"
                 )
+                
+        logger.info(
+            f"📊 [CRON] Résumé de la création automatique : "
+            f"{creees} créée(s), {ignorees} ignorée(s), {erreurs} erreur(s)"
+        )
 
         return {
             "creees": creees,

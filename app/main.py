@@ -256,24 +256,32 @@ async def lifespan(app: FastAPI):
         # ✅ Créer un scheduler partagé
         scheduler = BackgroundScheduler()
         
-        # Initialiser les trois jobs
+        logger.info("🔄 [CRON] Initialisation du job 'scores de fiabilité'...")
         scheduler = init_scores_scheduler(scheduler)
         logger.info("✅ Scheduler des scores de fiabilité initialisé")
         
+        logger.info("🔄 [CRON] Initialisation du job 'alertes VNC'...")
         scheduler = init_alertes_scheduler(scheduler)
         logger.info("✅ Scheduler des alertes VNC initialisé")
         
+        logger.info("🔄 [CRON] Initialisation du job 'projections'...")
         scheduler = init_projections_scheduler(scheduler)
         logger.info("✅ Scheduler des projections initialisé")
 
+        logger.info("🔄 [CRON] Initialisation du job 'détection concertations'...")
         scheduler = init_concertations_scheduler(scheduler)
         logger.info("✅ Scheduler de détection concertations initialisé")
 
         # Démarrer le scheduler
         scheduler.start()
+        
+        jobs = scheduler.get_jobs()
+        logger.info(f"✅ Scheduler global démarré avec succès. Total de {len(jobs)} job(s) enregistré(s).")
+        for job in jobs:
+            logger.info(f"📅 [CRON] Job enregistré : {job.id} - Prochaine exécution : {job.next_run_time}")
+
         app.state.scheduler = scheduler
         app.state.scheduler_running = True
-        logger.info("✅ Scheduler global démarré avec succès")
         
     except Exception as e:
         logger.error(f"❌ Erreur lors de l'initialisation du scheduler: {e}")
