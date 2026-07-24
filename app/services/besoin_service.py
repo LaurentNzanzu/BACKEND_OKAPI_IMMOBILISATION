@@ -37,6 +37,18 @@ class BesoinService:
         if not panne:
             raise ValueError(f"Panne {data.id_panne} non trouvée")
 
+        if panne.statut == StatutPanne.EN_VALIDATION:
+            raise ValueError(f"Impossible de créer un besoin : la panne est en cours de validation de réforme ou cession (bien irrécupérable).")
+            
+        from ..models.discussion_concertation import DiscussionConcertation
+        concertation_active = self.db.query(DiscussionConcertation).filter(
+            DiscussionConcertation.id_bien == panne.id_bien,
+            DiscussionConcertation.type_validation.in_(["REBUT", "CESSION"]),
+            DiscussionConcertation.est_active == True
+        ).first()
+        if concertation_active:
+            raise ValueError(f"Impossible de créer un besoin : une concertation de type {concertation_active.type_validation.value} est en cours pour ce bien.")
+
         besoin = Besoin(
             id_panne=data.id_panne,
             numero_demande=self._generer_numero_demande(),

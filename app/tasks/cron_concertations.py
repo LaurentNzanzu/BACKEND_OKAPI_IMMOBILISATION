@@ -22,18 +22,17 @@ def detecter_et_creer_discussions():
 
     db = SessionLocal()
     try:
-        logger.info("[CRON] Début détection automatique biens éligibles concertation...")
+        logger.info(f"🔄 [CRON] Début détection automatique - {datetime.now().isoformat()}")
         service = ConcertationService(db)
         resultat = service.creer_discussions_automatiques()
         logger.info(
-            f"[CRON] Détection terminée — "
-            f"{resultat['total_eligibles']} éligibles, "
-            f"{resultat['creees']} discussion(s) créée(s), "
-            f"{resultat['ignorees']} ignorée(s), "
-            f"{resultat['erreurs']} erreur(s)"
+            f"[CRON] Détection terminée — Total éligibles: {resultat['total_eligibles']}, "
+            f"Créées: {resultat['creees']}, Ignorées: {resultat['ignorees']}, Erreurs: {resultat['erreurs']}"
         )
+        if resultat['creees'] > 0:
+            logger.info(f"[CRON] ✅ {resultat['creees']} discussion(s) créée(s) avec succès")
     except Exception as exc:
-        logger.error(f"[CRON] Erreur lors de la détection automatique : {exc}", exc_info=True)
+        logger.error(f"[CRON] ❌ Erreur lors de la détection automatique : {exc}", exc_info=True)
     finally:
         db.close()
 
@@ -52,5 +51,5 @@ def init_scheduler(scheduler):
         replace_existing=True,
         next_run_time=datetime.now(),   # Exécution immédiate au démarrage
     )
-    logger.info("[CRON] Job 'détection concertations' enregistré (toutes les 6h)")
+    logger.info("[CRON] ✅ Job 'détection concertations' enregistré (toutes les 6h)")
     return scheduler

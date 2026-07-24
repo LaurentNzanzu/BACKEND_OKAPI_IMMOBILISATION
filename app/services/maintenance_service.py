@@ -250,7 +250,7 @@ class MaintenanceService:
                     maintenance.pieces_remplacees = pieces_remplacees
 
                 # Mise à jour de l'état du bien
-                self._mettre_a_jour_etat_bien_apres_maintenance(maintenance, bien)
+                self._mettre_a_jour_etat_bien_apres_maintenance(maintenance, bien, rapport)
 
             self.db.refresh(maintenance)
         except SQLAlchemyError as e:
@@ -275,14 +275,42 @@ class MaintenanceService:
 
         return maintenance
 
-    def _mettre_a_jour_etat_bien_apres_maintenance(self, maintenance: Maintenance, bien: Optional[Bien]):
+    def _mettre_a_jour_etat_bien_apres_maintenance(self, maintenance: Maintenance, bien: Optional[Bien], rapport: str = None):
         """Met à jour l'état du bien après une maintenance."""
-        if maintenance.type_maintenance == TypeMaintenance.CORRECTIVE and maintenance.id_panne:
-            self.bien_service.changer_etat_bien(maintenance.id_bien, EtatBien.EN_TEST, commit=False)
+        from .concertation_service import ConcertationService
+        est_irrecuperable = False
+        if rapport:
+            est_irrecuperable = ConcertationService.est_diagnostic_irrecuperable(rapport)
 
+        if maintenance.type_maintenance == TypeMaintenance.CORRECTIVE and maintenance.id_panne:
             panne = maintenance.panne or self.db.query(Panne).filter(
                 Panne.id_panne == maintenance.id_panne
             ).first()
+
+            if est_irrecuperable:
+                self.bien_service.changer_etat_bien(maintenance.id_bien, EtatBien.MAINTENANCE, commit=False)
+                if panne:
+                    panne.changer_statut(StatutPanne.EN_VALIDATION)
+                    
+                concertation_service = ConcertationService(self.db)
+                concertation_service.declencher_concertation_synchrone(maintenance.id_bien, rapport, maintenance.id_technicien)
+                
+                # Notification spécifique au lieu de celle par défaut
+                designation = f"{getattr(bien, 'marque', '')} {getattr(bien, 'modele', '')}".strip() or f"Bien #{maintenance.id_bien}"
+                gestionnaires = self.db.query(Utilisateur).join(Role).filter(Role.nom.in_(["GESTIONNAIRE", "ADMIN"])).all()
+                if gestionnaires:
+                    self.notification_service.envoyer_notification(
+                        ids_destinataires=[g.id for g in gestionnaires],
+                        type_notif=TypeNotificationEnum.MAINTENANCE_ALERTE,
+                        titre=f"🚨 Maintenance critique (Irrécupérable) - {designation}",
+                        contenu=f"Le rapport de maintenance signale que le bien {designation} est irrécupérable. Concertation ouverte.",
+                        lien=f"/maintenances/{maintenance.id_maintenance}",
+                        commit=False
+                    )
+                return
+
+            self.bien_service.changer_etat_bien(maintenance.id_bien, EtatBien.EN_TEST, commit=False)
+
             if panne:
                 panne.changer_statut(StatutPanne.EN_TEST)
 
