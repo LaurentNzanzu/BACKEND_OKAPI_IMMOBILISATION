@@ -24,7 +24,7 @@ class EmailService:
         )
 
         if not EmailService.is_configured():
-            if settings.ENV != "production":
+            if settings.ENVIRONMENT != "production":
                 logger.info("SMTP non configuré — lien reset (dev uniquement) pour %s", to_email)
             return False
 

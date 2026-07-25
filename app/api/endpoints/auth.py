@@ -25,7 +25,7 @@ from ...services.password_reset_service import PasswordResetService
 from ...services.email_service import EmailService
 from ...api.dependencies import get_current_user
 from ...models.utilisateur import Utilisateur
-from ...core.security import get_password_hash, decode_token, create_access_token, invalidate_user_cache
+from ...core.security import get_password_hash, decode_token, create_access_token, invalidate_user_cache, verify_password
 from ...core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -173,14 +173,31 @@ def change_password(
     current_user: Utilisateur = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    from ...core.security import verify_password
+    from ...core.security import verify_password, get_password_hash, invalidate_user_cache
 
-    if not verify_password(request.ancien_mot_de_passe, current_user.mot_de_passe):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="L'ancien mot de passe est incorrect")
+    # 🟢 OPTIMISATION & SÉCURITÉ : On interroge la BDD en ne ramenant QUE la colonne mot_de_passe
+    # Cela consomme un minimum absolu de bande passante et évite de stocker le hash en cache.
+    db_user_password = (
+        db.query(Utilisateur.mot_de_passe)
+        .filter(Utilisateur.id == current_user.id)
+        .first()
+    )
 
-    current_user.mot_de_passe = get_password_hash(request.nouveau_mot_de_passe)
+    if not db_user_password or not verify_password(request.ancien_mot_de_passe, db_user_password[0]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="L'ancien mot de passe est incorrect"
+        )
+
+    # Récupération de l'objet complet uniquement pour effectuer l'écriture (UPDATE)
+    user_to_update = db.query(Utilisateur).filter(Utilisateur.id == current_user.id).first()
+    user_to_update.mot_de_passe = get_password_hash(request.nouveau_mot_de_passe)
     db.commit()
 
+    # 🔴 SÉCURITÉ CRITIQUE : Invalider le cache pour forcer le rechargement propre au prochain appel
+    invalidate_user_cache(current_user.id)
+
+    # Journalisation de l'action d'audit
     audit_service = AuditService(db)
     audit_service.log_action(
         user_id=current_user.id,
@@ -191,17 +208,17 @@ def change_password(
         nouvelles_valeurs={"mot_de_passe": "****"},
     )
 
-    logger.info("Mot de passe changé pour l'utilisateur %s", current_user.email)
+    logger.info("Mot de passe changé avec succès pour l'utilisateur ID: %s", current_user.id)
     return {"message": "Mot de passe mis à jour avec succès"}
 
 
-@router.post("/forgot-password", response_model=PasswordResetResponse)
+@router.post("/forgot-password")
 async def forgot_password(
     request: ForgotPasswordRequest,
     db: Session = Depends(get_db),
 ):
     user = db.query(Utilisateur).filter(Utilisateur.email == request.email).first()
-    generic_message = PasswordResetResponse(message="Si un compte correspond, un lien a été envoyé.")
+    generic_message = {"message": "Si un compte correspond, un lien a été envoyé."}
 
     if not user or not user.est_actif:
         return generic_message
@@ -210,7 +227,7 @@ async def forgot_password(
     raw_token = reset_service.create_reset_token(user.id)
     reset_link = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={raw_token}"
 
-    EmailService.send_password_reset_email(user.email, reset_link)
+    email_sent = EmailService.send_password_reset_email(user.email, reset_link)
 
     audit_service = AuditService(db)
     audit_service.log_action(
@@ -222,6 +239,14 @@ async def forgot_password(
         nouvelles_valeurs={"email": user.email},
     )
     logger.info("Demande de réinitialisation enregistrée pour: %s", user.email)
+
+    # 👈 Si on est en développement ou si l'e-mail n'a pas pu être envoyé, on renvoie le lien directement
+    if settings.ENVIRONMENT != "production" or not email_sent:
+        return {
+            "message": "E-mail envoyé (simulé en dev)",
+            "dev_reset_link": reset_link
+        }
+
     return generic_message
 
 
