@@ -18,7 +18,22 @@ class Settings(BaseSettings):
     # === Sécurité JWT (OBLIGATOIRES) ===
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    REFRESH_SECRET_KEY: str
+    
+    # === Redis Configuration ===
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[str] = None
+    REDIS_SESSION_TTL: int = 604800
+    REDIS_SOCKET_TIMEOUT: int = 2
+    REDIS_SOCKET_CONNECT_TIMEOUT: int = 2
+    REDIS_RETRY_ON_TIMEOUT: bool = True
+    REDIS_MAX_CONNECTIONS: int = 10
+    # 🔴 SUPPRIMEZ LA LIGNE CI-DESSOUS
+    # REDIS_URL: Optional[str] = None
     
     # === Configuration SMTP (Optionnel) ===
     SMTP_SERVER: str = "smtp.gmail.com"
@@ -32,17 +47,20 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://localhost:8000", 
         "http://127.0.0.1:8000",
-        "http://localhost:5173",      # Vite
+        "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
     
     # === Application ===
     APP_NAME: str = "Gestion Immobilisations"
-    
-    # ✅ CORRECTION : Remplacer ENV par ENVIRONMENT
-    ENVIRONMENT: str = "development"  # "development" ou "production"
+    ENVIRONMENT: str = "development"
     DEBUG: bool = True
     FRONTEND_URL: str = "http://localhost:3000"
+    
+    # === Session Limits ===
+    MAX_ACTIVE_SESSIONS: int = 5
+    SESSION_RETENTION_DAYS: int = 30
+    REVOKED_SESSION_RETENTION_DAYS: int = 7
 
     @property
     def DATABASE_URL(self) -> str:
@@ -56,12 +74,19 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
     
+    @property
+    def REDIS_URL(self) -> str:
+        """Construit l'URL de connexion Redis."""
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+    
     # Configuration Pydantic pour charger le fichier .env
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore"  # Ignore les variables non définies dans la classe
+        extra="ignore"
     )
 
 # Instance unique des paramètres (Singleton)

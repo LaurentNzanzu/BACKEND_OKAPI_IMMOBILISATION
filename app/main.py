@@ -18,6 +18,13 @@ from starlette.requests import Request
 from app.core.database import engine, Base, get_db, SessionLocal
 from app.core.config import settings
 from app.core.middleware_perf import PerformanceLoggingMiddleware
+from app.middleware.session_middleware import (
+    SessionValidationMiddleware,
+    TokenValidationMiddleware
+)
+
+from app.services.cleanup_service import CleanupService
+
 
 import app.models
 
@@ -56,7 +63,9 @@ from app.api.endpoints import (
     mouvements_caisse,
     pieces_justificatives,
     etats_financiers,
-    concertations
+    concertations,
+    admin_sessions,
+    monitoring
 )
 
 # Import des tâches CRON
@@ -71,6 +80,9 @@ logger = logging.getLogger(__name__)
 
 # Variable globale pour le scheduler
 scheduler = None
+
+# Variable globale pour le cleanup service
+cleanup_service = None
 
 API_V1_PREFIX = "/api/v1"
 _API_COLLECTION_PATH = re.compile(r"^/api/v1/[^/]+$")
@@ -227,15 +239,14 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         }
     )
 
-
 # ============================================================
-# LIFESPAN DE L'APPLICATION
+# LIFESPAN DE L'APPLICATION (MODIFICATION)
 # ============================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie de l'application"""
-    global scheduler
+    global scheduler, cleanup_service
     
     # Startup
     logger.info("🚀 Démarrage de l'application...")
@@ -283,6 +294,13 @@ async def lifespan(app: FastAPI):
         app.state.scheduler = scheduler
         app.state.scheduler_running = True
         
+        # 🔴 NOUVEAU : Démarrer le CleanupService
+        global cleanup_service
+        cleanup_service = CleanupService()
+        cleanup_service.start()
+        app.state.cleanup_service = cleanup_service
+        app.state.cleanup_running = True
+        
     except Exception as e:
         logger.error(f"❌ Erreur lors de l'initialisation du scheduler: {e}")
         app.state.scheduler_running = False
@@ -291,13 +309,17 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("🛑 Arrêt de l'application...")
+    
+    # Arrêter le CleanupService
+    if cleanup_service:
+        cleanup_service.stop()
+        app.state.cleanup_running = False
+    
     if scheduler:
         scheduler.shutdown(wait=True)
         logger.info("✅ Scheduler arrêté")
     
     logger.info("🛑 Application arrêtée")
-
-
 # ============================================================
 # CRÉATION DE L'APPLICATION FASTAPI
 # ============================================================
@@ -333,6 +355,10 @@ app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)
 
 # 6. Exception générique (DOIT être en dernier)
 app.add_exception_handler(Exception, global_exception_handler)
+
+app.add_middleware(SessionValidationMiddleware)  # Validation complète
+app.add_middleware(TokenValidationMiddleware)    # Extraction JTI
+
 
 
 # ============================================================
@@ -400,6 +426,8 @@ app.include_router(mouvements_caisse.router, prefix=API_V1_PREFIX)
 app.include_router(pieces_justificatives.router, prefix=API_V1_PREFIX)
 app.include_router(etats_financiers.router, prefix=API_V1_PREFIX)
 app.include_router(concertations.router, prefix=API_V1_PREFIX)
+app.include_router(admin_sessions.router, prefix=API_V1_PREFIX)
+app.include_router(monitoring.router, prefix=API_V1_PREFIX)
 
 
 

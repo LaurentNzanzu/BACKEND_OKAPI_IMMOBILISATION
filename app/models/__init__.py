@@ -41,6 +41,9 @@ from .cession import Cession
 from .workflow_amortissement import WorkflowValidationAmortissement, EtapeWorkflowAmortissement, StatutWorkflowAmortissement
 from .discussion_concertation import DiscussionConcertation, MessageConcertation, ValidationConcertation, TypeValidationEnum, DecisionValidationConcertation
 
+# === NOUVEAUX IMPORTATIONS TÂCHE 4 ===
+from .session import SessionUtilisateur
+
 
 __all__ = [
     # Gestion des utilisateurs et permissions
@@ -127,4 +130,7 @@ __all__ = [
     "DiscussionConcertation",
     "MessageConcertation",
     "ValidationConcertation"
+
+    #session utilisateur
+    "SessionUtilisateur"
 ]

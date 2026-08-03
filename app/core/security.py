@@ -10,6 +10,7 @@ from .cookies import ACCESS_COOKIE
 from ..models.utilisateur import Utilisateur
 from ..core.database import get_db
 import logging
+import uuid  # ⬅️ Ajouté pour générer des JTI uniques
 
 logger = logging.getLogger(__name__)
 
@@ -42,29 +43,55 @@ def get_password_hash(password: str) -> str:
 
 # === Gestion des tokens JWT ===
 
-def create_access_token(subject: Union[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-    """Crée un token d'accès JWT signé."""
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+def create_access_token(user_id: Union[str, int], jti: Optional[str] = None) -> str:
+    """
+    Crée un token d'accès JWT signé avec JTI.
+    Durée de vie : 15 minutes (configurable via settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    """
+    if jti is None:
+        jti = str(uuid.uuid4())  # Génère un JTI unique
     
-    to_encode = {"exp": expire, "sub": str(subject), "type": "access"}
+    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode = {
+        "exp": expire,
+        "sub": str(user_id),
+        "type": "access",
+        "jti": jti
+    }
     
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def create_refresh_token(subject: Union[str, Any]) -> str:
-    """Crée un refresh token JWT (durée de vie : 7 jours)."""
-    expire = datetime.utcnow() + timedelta(days=7)
-    to_encode = {"exp": expire, "sub": str(subject), "type": "refresh"}
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+def create_refresh_token(user_id: Union[str, int], jti: Optional[str] = None) -> str:
+    """
+    Crée un refresh token JWT avec JTI.
+    Durée de vie : 7 jours (configurable via settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    """
+    if jti is None:
+        jti = str(uuid.uuid4())  # Génère un JTI unique
+    
+    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    to_encode = {
+        "exp": expire,
+        "sub": str(user_id),
+        "type": "refresh",
+        "jti": jti
+    }
+    
+    # Utilise une clé séparée pour les refresh tokens
+    return jwt.encode(to_encode, settings.REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_token(token: str) -> dict:
-    """Décode et vérifie un token JWT."""
+def decode_token(token: str, is_refresh: bool = False) -> dict:
+    """
+    Décode et vérifie un token JWT.
+    is_refresh: Si True, utilise la clé de refresh, sinon la clé d'access.
+    """
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        secret_key = settings.REFRESH_SECRET_KEY if is_refresh else settings.SECRET_KEY
+        return jwt.decode(token, secret_key, algorithms=[settings.ALGORITHM])
     except jwt.ExpiredSignatureError:
         logger.warning("Token JWT expiré")
         raise JWTError("Token expiré")
@@ -82,7 +109,16 @@ def get_token_subject(token: str) -> Optional[str]:
         return None
 
 
-# === ✅ CORRIGÉ : Dépendance d'authentification pour FastAPI ===
+def get_token_jti(token: str, is_refresh: bool = False) -> Optional[str]:
+    """Extrait le JTI d'un token."""
+    try:
+        payload = decode_token(token, is_refresh)
+        return payload.get("jti")
+    except JWTError:
+        return None
+
+
+# === Dépendance d'authentification ===
 
 from .redis import CacheService
 from .database import LocalCache
@@ -91,6 +127,7 @@ def invalidate_user_cache(user_id: int):
     """Invalide le cache utilisateur (mémoire + Redis)."""
     LocalCache.delete(f"user:{user_id}")
     CacheService.delete(f"user:{user_id}")
+
 
 def get_current_user(
     request: Request,
@@ -107,6 +144,7 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    # Récupère l'Access Token depuis le header Authorization ou depuis le cookie
     if not token:
         token = request.cookies.get(ACCESS_COOKIE)
 
@@ -115,8 +153,8 @@ def get_current_user(
         raise credentials_exception
 
     try:
-        payload = decode_token(token)
-        if payload.get("type") not in (None, "access"):
+        payload = decode_token(token, is_refresh=False)  # Token d'access
+        if payload.get("type") != "access":
             raise credentials_exception
         user_id = payload.get("sub")
         if user_id is None:
@@ -126,7 +164,7 @@ def get_current_user(
 
     cache_key = f"user:{user_id}"
     
-    # 🔴 OPTIMISATION LATENCE : Restitution instantanée depuis le cache local (0ms BDD)
+    # OPTIMISATION LATENCE : Restitution instantanée depuis le cache local
     cached_user = LocalCache.get(cache_key) or CacheService.get(cache_key)
     if cached_user:
         user = Utilisateur()
@@ -174,7 +212,6 @@ def get_current_active_user(
 ) -> Utilisateur:
     """
     Dépendance supplémentaire pour vérifier que l'utilisateur est actif.
-    Utile si get_current_user ne suffit pas.
     """
     if not current_user.est_actif:
         raise HTTPException(

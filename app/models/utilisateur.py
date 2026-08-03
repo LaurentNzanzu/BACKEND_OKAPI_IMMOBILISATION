@@ -18,7 +18,7 @@ class Utilisateur(Base):
     __tablename__ = "utilisateurs"
 
     # === Champs de la table ===
-    id = Column(Integer, primary_key=True, index=True)  # Géré via get_next_id()
+    id = Column(Integer, primary_key=True, index=True)
 
     # Informations personnelles
     email = Column(String(100), unique=True, nullable=False, index=True)
@@ -46,32 +46,87 @@ class Utilisateur(Base):
     def nom_complet(self) -> str:
         parts = [self.prenom, self.nom, self.post_nom]
         return " ".join([p for p in parts if p]).strip()
-    # Dans backend/app/models/utilisateur.py, ajouter :
-    #audit_logs = relationship("AuditLog", back_populates="utilisateur", lazy="select")
-    
-    # Relation vers JournalAudit (avec lazy loading pour éviter les erreurs d'initialisation)
+
+    # Relation vers JournalAudit
     audit_logs = relationship(
         "JournalAudit",
         back_populates="utilisateur",
         cascade="all, delete-orphan",
-        lazy="select"  # ← Chargement différé
+        lazy="select"
     )
-    # Relation vers MouvementBien (mouvements réalisés par cet utilisateur)
+
+    # Relation vers MouvementBien
     mouvements_realises = relationship(
         "MouvementBien",
         back_populates="utilisateur",
         foreign_keys="[MouvementBien.id_utilisateur]",
         lazy="select"
     )
-    # Relation vers Notification (notifications reçues par cet utilisateur)
-    
+
+    # Relation vers DecisionIA
     decisions_ia = relationship("DecisionIA", back_populates="utilisateur", cascade="all, delete-orphan")
 
+    # Relation vers Notification
     notifications = relationship("Notification", secondary="notification_user", back_populates="destinataires")
 
+    # Relation vers FourniturePiece
     fournitures_validees = relationship("FourniturePiece", back_populates="magasinier")
 
-    # === Méthodes utilitaires ===
+    # === SESSIONS ===
+    sessions = relationship(
+        "SessionUtilisateur",
+        back_populates="utilisateur",
+        cascade="all, delete-orphan",
+        lazy="dynamic"
+    )
+
+    # ❌ SUPPRIMER CETTE LIGNE (car elle cause l'erreur)
+    # permissions = relationship("Permission", secondary="utilisateur_permissions", lazy="selectin")
+
+    def __repr__(self):
+        return f"<Utilisateur {self.email}>"
+
+    def get_active_sessions(self, db_session=None):
+        """Récupère les sessions actives de l'utilisateur."""
+        if db_session:
+            return db_session.query(self.sessions).filter(
+                self.sessions.est_revoquee == False
+            ).all()
+        return self.sessions.filter_by(est_revoquee=False)
+
+    def get_all_sessions(self, db_session=None):
+        """Récupère toutes les sessions de l'utilisateur."""
+        if db_session:
+            return db_session.query(self.sessions).all()
+        return self.sessions.all()
+
+    def revoke_all_sessions(self, db_session=None, exclude_uuid=None):
+        """Révoque toutes les sessions de l'utilisateur."""
+        sessions = self.get_active_sessions(db_session)
+        revoked_count = 0
+        for session in sessions:
+            if exclude_uuid and session.session_uuid == exclude_uuid:
+                continue
+            session.revoke()
+            revoked_count += 1
+        if db_session:
+            db_session.commit()
+        return revoked_count
+
+    def count_active_sessions(self, db_session=None):
+        """Compte le nombre de sessions actives de l'utilisateur."""
+        if db_session:
+            return db_session.query(self.sessions).filter(
+                self.sessions.est_revoquee == False
+            ).count()
+        return self.sessions.filter_by(est_revoquee=False).count()
+
+    def has_permission(self, permission_name: str) -> bool:
+        """Vérifie si l'utilisateur a une permission spécifique via son rôle."""
+        if not self.role:
+            return False
+        return self.role.has_permission(permission_name)
+
     def __repr__(self):
         return f"<Utilisateur(id={self.id}, email='{self.email}', role='{self.role.nom if self.role else 'N/A'}')>"
 

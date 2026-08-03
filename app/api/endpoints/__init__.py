@@ -28,6 +28,9 @@ from .validations import router as validations_router  # MODIFIÉ
 from .mouvements_caisse import router as mouvements_caisse_router
 from .pieces_justificatives import router as pieces_justificatives_router
 from .concertations import router as concertations_router
+from .admin_sessions import router as admin_sessions_router  
+from .monitoring import router as monitoring_router  
+from .admin_blacklist import router as admin_blacklist_router
 
 
 
@@ -61,6 +64,8 @@ AVAILABLE_ROUTERS: list[str] = [
     "mouvements_caisse",
     "pieces_justificatives",
     "concertations",
+    "admin_sessions",
+    "admin_blacklist"
 ]
 
 
@@ -99,6 +104,9 @@ def get_router(name: str):
         "mouvements_caisse": mouvements_caisse_router,
         "pieces_justificatives": pieces_justificatives_router,
         "concertations": concertations_router,
+        "admin_sessions": admin_sessions_router,
+        "monitoring": monitoring_router,
+        "admin_blacklist": admin_blacklist_router,
     }
     return routers.get(name)
 
@@ -160,4 +168,7 @@ __all__ = [
     "mouvements_caisse_router",
     "pieces_justificatives_router",
     "concertations_router",
+    "admin_sessions_router",
+    "monitoring_router",
+    "admin_blacklist_router"
 ]

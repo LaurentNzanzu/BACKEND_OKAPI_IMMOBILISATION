@@ -224,3 +224,47 @@ class StatutProjection(str, Enum):
     CONFIRMEE = "CONFIRMEE"
     REALISEE = "REALISEE"
     ANNULEE = "ANNULEE"
+
+class SessionStatus(str, Enum):
+    """
+    Statuts possibles pour une session utilisateur.
+    """
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+    @classmethod
+    def from_bool(cls, is_revoked: bool) -> "SessionStatus":
+        """Convertit un booléen en statut."""
+        return cls.REVOKED if is_revoked else cls.ACTIVE
+
+class DeviceType(str, Enum):
+    """
+    Types d'appareils possibles.
+    """
+    DESKTOP = "desktop"
+    MOBILE = "mobile"
+    TABLET = "tablet"
+    UNKNOWN = "unknown"
+
+class BrowserType(str, Enum):
+    """
+    Types de navigateurs possibles.
+    """
+    CHROME = "chrome"
+    FIREFOX = "firefox"
+    SAFARI = "safari"
+    EDGE = "edge"
+    OPERA = "opera"
+    UNKNOWN = "unknown"
+
+class OSType(str, Enum):
+    """
+    Types de systèmes d'exploitation possibles.
+    """
+    WINDOWS = "windows"
+    MAC = "mac"
+    LINUX = "linux"
+    IOS = "ios"
+    ANDROID = "android"
+    UNKNOWN = "unknown"
