@@ -13,6 +13,7 @@ from ...models.validation import DecisionValidation, OrdreValidation, TypeValida
 from ...schemas.notification import TypeNotificationEnum
 from ...services.notification_service import NotificationService
 from ...services.validation_service import ValidationService
+from ...schemas.bien import ReferentielOptionsResponse
 
 from ...core.database import get_db
 from ...core.bien_permissions import (
@@ -969,6 +970,21 @@ async def get_ordonnancement_remplacement(
         "nombre_remplacements": verification["nombre_remplacements"],
         "recommandation": _get_recommandation_remplacement(bien, arbre)
     }
+
+@router.get("/referentiels/options", response_model=ReferentielOptionsResponse)
+async def get_referentiel_options(
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user),
+):
+    """
+    Récupère les options uniques (marques, modèles, fabricants, processeurs)
+    pour alimenter les listes déroulantes dynamiques du formulaire.
+    """
+    if not can_view_biens(current_user):
+        _deny(current_user, "view_referentiels", "Permissions insuffisantes")
+
+    service = BienService(db)
+    return service.get_referentiel_options()
 
 
 # ============================================================

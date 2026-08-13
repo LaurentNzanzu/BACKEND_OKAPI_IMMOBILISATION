@@ -625,3 +625,25 @@ class BienService:
             .filter(Bien.etat != EtatBien.REFORME)
             .all()
         )
+
+    def get_referentiel_options(self) -> dict:
+        """
+        Extrait les options distinctes pour alimenter les listes déroulantes du frontend.
+        """
+        marques_vehicules = [m[0] for m in self.db.query(Vehicule.marque).filter(Vehicule.marque.isnot(None)).distinct().all() if m[0]]
+        marques_ordinateurs = [m[0] for m in self.db.query(Ordinateur.marque).filter(Ordinateur.marque.isnot(None)).distinct().all() if m[0]]
+        
+        modeles_vehicules = [m[0] for m in self.db.query(Vehicule.modele).filter(Vehicule.modele.isnot(None)).distinct().all() if m[0]]
+        modeles_ordinateurs = [m[0] for m in self.db.query(Ordinateur.modele).filter(Ordinateur.modele.isnot(None)).distinct().all() if m[0]]
+        
+        fabricants_machines = [f[0] for f in self.db.query(Machine.fabricant).filter(Machine.fabricant.isnot(None)).distinct().all() if f[0]]
+        processeurs_ordinateurs = [p[0] for p in self.db.query(Ordinateur.processeur).filter(Ordinateur.processeur.isnot(None)).distinct().all() if p[0]]
+
+        return {
+            "marques_vehicules": sorted(marques_vehicules),
+            "marques_ordinateurs": sorted(marques_ordinateurs),
+            "modeles_vehicules": sorted(modeles_vehicules),
+            "modeles_ordinateurs": sorted(modeles_ordinateurs),
+            "fabricants_machines": sorted(fabricants_machines),
+            "processeurs_ordinateurs": sorted(processeurs_ordinateurs),
+        }
