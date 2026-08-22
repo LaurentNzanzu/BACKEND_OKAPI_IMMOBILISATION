@@ -319,3 +319,15 @@ class BienAvecCessionResponse(BienResponse):
     
     class Config:
         from_attributes = True
+
+# ============================================================
+# SCHÉMA POUR LES RÉFÉRENTIELS (OPTIONS DÉROULANTES)
+# ============================================================
+
+class ReferentielOptionsResponse(BaseModel):
+    marques_vehicules: List[str] = Field(default_factory=list)
+    marques_ordinateurs: List[str] = Field(default_factory=list)
+    modeles_vehicules: List[str] = Field(default_factory=list)
+    modeles_ordinateurs: List[str] = Field(default_factory=list)
+    fabricants_machines: List[str] = Field(default_factory=list)
+    processeurs_ordinateurs: List[str] = Field(default_factory=list)
