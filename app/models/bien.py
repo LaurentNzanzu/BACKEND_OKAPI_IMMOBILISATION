@@ -1,5 +1,5 @@
 # backend/app/models/bien.py
-from sqlalchemy import Column, Integer, String, Date, DateTime, Enum, Numeric, ForeignKey, Text, Boolean, Float, event
+from sqlalchemy import Column, Integer, String, Date, DateTime, Enum, Numeric, ForeignKey, Text, Boolean, Float, event,JSON
 from sqlalchemy.orm import relationship, validates
 from datetime import datetime
 from decimal import Decimal
@@ -35,7 +35,7 @@ class Bien(Base):
     etat = Column(Enum(EtatBien), default=EtatBien.NEUF)
     id_localisation = Column(Integer, ForeignKey('localisations.id_localisation'), nullable=False)
     date_fin_garantie = Column(Date, nullable=True)
-    description = Column(String(500))
+    description = Column(String(500), nullable=True)
     image = Column(String(500))
     date_creation = Column(DateTime, default=datetime.utcnow)
     
@@ -72,8 +72,16 @@ class Bien(Base):
     # === NOUVEAU CHAMP PHASE 1.4 ===
     id_cession_validee = Column(Integer, ForeignKey('cessions.id_cession', ondelete="SET NULL"), nullable=True)
 
+    # ✅ NOUVEAUX CHAMPS POUR LES TYPES DYNAMIQUES
+    id_type_bien = Column(Integer, ForeignKey('types_biens.id', ondelete="SET NULL"), nullable=True)
+    attributs_specifiques = Column(JSON, default={}, comment="Valeurs des champs spécifiques au type")
     # Discriminator pour l'héritage (Phase 2)
     type_bien = Column(String(50))
+
+    # ==configuration de l'etape de  inventaire
+    # Ajouter ces colonnes
+    numero_inventaire = Column(String(50), unique=True, index=True, nullable=False)
+    images = Column(JSON, default=[])  # liste de {url, public_id}
 
     __mapper_args__ = {
         "polymorphic_identity": "bien",
@@ -107,6 +115,7 @@ class Bien(Base):
     cessions = relationship("Cession", foreign_keys="Cession.id_bien", back_populates="bien", cascade="all, delete-orphan", lazy="select")
     validations = relationship("Validation", back_populates="bien", cascade="all, delete-orphan", lazy="select")
 
+    type_bien_ref = relationship("TypeBien", back_populates="biens")
     # NOUVELLE RELATION PHASE 1.4
     cession_validee = relationship("Cession", foreign_keys=[id_cession_validee])
 

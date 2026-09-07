@@ -141,8 +141,8 @@ def seed_all_users():
         },
         # CAISSE
         {
-            "email": "caisse@gmail.com",
-            "mot_de_passe": "caisse123",
+            "email": "estherzag@gmail.com",
+            "mot_de_passe": "Password1",
             "nom": "Responsable",
             "prenom": "Caisse",
             "role_nom": "CAISSE",

@@ -43,9 +43,13 @@ def get_password_hash(password: str) -> str:
 
 # === Gestion des tokens JWT ===
 
-def create_access_token(user_id: Union[str, int], jti: Optional[str] = None) -> str:
+def create_access_token(
+    user_id: Union[str, int], 
+    session_uuid: Optional[str] = None, 
+    jti: Optional[str] = None
+) -> str:
     """
-    Crée un token d'accès JWT signé avec JTI.
+    Crée un token d'accès JWT signé avec JTI et SID (session_uuid).
     Durée de vie : 15 minutes (configurable via settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     """
     if jti is None:
@@ -59,13 +63,19 @@ def create_access_token(user_id: Union[str, int], jti: Optional[str] = None) -> 
         "type": "access",
         "jti": jti
     }
+    if session_uuid is not None:
+        to_encode["sid"] = str(session_uuid)
     
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def create_refresh_token(user_id: Union[str, int], jti: Optional[str] = None) -> str:
+def create_refresh_token(
+    user_id: Union[str, int], 
+    session_uuid: Optional[str] = None, 
+    jti: Optional[str] = None
+) -> str:
     """
-    Crée un refresh token JWT avec JTI.
+    Crée un refresh token JWT avec JTI et SID (session_uuid).
     Durée de vie : 7 jours (configurable via settings.REFRESH_TOKEN_EXPIRE_DAYS)
     """
     if jti is None:
@@ -79,6 +89,8 @@ def create_refresh_token(user_id: Union[str, int], jti: Optional[str] = None) ->
         "type": "refresh",
         "jti": jti
     }
+    if session_uuid is not None:
+        to_encode["sid"] = str(session_uuid)
     
     # Utilise une clé séparée pour les refresh tokens
     return jwt.encode(to_encode, settings.REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)

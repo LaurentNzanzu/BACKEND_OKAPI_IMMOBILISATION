@@ -1,6 +1,8 @@
 # backend/app/api/endpoints/biens.py
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Request, BackgroundTasks
+from datetime import date, datetime
+from decimal import Decimal
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, status, Request, BackgroundTasks
+from fastapi.params import File
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi.responses import StreamingResponse
@@ -9,11 +11,17 @@ from typing import List, Optional
 import logging
 from pydantic import ValidationError
 
+import imghdr
+from PIL import Image, UnidentifiedImageError
+from io import BytesIO
+import cloudinary.uploader
+import json
+
 from ...models.validation import DecisionValidation, OrdreValidation, TypeValidation, Validation
 from ...schemas.notification import TypeNotificationEnum
 from ...services.notification_service import NotificationService
 from ...services.validation_service import ValidationService
-from ...schemas.bien import ReferentielOptionsResponse
+from ...schemas.bien import EtatBienEnum, ModePaiementEnum, ReferentielOptionsResponse
 
 from ...core.database import get_db
 from ...core.bien_permissions import (
@@ -140,6 +148,118 @@ async def create_bien(
     return _to_bien_response(bien, current_user)
 
 
+@router.post("/with-images", response_model=BienResponse, status_code=201)
+async def create_bien_with_images(
+    libelle: str = Form(...),
+    id_type_bien: int = Form(...),
+    date_acquisition: date = Form(...),
+    prix_acquisition: Decimal = Form(...),
+    etat: EtatBienEnum = Form(...),
+    id_localisation: int = Form(...),
+    mode_paiement: ModePaiementEnum = Form(...),
+    fournisseur_id: Optional[int] = Form(None),
+    attributs_specifiques: Optional[str] = Form(None),
+    images: List[UploadFile] = File(..., max_length=4),
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user),
+    request: Request = None,
+):
+    if not can_create_bien(current_user):
+        _deny(current_user, "create_bien_with_images", "Permissions insuffisantes", request)
+
+    if len(images) > 4:
+        raise HTTPException(400, "Vous ne pouvez uploader que 4 images maximum.")
+
+    uploaded_urls = []
+    for file in images:
+        # Vérifier la taille
+        if file.size > 1024 * 1024:
+            raise HTTPException(400, f"L'image {file.filename} dépasse 1 Mo.")
+
+        # Lire le contenu pour validation
+        contents = await file.read()
+
+        # Vérifier le type MIME réel
+        file_type = imghdr.what(None, h=contents)
+        if file_type not in ["jpeg", "png", "gif", "webp"]:
+            raise HTTPException(400, f"Type de fichier non autorisé pour {file.filename}. Seuls JPEG, PNG, GIF, WEBP sont acceptés.")
+
+        # Vérifier l'intégrité avec PIL
+        try:
+            img = Image.open(BytesIO(contents))
+            img.verify()
+        except (UnidentifiedImageError, OSError):
+            raise HTTPException(400, f"L'image {file.filename} est corrompue ou invalide.")
+
+        # Vérifier les dimensions
+        img = Image.open(BytesIO(contents))
+        if img.width < 50 or img.height < 50:
+            raise HTTPException(400, f"L'image {file.filename} est trop petite (minimum 50x50).")
+
+        # Réinitialiser la position pour l'upload
+        await file.seek(0)
+
+        # Upload vers Cloudinary
+        try:
+            upload_result = cloudinary.uploader.upload(
+                file.file,
+                folder="biens",
+                transformation={"quality": "auto", "fetch_format": "auto"}
+            )
+            url = upload_result.get("secure_url")
+            public_id = upload_result.get("public_id")
+            uploaded_urls.append({"url": url, "public_id": public_id})
+        except Exception as e:
+            raise HTTPException(500, f"Erreur lors de l'upload de {file.filename}: {str(e)}")
+
+    # Construire l'objet BienCreate
+    bien_data = BienCreate(
+        libelle=libelle,
+        id_type_bien=id_type_bien,
+        date_acquisition=date_acquisition,
+        prix_acquisition=prix_acquisition,
+        etat=etat,
+        id_localisation=id_localisation,
+        mode_paiement=mode_paiement,
+        fournisseur_id=fournisseur_id,
+        attributs_specifiques=json.loads(attributs_specifiques) if attributs_specifiques else {}
+    )
+
+    service = BienService(db)
+    try:
+        bien = service.create_bien(bien_data, images=uploaded_urls)
+        db.commit()
+        db.refresh(bien)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        # Nettoyer les uploads Cloudinary en cas d'erreur
+        for item in uploaded_urls:
+            try:
+                cloudinary.uploader.destroy(item["public_id"])
+            except:
+                pass
+        raise HTTPException(500, f"Erreur lors de la création du bien: {str(e)}")
+
+    # Audit
+    audit_service = AuditService(db)
+    audit_service.log_create(
+        user_id=current_user.id,
+        table_name="biens",
+        record_id=bien.id_bien,
+        new_values={
+            "libelle": libelle,
+            "type_bien": bien.type_bien,
+            "prix_acquisition": float(prix_acquisition),
+            "mode_paiement": mode_paiement.value,
+            "qr_code": bien.qr_code,
+            "numero_inventaire": bien.numero_inventaire
+        },
+        request=request,
+    )
+
+    return _to_bien_response(bien, current_user)
 @router.get("", response_model=BienListResponse)
 @router.get("/", response_model=BienListResponse, include_in_schema=False)
 def get_biens(

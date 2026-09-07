@@ -100,12 +100,13 @@ async def login(
     user.last_login = datetime.utcnow()
     db.commit()
     
-    # 4. Génération des tokens
+    # 4. Génération des identifiants et tokens
+    session_uuid = str(uuid.uuid4())
     access_jti = str(uuid.uuid4())
     refresh_jti = str(uuid.uuid4())
     
-    access_token = create_access_token(user.id, jti=access_jti)
-    refresh_token = create_refresh_token(user.id, jti=refresh_jti)
+    access_token = create_access_token(user.id, session_uuid=session_uuid, jti=access_jti)
+    refresh_token = create_refresh_token(user.id, session_uuid=session_uuid, jti=refresh_jti)
     
     # 5. Récupération des informations client
     user_agent = request.headers.get("user-agent")
@@ -131,9 +132,9 @@ async def login(
                 "login_method": "password",
                 "access_jti": access_jti,
                 "refresh_jti": refresh_jti
-            }
+            },
+            session_uuid=session_uuid
         )
-        session_uuid = str(session.session_uuid)
     except Exception as e:
         logger.error(f"Erreur lors de la création de la session: {e}")
         raise HTTPException(
@@ -176,8 +177,12 @@ async def refresh(
     Effectue une rotation du Refresh Token avec validation de session.
     🔴 NOUVEAU : Blacklist l'ancien Refresh Token.
     """
-    # 1. Récupération du refresh token depuis le cookie
+    # 1. Récupération du refresh token depuis le cookie ou le header Authorization
     refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if not refresh_token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            refresh_token = auth_header.split(" ")[1]
     
     if not refresh_token:
         raise HTTPException(
@@ -221,11 +226,10 @@ async def refresh(
         session_uuid = payload.get("sid")
         
         if not session_uuid:
-            # Fallback: essayer de récupérer par le hash du refresh token
-            refresh_hash = SessionService.hash_refresh_token(refresh_token)
-            session = SessionService.get_session_by_refresh_token_hash(db, refresh_hash)
-            if session:
-                session_uuid = str(session.session_uuid)
+            # Fallback: récupérer la session active la plus récente de l'utilisateur
+            active_sessions = SessionService.get_user_active_sessions(db, int(user_id), limit=1)
+            if active_sessions:
+                session_uuid = str(active_sessions[0].session_uuid)
         
         # 5. VALIDATION DE LA SESSION EN BDD
         if not session_uuid:
@@ -259,9 +263,9 @@ async def refresh(
             else:
                 logger.warning(f"Échec blacklist de l'ancien Refresh Token {old_refresh_jti}")
         
-        # 7. ROTATION : Génération d'un nouveau refresh token
+        # 7. ROTATION : Génération d'un nouveau refresh token avec session_uuid
         new_refresh_jti = str(uuid.uuid4())
-        new_refresh_token = create_refresh_token(user_id, jti=new_refresh_jti)
+        new_refresh_token = create_refresh_token(user_id, session_uuid=session_uuid, jti=new_refresh_jti)
         
         # 8. ROTATION : Mise à jour de la session en BDD
         rotation_success = SessionService.rotate_session(
@@ -278,9 +282,9 @@ async def refresh(
                 detail="Erreur lors de la rotation de session"
             )
         
-        # 9. Génération d'un nouveau access token
+        # 9. Génération d'un nouveau access token avec session_uuid
         new_access_jti = str(uuid.uuid4())
-        new_access_token = create_access_token(user_id, jti=new_access_jti)
+        new_access_token = create_access_token(user_id, session_uuid=session_uuid, jti=new_access_jti)
         
         # 10. Mise à jour du cookie avec le nouveau refresh token
         set_refresh_token_cookie(response, new_refresh_token)

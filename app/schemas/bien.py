@@ -1,6 +1,6 @@
 # backend/app/schemas/bien.py
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -31,14 +31,26 @@ class ComposantInlineCreate(BaseModel):
     duree_vie_ans: int = Field(default=5, ge=1, le=50)
 
 
+# ============================================================
+# SCHEMA DE BASE BIEN AVEC TYPES DYNAMIQUES
+# ============================================================
+
 class BienBase(BaseModel):
+    """Schéma de base pour un bien avec types dynamiques."""
     date_acquisition: Optional[date] = None
     prix_acquisition: Optional[Decimal] = Field(None, gt=0, description="Prix d'acquisition (strictement positif)")
     etat: EtatBienEnum = EtatBienEnum.NEUF
-    id_localisation: Optional[int] = Field(None, gt=0, description="ID de la localisation (FK)")  # ✅ Rendre optionnel
+    id_localisation: Optional[int] = Field(None, gt=0, description="ID de la localisation (FK)")
     date_fin_garantie: Optional[date] = None
     description: Optional[str] = None
     image: Optional[str] = None
+
+    # ✅ NOUVEAUX CHAMPS POUR TYPES DYNAMIQUES
+    id_type_bien: int = Field(..., gt=0, description="ID du type de bien")
+    attributs_specifiques: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Attributs spécifiques au type de bien (JSON)"
+    )
 
     @field_validator("id_localisation", mode="before")
     @classmethod
@@ -50,13 +62,27 @@ class BienBase(BaseModel):
             )
         return v
 
+    @field_validator("attributs_specifiques")
+    @classmethod
+    def validate_attributs(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Validation de base des attributs spécifiques."""
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError("Les attributs spécifiques doivent être un dictionnaire")
+        return v
+
+
+# ============================================================
+# SCHEMA DE CREATION
+# ============================================================
 
 class BienCreate(BienBase):
-    type_bien: str = Field(..., min_length=1, description="Type de bien (vehicule, machine, ordinateur)")
+    """Schéma pour la création d'un bien."""
     date_acquisition: date
-
     mode_paiement: ModePaiementEnum = ModePaiementEnum.CREDIT
     fournisseur_id: Optional[int] = Field(None, gt=0, description="ID du fournisseur (requis si mode_paiement=credit)")
+    composants: Optional[List[ComposantInlineCreate]] = None
 
     @field_validator("fournisseur_id")
     @classmethod
@@ -66,62 +92,29 @@ class BienCreate(BienBase):
             raise ValueError("Le fournisseur est requis pour un paiement à crédit")
         return v
 
-    # Champs spécifiques véhicules
-    type_vehicule: Optional[str] = None
-    marque: Optional[str] = None
-    modele: Optional[str] = None
-    immatriculation: Optional[str] = None
-    poids: Optional[float] = None
-    dimension: Optional[str] = None
-    type_carburant: Optional[str] = None
-    consommation_carburant: Optional[float] = None
-    consommation_huile: Optional[float] = None
-    type_propulsion: Optional[str] = None
-
-    # Champs spécifiques machines de production
-    prix_base: Optional[Decimal] = Field(None, gt=0)
-    fabricant: Optional[str] = None
-    puissance: Optional[float] = None
-    type_alimentation: Optional[str] = None
-    tension_normal: Optional[str] = None
-    service_affecte: Optional[str] = None
-    responsable: Optional[str] = None
-    consommation_elec: Optional[float] = None
-    frequence_maintenance: Optional[str] = None
-    unites_totales_prevues: Optional[int] = Field(None, gt=0)
-    unites_consommees: Optional[int] = Field(None, ge=0)
-    duree_fournisseur: Optional[int] = Field(None, gt=0)
-    composants: Optional[List[ComposantInlineCreate]] = None
-
-    # Champs spécifiques ordinateurs
-    processeur: Optional[str] = None
-    ram: Optional[str] = None
-    stockage: Optional[str] = None
-    adresse_ip: Optional[str] = None
-    utilisateur_affecte: Optional[str] = None
+    @field_validator("id_type_bien")
+    @classmethod
+    def validate_id_type_bien(cls, v):
+        if v <= 0:
+            raise ValueError("L'ID du type de bien doit être positif")
+        return v
 
     @model_validator(mode="after")
-    def validate_machine_pricing(self):
-        if self.type_bien != "machine":
-            return self
-
-        prix_base = self.prix_base or Decimal("0")
-        composants = self.composants or []
-        total_composants = sum((c.prix_achat for c in composants), Decimal("0"))
-        prix_calcule = prix_base + total_composants
-
-        if self.prix_acquisition is not None and self.prix_acquisition != prix_calcule:
-            raise ValueError(
-                "Le prix d'acquisition d'une machine de production est calculé automatiquement "
-                "(prix de base + somme des prix d'achat des composants). "
-                "Ne soumettez pas de valeur manuelle."
-            )
-
-        object.__setattr__(self, "prix_acquisition", prix_calcule)
+    def validate_attributs_obligatoires(self):
+        """
+        Vérifie que tous les champs obligatoires définis dans le type sont présents.
+        Cette validation nécessite une vérification en base de données.
+        Sera faite dans le service.
+        """
         return self
 
 
+# ============================================================
+# SCHEMA DE MISE A JOUR
+# ============================================================
+
 class BienUpdate(BaseModel):
+    """Schéma pour la mise à jour d'un bien."""
     date_acquisition: Optional[date] = None
     prix_acquisition: Optional[Decimal] = Field(None, ge=0)
     etat: Optional[EtatBienEnum] = None
@@ -129,39 +122,15 @@ class BienUpdate(BaseModel):
     date_fin_garantie: Optional[date] = None
     description: Optional[str] = None
     image: Optional[str] = None
-
     mode_paiement: Optional[ModePaiementEnum] = None
     fournisseur_id: Optional[int] = Field(None, gt=0)
-
-    type_vehicule: Optional[str] = None
-    marque: Optional[str] = None
-    modele: Optional[str] = None
-    immatriculation: Optional[str] = None
-    poids: Optional[float] = None
-    dimension: Optional[str] = None
-    type_carburant: Optional[str] = None
-    consommation_carburant: Optional[float] = None
-    consommation_huile: Optional[float] = None
-    type_propulsion: Optional[str] = None
-
-    prix_base: Optional[Decimal] = Field(None, ge=0)
-    fabricant: Optional[str] = None
-    puissance: Optional[float] = None
-    type_alimentation: Optional[str] = None
-    tension_normal: Optional[str] = None
-    service_affecte: Optional[str] = None
-    responsable: Optional[str] = None
-    consommation_elec: Optional[float] = None
-    frequence_maintenance: Optional[str] = None
-    unites_totales_prevues: Optional[int] = None
-    unites_consommees: Optional[int] = None
-    duree_fournisseur: Optional[int] = None
-
-    processeur: Optional[str] = None
-    ram: Optional[str] = None
-    stockage: Optional[str] = None
-    adresse_ip: Optional[str] = None
-    utilisateur_affecte: Optional[str] = None
+    
+    # ✅ NOUVEAUX CHAMPS POUR TYPES DYNAMIQUES
+    id_type_bien: Optional[int] = Field(None, gt=0, description="ID du type de bien")
+    attributs_specifiques: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Attributs spécifiques au type de bien (JSON)"
+    )
 
     @field_validator("id_localisation", mode="before")
     @classmethod
@@ -181,6 +150,25 @@ class BienUpdate(BaseModel):
             raise ValueError("Le fournisseur est requis pour un paiement à crédit")
         return v
 
+    @field_validator("attributs_specifiques")
+    @classmethod
+    def validate_attributs_update(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("Les attributs spécifiques doivent être un dictionnaire")
+        return v
+
+    @model_validator(mode="after")
+    def validate_id_type_bien_update(self):
+        if self.id_type_bien is not None and self.id_type_bien <= 0:
+            raise ValueError("L'ID du type de bien doit être positif")
+        return self
+
+
+# ============================================================
+# SCHEMA DE REPONSE
+# ============================================================
 
 class LocalisationBrief(BaseModel):
     id_localisation: int
@@ -190,18 +178,36 @@ class LocalisationBrief(BaseModel):
         from_attributes = True
 
 
+class TypeBienBrief(BaseModel):
+    """Information sommaire sur le type de bien."""
+    id: int
+    libelle: str
+    code: str
+    compte_comptable: str
+
+    class Config:
+        from_attributes = True
+
+
 class BienResponse(BienBase):
+    """Schéma de réponse pour un bien."""
     id_bien: int
-    qr_code: Optional[str] = None  # ✅ Rendre optionnel
+    qr_code: Optional[str] = None
     date_creation: datetime
-    type_bien: str
     statut_comptable: Optional[str] = "ACTIF"
     cumul_amortissement: Optional[Decimal] = Decimal("0")
     cumul_depreciation: Optional[Decimal] = Decimal("0")
     mode_paiement: str
     fournisseur_id: Optional[int] = None
     localisation: Optional[LocalisationBrief] = None
-
+    
+    # ✅ NOUVEAU : Informations sur le type de bien
+    type_bien_info: Optional[TypeBienBrief] = None
+    images: List[Dict[str, str]] = Field(default_factory=list)  # Ajout
+    numero_inventaire: str  # Ajout
+    
+    # ✅ Pour compatibilité ascendante (champs extraits de attributs_specifiques)
+    # Ces champs sont dépréciés et seront retirés dans une version future
     type_vehicule: Optional[str] = None
     marque: Optional[str] = None
     modele: Optional[str] = None
@@ -212,7 +218,6 @@ class BienResponse(BienBase):
     consommation_carburant: Optional[float] = None
     consommation_huile: Optional[float] = None
     type_propulsion: Optional[str] = None
-
     fabricant: Optional[str] = None
     puissance: Optional[float] = None
     type_alimentation: Optional[str] = None
@@ -225,7 +230,6 @@ class BienResponse(BienBase):
     unites_totales_prevues: Optional[int] = None
     unites_consommees: Optional[int] = None
     duree_fournisseur: Optional[int] = None
-
     processeur: Optional[str] = None
     ram: Optional[str] = None
     stockage: Optional[str] = None
@@ -235,9 +239,16 @@ class BienResponse(BienBase):
     class Config:
         from_attributes = True
 
+    def model_post_init(self, __context):
+        """Extrait les attributs spécifiques vers les champs dépréciés pour compatibilité."""
+        if self.attributs_specifiques:
+            for key, value in self.attributs_specifiques.items():
+                if hasattr(self, key) and getattr(self, key) is None:
+                    setattr(self, key, value)
+
 
 # ============================================================
-# SCHÉMAS DE PAGINATION MIS À JOUR
+# AUTRES SCHEMAS (INCHANGÉS)
 # ============================================================
 
 class BienListResponse(BaseModel):
@@ -246,10 +257,6 @@ class BienListResponse(BaseModel):
     page_size: int = Field(..., ge=1, le=500)
     biens: List[BienResponse] = Field(default_factory=list)
 
-
-# ============================================================
-# SCHÉMAS POUR LA CESSION (TÂCHE 2)
-# ============================================================
 
 class BienCessionInfo(BaseModel):
     """Informations d'un bien pour la cession."""
@@ -320,14 +327,15 @@ class BienAvecCessionResponse(BienResponse):
     class Config:
         from_attributes = True
 
-# ============================================================
-# SCHÉMA POUR LES RÉFÉRENTIELS (OPTIONS DÉROULANTES)
-# ============================================================
 
 class ReferentielOptionsResponse(BaseModel):
+    """Schéma pour les options des référentiels."""
     marques_vehicules: List[str] = Field(default_factory=list)
     marques_ordinateurs: List[str] = Field(default_factory=list)
     modeles_vehicules: List[str] = Field(default_factory=list)
     modeles_ordinateurs: List[str] = Field(default_factory=list)
     fabricants_machines: List[str] = Field(default_factory=list)
     processeurs_ordinateurs: List[str] = Field(default_factory=list)
+    
+    # ✅ NOUVEAU : Types de biens disponibles
+    types_biens_disponibles: List[Dict[str, Any]] = Field(default_factory=list)

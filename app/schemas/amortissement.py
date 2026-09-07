@@ -1,7 +1,7 @@
 # app/schemas/amortissement.py
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from datetime import datetime
-from typing import Optional, List
+from datetime import datetime, date
+from typing import Optional, List, Union
 from enum import Enum
 
 
@@ -23,12 +23,14 @@ class AmortissementCreate(BaseModel):
     id_bien: int = Field(..., gt=0, description="ID du bien à amortir")
     exercice: int = Field(..., ge=2000, le=2100, description="Exercice comptable")
     methode: MethodeEnum = Field(..., description="Méthode d'amortissement")
-    date_acquisition: Optional[datetime] = Field(None, description="Date d'acquisition pour le calcul dégressif")
-    date_mise_en_service: Optional[datetime] = Field(None, description="Date de mise en service pour le calcul linéaire")
-    date_debut: Optional[datetime] = Field(None, deprecated=True, description="Déprécié : utiliser date_mise_en_service")
+    date_acquisition: Optional[Union[datetime, date]] = Field(None, description="Date d'acquisition pour le calcul dégressif")
+    date_mise_en_service: Optional[Union[datetime, date]] = Field(None, description="Date de mise en service pour le calcul linéaire")
+    date_debut: Optional[Union[datetime, date]] = Field(None, deprecated=True, description="Déprécié : utiliser date_mise_en_service")
     
     valeur_origine: float = Field(..., gt=0, description="Valeur d'origine du bien")
-    # ✅ SUPPRESSION DE valeur_residuelle – forcée à 0 selon Tâche 2
+    # Acceptation optionnelle de valeur_residuelle pour éviter de casser la payload frontend
+    valeur_residuelle: Optional[float] = Field(0.0, description="Valeur résiduelle forcée à 0")
+    
     duree_vie_comptable_ans: int = Field(..., ge=1, le=50, description="Durée de vie comptable en années")
     duree_vie_fiscale_ans: Optional[int] = Field(None, ge=1, le=50, description="Durée de vie fiscale en années")
     coefficient_deg: Optional[float] = Field(None, ge=0.5, le=3.0, description="Coefficient dégressif")
@@ -39,23 +41,49 @@ class AmortissementCreate(BaseModel):
     duree_fournisseur: Optional[int] = Field(None, gt=0, description="Durée fournisseur (OKAPI)")
     jours_ouvres_mois: int = Field(default=26, ge=20, le=31, description="Jours ouvrables par mois")
     jours_utilisation_annee: Optional[int] = Field(None, ge=200, le=365, description="Jours d'utilisation par an")
-    
+
+    model_config = ConfigDict(extra="ignore")  # Ignore les champs superflus envoyés par le client
+
     @field_validator('duree_vie_fiscale_ans')
     @classmethod
     def validate_duree_fiscale(cls, v, info):
         comptable = info.data.get('duree_vie_comptable_ans')
-        if v is not None and comptable is not None and v > comptable:
-            raise ValueError("La durée fiscale ne peut excéder la durée comptable")
+        if v is not None and comptable is not None:
+            # ✅ CORRIGÉ : comparaison sur entiers pour éviter les erreurs de précision float
+            # (ex: 4.0 vs 5 → int(4.0) == 4 ≤ 5, pas de ValueError injustifiée)
+            if int(v) > int(comptable):
+                raise ValueError("La durée fiscale ne peut excéder la durée comptable")
         return v
     
+    # app/schemas/amortissement.py
+
     @field_validator('date_mise_en_service')
     @classmethod
     def validate_dates(cls, v, info):
         acquisition = info.data.get('date_acquisition')
-        if acquisition and v and v < acquisition:
-            raise ValueError("La date de mise en service ne peut être antérieure à la date d'acquisition")
-        return v
+        if v and acquisition:
+            try:
+                # ✅ CORRIGÉ : normalisation robuste en objet date quel que soit le type entrant
+                # (datetime, date, ou string "YYYY-MM-DD" envoyée par le frontend corrigé)
+                if isinstance(acquisition, str):
+                    from datetime import date as date_class
+                    d_acq = date_class.fromisoformat(acquisition.split('T')[0])
+                else:
+                    d_acq = acquisition.date() if isinstance(acquisition, datetime) else acquisition
 
+                if isinstance(v, str):
+                    from datetime import date as date_class
+                    d_mes = date_class.fromisoformat(v.split('T')[0])
+                else:
+                    d_mes = v.date() if isinstance(v, datetime) else v
+
+                if d_mes < d_acq:
+                    raise ValueError("La date de mise en service ne peut être antérieure à la date d'acquisition")
+            except ValueError as e:
+                # Relever uniquement les ValueError métier, ignorer les erreurs de parsing
+                if "antérieure" in str(e):
+                    raise
+        return v
 
 class AmortissementUpdate(BaseModel):
     statut: Optional[StatutEnum] = None
@@ -130,7 +158,6 @@ class AmortissementValidate(BaseModel):
 
 
 class AmortissementVerrouiller(BaseModel):
-    """Schéma pour le verrouillage d'un amortissement."""
     raison: str = Field(..., min_length=5, max_length=255, description="Raison du verrouillage (obligatoire)")
 
 
@@ -192,7 +219,6 @@ class AmortissementComptableIntegration(BaseModel):
 
 
 class AmortissementWorkflowResponse(BaseModel):
-    """Schéma pour la réponse du workflow d'amortissement"""
     id_amortissement: int
     etape_actuelle: str
     statut_global: str

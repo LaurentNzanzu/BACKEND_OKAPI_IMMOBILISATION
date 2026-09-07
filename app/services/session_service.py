@@ -53,6 +53,7 @@ class SessionService:
         ip_address: Optional[str] = None,
         fingerprint: Optional[str] = None,
         session_data: Optional[Dict[str, Any]] = None,
+        session_uuid: Optional[str] = None,
         max_active_sessions: int = MAX_ACTIVE_SESSIONS
     ) -> SessionUtilisateur:
         """
@@ -94,7 +95,8 @@ class SessionService:
             })
 
             # 5. Créer la session en BDD
-            session_uuid = str(uuid.uuid4())
+            if not session_uuid:
+                session_uuid = str(uuid.uuid4())
             new_session = SessionUtilisateur(
                 session_uuid=session_uuid,
                 user_id=user_id,
