@@ -1,6 +1,6 @@
 # backend/app/services/bien_service.py
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import String, func, or_
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
 import uuid
@@ -122,14 +122,14 @@ class BienService:
 
         return attributs
 
-    def _create_bien_from_type(self, bien_data: BienCreate, type_bien: TypeBien) -> Bien:
+    def _create_bien_from_type(self, bien_data: BienCreate, type_bien: TypeBien, images: Optional[List[dict]] = None) -> Bien:
         """
         Crée un bien générique à partir des données et du type.
         """
-
         # Générer le numéro d'inventaire
         config_service = ConfigInventaireService(self.db)
         numero_inventaire = config_service.generer_numero_inventaire()
+        
         # Validation des attributs
         attributs = self._convert_legacy_fields_to_attributs(bien_data, type_bien)
         self._validate_attributs_by_type(type_bien.id, attributs)
@@ -137,7 +137,7 @@ class BienService:
         # Génération du QR code dynamique
         qr_code = self._generate_qr_code_dynamique(type_bien)
 
-        # Création du bien
+        # Création du bien - TOUJOURS "bien" comme identité polymorphique !
         bien = Bien(
             qr_code=qr_code,
             date_acquisition=bien_data.date_acquisition,
@@ -145,17 +145,19 @@ class BienService:
             etat=bien_data.etat,
             id_localisation=bien_data.id_localisation,
             date_fin_garantie=bien_data.date_fin_garantie,
-            description=bien_data.description,
-            image=bien_data.image,
-            type_bien=type_bien.code.lower(),  # Pour compatibilité ascendante
+            description=bien_data.libelle,
+            image=None,
+            # ✅ FIX : TOUJOURS "bien" - jamais le code du type !
+            type_bien="bien",  # <--- CRITIQUE : NE PAS UTILISER type_bien.code
             statut_comptable="ACTIF",
             cumul_amortissement=Decimal('0'),
             cumul_depreciation=Decimal('0'),
             mode_paiement=bien_data.mode_paiement.value if bien_data.mode_paiement else "credit",
             fournisseur_id=bien_data.fournisseur_id,
-            id_type_bien=type_bien.id,
+            id_type_bien=type_bien.id,  # ← La référence au type via sa clé étrangère
             attributs_specifiques=attributs,
-            numero_inventaire=numero_inventaire
+            numero_inventaire=numero_inventaire,
+            images=images or []
         )
 
         # Gestion des composants pour les machines
@@ -174,19 +176,16 @@ class BienService:
                 self.db.add(composant)
 
         return bien
-
     # ============================================================
     # CRUD PRINCIPAL AVEC TYPES DYNAMIQUES
     # ============================================================
 
-    def create_bien(self, bien_data: BienCreate) -> Bien:
+    def create_bien(self, bien_data: BienCreate, images: Optional[List[dict]] = None) -> Bien:
         """
         Crée un nouveau bien avec gestion des types dynamiques.
         
         Soit on utilise id_type_bien (recommandé), soit type_bien (legacy).
         """
-
-        
         # Vérifier la localisation
         self._validate_localisation(bien_data.id_localisation)
 
@@ -225,7 +224,7 @@ class BienService:
             bien_data.prix_acquisition = prix_calcule
 
         # Créer le bien
-        bien = self._create_bien_from_type(bien_data, type_bien)
+        bien = self._create_bien_from_type(bien_data, type_bien, images=images)  # <--- images passé
 
         self.db.add(bien)
         self.db.commit()
@@ -241,7 +240,6 @@ class BienService:
             raise RuntimeError(f"Impossible de générer l'écriture comptable: {str(e)}")
 
         return bien
-
     def get_bien_by_id(self, bien_id: int) -> Optional[Bien]:
         """
         Récupère un bien avec ses relations.
