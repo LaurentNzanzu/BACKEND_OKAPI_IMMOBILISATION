@@ -11,10 +11,7 @@ from typing import List, Optional
 import logging
 from pydantic import ValidationError
 
-import imghdr
-from PIL import Image, UnidentifiedImageError
-from io import BytesIO
-import cloudinary.uploader
+
 import json
 
 from ...models.validation import DecisionValidation, OrdreValidation, TypeValidation, Validation
