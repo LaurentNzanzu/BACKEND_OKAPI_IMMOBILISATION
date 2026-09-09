@@ -11,7 +11,6 @@ from typing import List, Optional
 import logging
 from pydantic import ValidationError
 
-
 import json
 
 from ...models.validation import DecisionValidation, OrdreValidation, TypeValidation, Validation
@@ -147,96 +146,28 @@ async def create_bien(
 
 @router.post("/with-images", response_model=BienResponse, status_code=201)
 async def create_bien_with_images(
-    libelle: str = Form(...),
-    id_type_bien: int = Form(...),
-    date_acquisition: date = Form(...),
-    prix_acquisition: Decimal = Form(...),
-    etat: EtatBienEnum = Form(...),
-    id_localisation: int = Form(...),
-    mode_paiement: ModePaiementEnum = Form(...),
-    fournisseur_id: Optional[int] = Form(None),
-    attributs_specifiques: Optional[str] = Form(None),
-    images: List[UploadFile] = File(..., max_length=4),
+    bien_data: BienCreate,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
     request: Request = None,
 ):
+    """
+    Crée un bien avec des images déjà uploadées (URLs Cloudinary).
+    Les images sont fournies dans bien_data.images sous forme de liste de {url, public_id}.
+    """
     if not can_create_bien(current_user):
         _deny(current_user, "create_bien_with_images", "Permissions insuffisantes", request)
 
-    if len(images) > 4:
-        raise HTTPException(400, "Vous ne pouvez uploader que 4 images maximum.")
-
-    uploaded_urls = []
-    for file in images:
-        # Vérifier la taille
-        if file.size > 1024 * 1024:
-            raise HTTPException(400, f"L'image {file.filename} dépasse 1 Mo.")
-
-        # Lire le contenu pour validation
-        contents = await file.read()
-
-        # Vérifier le type MIME réel
-        file_type = imghdr.what(None, h=contents)
-        if file_type not in ["jpeg", "png", "gif", "webp"]:
-            raise HTTPException(400, f"Type de fichier non autorisé pour {file.filename}. Seuls JPEG, PNG, GIF, WEBP sont acceptés.")
-
-        # Vérifier l'intégrité avec PIL
-        try:
-            img = Image.open(BytesIO(contents))
-            img.verify()
-        except (UnidentifiedImageError, OSError):
-            raise HTTPException(400, f"L'image {file.filename} est corrompue ou invalide.")
-
-        # Vérifier les dimensions
-        img = Image.open(BytesIO(contents))
-        if img.width < 50 or img.height < 50:
-            raise HTTPException(400, f"L'image {file.filename} est trop petite (minimum 50x50).")
-
-        # Réinitialiser la position pour l'upload
-        await file.seek(0)
-
-        # Upload vers Cloudinary
-        try:
-            upload_result = cloudinary.uploader.upload(
-                file.file,
-                folder="biens",
-                transformation={"quality": "auto", "fetch_format": "auto"}
-            )
-            url = upload_result.get("secure_url")
-            public_id = upload_result.get("public_id")
-            uploaded_urls.append({"url": url, "public_id": public_id})
-        except Exception as e:
-            raise HTTPException(500, f"Erreur lors de l'upload de {file.filename}: {str(e)}")
-
-    # Construire l'objet BienCreate
-    bien_data = BienCreate(
-        libelle=libelle,
-        id_type_bien=id_type_bien,
-        date_acquisition=date_acquisition,
-        prix_acquisition=prix_acquisition,
-        etat=etat,
-        id_localisation=id_localisation,
-        mode_paiement=mode_paiement,
-        fournisseur_id=fournisseur_id,
-        attributs_specifiques=json.loads(attributs_specifiques) if attributs_specifiques else {}
-    )
-
     service = BienService(db)
     try:
-        bien = service.create_bien(bien_data, images=uploaded_urls)
+        # On passe les images (déjà uploadées) au service
+        bien = service.create_bien(bien_data, images=bien_data.images)
         db.commit()
         db.refresh(bien)
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        # Nettoyer les uploads Cloudinary en cas d'erreur
-        for item in uploaded_urls:
-            try:
-                cloudinary.uploader.destroy(item["public_id"])
-            except:
-                pass
         raise HTTPException(500, f"Erreur lors de la création du bien: {str(e)}")
 
     # Audit
@@ -246,12 +177,13 @@ async def create_bien_with_images(
         table_name="biens",
         record_id=bien.id_bien,
         new_values={
-            "libelle": libelle,
+            "libelle": bien_data.libelle,
             "type_bien": bien.type_bien,
-            "prix_acquisition": float(prix_acquisition),
-            "mode_paiement": mode_paiement.value,
+            "prix_acquisition": float(bien_data.prix_acquisition),
+            "mode_paiement": bien_data.mode_paiement.value,
             "qr_code": bien.qr_code,
-            "numero_inventaire": bien.numero_inventaire
+            "numero_inventaire": bien.numero_inventaire,
+            "images_count": len(bien_data.images) if bien_data.images else 0,
         },
         request=request,
     )
