@@ -23,8 +23,27 @@ def check_ecriture_permission(user: Utilisateur) -> bool:
 def _get_bien_designation(bien: Optional[Bien]) -> str:
     if not bien:
         return f"Bien #{None}"
-    marque = getattr(bien, 'marque', None) or getattr(bien, 'fabricant', None) or ''
-    modele = getattr(bien, 'modele', None) or ''
+    
+    # 1. Essayer de récupérer depuis attributs_specifiques
+    marque = ''
+    modele = ''
+    if bien.attributs_specifiques:
+        marque = bien.attributs_specifiques.get('marque', '')
+        modele = bien.attributs_specifiques.get('modele', '')
+    
+    # 2. Si non trouvé, tenter via getattr (pour les biens hérités) avec protection
+    if not marque:
+        try:
+            marque = getattr(bien, 'marque', None) or getattr(bien, 'fabricant', None) or ''
+        except Exception:
+            marque = ''
+    
+    if not modele:
+        try:
+            modele = getattr(bien, 'modele', None) or ''
+        except Exception:
+            modele = ''
+    
     designation = f"{marque} {modele}".strip()
     return designation if designation else f"Bien #{bien.id_bien}"
 

@@ -11,8 +11,6 @@ from typing import List, Optional
 import logging
 from pydantic import ValidationError
 
-
-
 import json
 
 from ...models.validation import DecisionValidation, OrdreValidation, TypeValidation, Validation

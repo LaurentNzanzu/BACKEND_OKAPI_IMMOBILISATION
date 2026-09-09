@@ -130,6 +130,10 @@ class BienUpdate(BaseModel):
     image: Optional[str] = None
     mode_paiement: Optional[ModePaiementEnum] = None
     fournisseur_id: Optional[int] = Field(None, gt=0)
+    images: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Liste des images (url, public_id) à remplacer"
+    )
     
     # ✅ NOUVEAUX CHAMPS POUR TYPES DYNAMIQUES
     id_type_bien: Optional[int] = Field(None, gt=0, description="ID du type de bien")

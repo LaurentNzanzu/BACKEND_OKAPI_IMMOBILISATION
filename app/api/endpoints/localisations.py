@@ -12,6 +12,7 @@ router = APIRouter(prefix="/localisations", tags=["Localisations"])
 
 
 @router.get("/", response_model=LocalisationListResponse)
+@router.get("", response_model=LocalisationListResponse, include_in_schema=False)
 async def list_localisations(
     skip: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=1000),

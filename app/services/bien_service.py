@@ -274,7 +274,14 @@ class BienService:
             bien.id_type_bien = type_bien.id
             bien.type_bien = type_bien.code.lower()
 
-        # Mettre à jour les attributs spécifiques
+        
+        if "images" in update_data and update_data["images"] is not None:
+            # Option 1 : remplacer complètement la liste
+            bien.images = update_data["images"]
+            # Option 2 (plus avancée) : supprimer les anciennes images de Cloudinary
+            # et uploader les nouvelles (mais le frontend les aura déjà uploadées)
+                # Mettre à jour les attributs spécifiques
+                
         if "attributs_specifiques" in update_data:
             attributs = update_data["attributs_specifiques"]
             if bien.id_type_bien:
