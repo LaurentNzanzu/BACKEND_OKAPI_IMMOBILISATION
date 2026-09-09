@@ -31,6 +31,8 @@ from .concertations import router as concertations_router
 from .admin_sessions import router as admin_sessions_router  
 from .monitoring import router as monitoring_router  
 from .admin_blacklist import router as admin_blacklist_router
+from .types_biens import router as types_biens_router
+from .config_inventaire import router as config_inventaire_router
 
 
 
@@ -65,7 +67,9 @@ AVAILABLE_ROUTERS: list[str] = [
     "pieces_justificatives",
     "concertations",
     "admin_sessions",
-    "admin_blacklist"
+    "admin_blacklist",
+    "types_biens",
+    "config_inventaire"
 ]
 
 
@@ -107,6 +111,8 @@ def get_router(name: str):
         "admin_sessions": admin_sessions_router,
         "monitoring": monitoring_router,
         "admin_blacklist": admin_blacklist_router,
+        "types_biens": types_biens_router,
+        "config_inventaire": config_inventaire_router
     }
     return routers.get(name)
 
@@ -170,5 +176,7 @@ __all__ = [
     "concertations_router",
     "admin_sessions_router",
     "monitoring_router",
-    "admin_blacklist_router"
+    "admin_blacklist_router",
+    "types_biens_router",
+    "config_inventaire_router"
 ]

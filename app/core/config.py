@@ -1,3 +1,5 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 from urllib.parse import quote_plus
@@ -61,6 +63,19 @@ class Settings(BaseSettings):
     MAX_ACTIVE_SESSIONS: int = 5
     SESSION_RETENTION_DAYS: int = 30
     REVOKED_SESSION_RETENTION_DAYS: int = 7
+    
+    #===cloudinary configuration===
+    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+    CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+
+    # Cloudinary (AJOUT)
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
+    MAX_IMAGE_SIZE: int = 1048576  # 1 Mo
+    MAX_IMAGES: int = 4
 
     @property
     def DATABASE_URL(self) -> str:

@@ -40,9 +40,10 @@ from .historique_statut_ecriture import HistoriqueStatutEcriture
 from .cession import Cession
 from .workflow_amortissement import WorkflowValidationAmortissement, EtapeWorkflowAmortissement, StatutWorkflowAmortissement
 from .discussion_concertation import DiscussionConcertation, MessageConcertation, ValidationConcertation, TypeValidationEnum, DecisionValidationConcertation
-
+from .type_bien import TypeBien  
 # === NOUVEAUX IMPORTATIONS TÂCHE 4 ===
 from .session import SessionUtilisateur
+from .config_inventaire import ConfigInventaire  # NOUVEAU
 
 
 __all__ = [
@@ -133,4 +134,7 @@ __all__ = [
 
     #session utilisateur
     "SessionUtilisateur"
+    #=== NOUVEAUX MODÈLES TÂCHE 4 ===
+    "TypeBien",
+    "ConfigInventaire"
 ]

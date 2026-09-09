@@ -45,65 +45,54 @@ class MaintenanceService:
     # ============================================================
 
     def planifier_maintenance(self, data: MaintenanceCreate, id_technicien: int) -> Maintenance:
-        """
-        Planifie une nouvelle maintenance.
-        
-        ✅ TRANSACTION ACID avec with db.begin()
-        """
+        bien = self.db.query(Bien).filter(Bien.id_bien == data.id_bien).first()
+        if not bien:
+            raise ValueError(f"Bien {data.id_bien} non trouvé")
+
+        now = datetime.now(timezone.utc)
+        date_planifiee = data.date_planifiee
+        if date_planifiee.tzinfo is None:
+            date_planifiee = date_planifiee.replace(tzinfo=timezone.utc)
+
+        if date_planifiee < now:
+            raise ValueError("La date planifiée ne peut pas être dans le passé")
+
+        # Déterminer le technicien assigné
+        technicien_assigne = getattr(data, 'id_technicien', None) or id_technicien
+
         try:
-            with self.db.begin_nested():
-                bien = self.db.query(Bien).filter(
-                    Bien.id_bien == data.id_bien
-                ).with_for_update().first()
-
-                if not bien:
-                    raise ValueError(f"Bien {data.id_bien} non trouvé")
-
-                now = datetime.now(timezone.utc)
-                date_planifiee = data.date_planifiee
-                if date_planifiee.tzinfo is None:
-                    date_planifiee = date_planifiee.replace(tzinfo=timezone.utc)
-
-                if date_planifiee < now:
-                    raise ValueError("La date planifiée ne peut pas être dans le passé")
-
-                maintenance = Maintenance(
-                    id_bien=data.id_bien,
-                    id_technicien=id_technicien,
-                    type_maintenance=data.type_maintenance,
-                    date_planifiee=data.date_planifiee,
-                    description=data.description,
-                    periodicite_jours=data.periodicite_jours,
-                    observation=data.observation,
-                    statut=StatutMaintenance.PLANIFIEE,
-                    origine=TypeOrigineMaintenance.MANUEL
-                )
-                self.db.add(maintenance)
-
-                # Le commit est automatique à la sortie du with
-
+            maintenance = Maintenance(
+                id_bien=data.id_bien,
+                id_technicien=technicien_assigne,
+                type_maintenance=data.type_maintenance,
+                date_planifiee=date_planifiee,
+                description=data.description,
+                periodicite_jours=data.periodicite_jours,
+                observation=getattr(data, 'observation', None),
+                statut=StatutMaintenance.PLANIFIEE,
+                origine=TypeOrigineMaintenance.MANUEL
+            )
+            self.db.add(maintenance)
+            self.db.flush()  # Récupère l'id_maintenance sans fermer la transaction
+            
+            self._journaliser_evenement(
+                bien_id=data.id_bien,
+                type_evenement=TypeEvenementImmobilisation.MAINTENANCE,
+                libelle=f"Maintenance {data.type_maintenance.value} planifiée le {date_planifiee.strftime('%d/%m/%Y')}",
+                utilisateur_id=id_technicien
+            )
+            
+            self.db.commit()
         except SQLAlchemyError as e:
+            self.db.rollback()
             logger.error(f"Erreur planification maintenance: {e}")
             raise ValueError(f"Échec de la planification: {str(e)}")
 
         self.db.refresh(maintenance)
-
-        # Journaliser l'événement (hors transaction pour ne pas bloquer)
-        try:
-            self._journaliser_evenement(
-                bien_id=data.id_bien,
-                type_evenement=TypeEvenementImmobilisation.MAINTENANCE,
-                libelle=f"Maintenance {data.type_maintenance.value} planifiée le {data.date_planifiee.strftime('%d/%m/%Y')}",
-                utilisateur_id=id_technicien
-            )
-        except Exception as e:
-            logger.warning(f"Erreur journalisation (non bloquante): {e}")
-
-        # Notification
         self._notifier_techniciens(maintenance, bien)
 
         return maintenance
-
+    
     def _notifier_techniciens(self, maintenance: Maintenance, bien: Bien):
         """Envoie une notification aux techniciens."""
         try:

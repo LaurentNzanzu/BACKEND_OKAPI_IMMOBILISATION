@@ -4,6 +4,9 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+import cloudinary
+from app.core.config import settings
+
 import os
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -65,7 +68,10 @@ from app.api.endpoints import (
     etats_financiers,
     concertations,
     admin_sessions,
-    monitoring
+    monitoring,
+    admin_blacklist,
+    types_biens,
+    config_inventaire
 )
 
 # Import des tâches CRON
@@ -374,7 +380,16 @@ app.add_middleware(
     allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With", "X-CSRF-Token"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+        "X-CSRF-Token",
+        "X-Session-ID",
+        "X-Fingerprint"
+    ],
     expose_headers=["*"],
     max_age=3600,
 )
@@ -386,6 +401,16 @@ app.add_middleware(
 os.makedirs("static/bons_decaissement", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+#============================================================
+# configuration cloudinary
+#===========================================================
+
+cloudinary.config(
+    cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+    api_key=settings.CLOUDINARY_API_KEY,
+    api_secret=settings.CLOUDINARY_API_SECRET,
+    secure=True
+)
 
 # ============================================================
 # INCLUSION DES ROUTERS
@@ -428,6 +453,9 @@ app.include_router(etats_financiers.router, prefix=API_V1_PREFIX)
 app.include_router(concertations.router, prefix=API_V1_PREFIX)
 app.include_router(admin_sessions.router, prefix=API_V1_PREFIX)
 app.include_router(monitoring.router, prefix=API_V1_PREFIX)
+app.include_router(admin_blacklist.router, prefix=API_V1_PREFIX)
+app.include_router(types_biens.router, prefix=API_V1_PREFIX)
+app.include_router(config_inventaire.router, prefix=API_V1_PREFIX)
 
 
 
@@ -518,3 +546,5 @@ async def health_jobs():
         "jobs": jobs_status,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+## ============================================================
