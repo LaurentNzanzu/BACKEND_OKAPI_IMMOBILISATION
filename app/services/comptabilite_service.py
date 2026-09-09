@@ -163,13 +163,29 @@ class ComptabiliteService:
         return self._round(max(0, brut - cumul_amo - cumul_dep))
 
     def _get_bien_designation(self, bien: Bien) -> str:
-        """Récupère la désignation du bien."""
-        if hasattr(bien, 'marque') and bien.marque:
-            return f"{bien.marque} {getattr(bien, 'modele', '')}".strip()
-        if hasattr(bien, 'fabricant') and bien.fabricant:
-            return f"{bien.fabricant} {getattr(bien, 'modele', '')}".strip()
-        return f"Bien #{bien.id_bien}"
-
+        marque = ''
+        modele = ''
+        
+        # 1. Depuis attributs_specifiques
+        if bien.attributs_specifiques:
+            marque = bien.attributs_specifiques.get('marque', '')
+            modele = bien.attributs_specifiques.get('modele', '')
+        
+        # 2. Fallback avec getattr (avec protection)
+        if not marque:
+            try:
+                marque = getattr(bien, 'marque', None) or getattr(bien, 'fabricant', None) or ''
+            except Exception:
+                marque = ''
+        
+        if not modele:
+            try:
+                modele = getattr(bien, 'modele', None) or ''
+            except Exception:
+                modele = ''
+        
+        designation = f"{marque} {modele}".strip()
+        return designation if designation else f"Bien #{bien.id_bien}"
     # ============================================================
     # ÉCRITURE D'ACQUISITION
     # ============================================================

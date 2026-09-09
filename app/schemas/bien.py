@@ -37,13 +37,19 @@ class ComposantInlineCreate(BaseModel):
 
 class BienBase(BaseModel):
     """Schéma de base pour un bien avec types dynamiques."""
+    libelle: str = Field(..., min_length=1, max_length=200, description="Libellé ou nom du bien")    
     date_acquisition: Optional[date] = None
     prix_acquisition: Optional[Decimal] = Field(None, gt=0, description="Prix d'acquisition (strictement positif)")
     etat: EtatBienEnum = EtatBienEnum.NEUF
     id_localisation: Optional[int] = Field(None, gt=0, description="ID de la localisation (FK)")
     date_fin_garantie: Optional[date] = None
-    description: Optional[str] = None
-    image: Optional[str] = None
+    images: Optional[List[Dict[str, str]]] = Field(
+        default_factory=list, 
+        description="Liste des images uploadées (url, public_id)"
+    )
+    numero_inventaire: Optional[str] = Field(None, max_length=50)
+
+    
 
     # ✅ NOUVEAUX CHAMPS POUR TYPES DYNAMIQUES
     id_type_bien: int = Field(..., gt=0, description="ID du type de bien")
@@ -124,6 +130,10 @@ class BienUpdate(BaseModel):
     image: Optional[str] = None
     mode_paiement: Optional[ModePaiementEnum] = None
     fournisseur_id: Optional[int] = Field(None, gt=0)
+    images: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Liste des images (url, public_id) à remplacer"
+    )
     
     # ✅ NOUVEAUX CHAMPS POUR TYPES DYNAMIQUES
     id_type_bien: Optional[int] = Field(None, gt=0, description="ID du type de bien")
@@ -205,36 +215,7 @@ class BienResponse(BienBase):
     type_bien_info: Optional[TypeBienBrief] = None
     images: List[Dict[str, str]] = Field(default_factory=list)  # Ajout
     numero_inventaire: str  # Ajout
-    
-    # ✅ Pour compatibilité ascendante (champs extraits de attributs_specifiques)
-    # Ces champs sont dépréciés et seront retirés dans une version future
-    type_vehicule: Optional[str] = None
-    marque: Optional[str] = None
-    modele: Optional[str] = None
-    immatriculation: Optional[str] = None
-    poids: Optional[float] = None
-    dimension: Optional[str] = None
-    type_carburant: Optional[str] = None
-    consommation_carburant: Optional[float] = None
-    consommation_huile: Optional[float] = None
-    type_propulsion: Optional[str] = None
-    fabricant: Optional[str] = None
-    puissance: Optional[float] = None
-    type_alimentation: Optional[str] = None
-    tension_normal: Optional[str] = None
-    service_affecte: Optional[str] = None
-    responsable: Optional[str] = None
-    consommation_elec: Optional[float] = None
-    frequence_maintenance: Optional[str] = None
-    prix_base: Optional[Decimal] = None
-    unites_totales_prevues: Optional[int] = None
-    unites_consommees: Optional[int] = None
-    duree_fournisseur: Optional[int] = None
-    processeur: Optional[str] = None
-    ram: Optional[str] = None
-    stockage: Optional[str] = None
-    adresse_ip: Optional[str] = None
-    utilisateur_affecte: Optional[str] = None
+    libelle: str  # Ajout
 
     class Config:
         from_attributes = True

@@ -35,6 +35,7 @@ class Bien(Base):
     etat = Column(Enum(EtatBien), default=EtatBien.NEUF)
     id_localisation = Column(Integer, ForeignKey('localisations.id_localisation'), nullable=False)
     date_fin_garantie = Column(Date, nullable=True)
+    libelle = Column(String(200), default=None)
     description = Column(String(500), nullable=True)
     image = Column(String(500))
     date_creation = Column(DateTime, default=datetime.utcnow)
@@ -134,6 +135,16 @@ class Bien(Base):
         if self.prix_acquisition and self.prix_acquisition > 0:
             return self.valeur_nette_comptable / float(self.prix_acquisition)
         return 0.0
+
+    @property
+    def libelle(self) -> str:
+        """Retourne le libellé du bien (alias de description)"""
+        return self.description or ""
+
+    @libelle.setter
+    def libelle(self, value: str):
+        """Définit le libellé du bien (stocké dans description)"""
+        self.description = value
 
     # =========================================================================
     # MÉTHODES MÉTIER & TRANSITIONS DE STATUT
