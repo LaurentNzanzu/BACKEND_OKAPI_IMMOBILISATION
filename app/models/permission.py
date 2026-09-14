@@ -3,9 +3,10 @@
 """
 Modèle pour les permissions - Contrôle d'accès granulaire
 """
-from sqlalchemy import Column, Integer, String, Boolean, Table, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, Table, ForeignKey,DateTime,Table
 from sqlalchemy.orm import relationship
 from app.core.database import Base
+from datetime import datetime
 
 
 # =============================================================================
@@ -35,7 +36,8 @@ class Permission(Base):
     module = Column(String(50), nullable=False)
     action = Column(String(20), nullable=False)
     actif = Column(Boolean, default=True)
-    
+
+
     # ✅ Correction de la relation
     roles = relationship(
         "Role",
