@@ -5,10 +5,30 @@ from datetime import datetime
 from decimal import Decimal
 from ..core.database import Base
 
+
 class Budget(Base):
     __tablename__ = "budgets"
-    
+
     id_budget = Column(Integer, primary_key=True, index=True)
+
+    # === Multi-tenant ===
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+
+    # === Projet ===
+    id_projet = Column(
+        Integer,
+        ForeignKey("projets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Projet bailleur associé (Sprint 0)"
+    )
+
     centre_cout = Column(String(100), nullable=False, index=True)
     exercice = Column(Integer, nullable=False, index=True)
     montant_alloue = Column(Numeric(15, 2), nullable=False, default=0)
@@ -18,6 +38,8 @@ class Budget(Base):
     date_modification = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relations
+    organisation = relationship("Organisation")
+    projet = relationship("Projet")
     validations = relationship("Validation", back_populates="budget", lazy="select")
 
     __table_args__ = (
@@ -39,12 +61,12 @@ class Budget(Base):
     def peut_engager(self, montant: float) -> bool:
         """
         Vérifie si le budget peut engager un montant donné.
-        
+
         Le montant doit être strictement positif et le solde disponible doit être suffisant.
-        
+
         Args:
             montant (float): Le montant à engager.
-            
+
         Returns:
             bool: True si l'engagement est possible, False sinon.
         """
@@ -55,10 +77,10 @@ class Budget(Base):
     def engager(self, montant: float):
         """
         Engage un montant sur le budget.
-        
+
         Args:
             montant (float): Le montant à engager.
-            
+
         Raises:
             ValueError: Si le montant est inférieur ou égal à zéro.
             ValueError: Si le budget est insuffisant pour le montant demandé.
@@ -66,7 +88,7 @@ class Budget(Base):
         # Règle 1 : Le montant doit être strictement positif
         if montant <= 0:
             raise ValueError("Le montant à engager doit être strictement positif.")
-            
+
         # Règle 2 : Le budget doit disposer d'un solde suffisant
         if not self.peut_engager(montant):
             raise ValueError(
@@ -74,17 +96,17 @@ class Budget(Base):
                 f"(exercice {self.exercice}). Solde disponible: {self.solde_disponible}, "
                 f"Montant demandé: {montant}"
             )
-            
+
         # Mise à jour de l'attribut (Aucun commit ici, géré par la couche service)
         self.montant_utilise = Decimal(str(self.montant_utilise)) + Decimal(str(montant))
 
     def desengager(self, montant: float):
         """
         Désengage un montant du budget.
-        
+
         Args:
             montant (float): Le montant à désengager.
-            
+
         Raises:
             ValueError: Si le montant à désengager est supérieur au montant utilisé.
         """

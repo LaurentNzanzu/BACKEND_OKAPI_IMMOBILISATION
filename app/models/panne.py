@@ -5,11 +5,13 @@ from datetime import datetime
 from ..core.database import Base
 import enum
 
+
 class PrioritePanne(enum.Enum):
     BASSE = "BASSE"
     MOYENNE = "MOYENNE"
     HAUTE = "HAUTE"
     CRITIQUE = "CRITIQUE"
+
 
 class StatutPanne(enum.Enum):
     DECLAREE = "DECLAREE"
@@ -21,16 +23,28 @@ class StatutPanne(enum.Enum):
     TERMINEE = "TERMINEE"
     ANNULEE = "ANNULEE"
 
+
 class TypePanne(enum.Enum):
     MECANIQUE = "MECANIQUE"
     ELECTRIQUE = "ELECTRIQUE"
     ELECTRONIQUE = "ELECTRONIQUE"
     AUTRE = "AUTRE"
 
+
 class Panne(Base):
     __tablename__ = "pannes"
 
     id_panne = Column(Integer, primary_key=True, index=True)
+
+    # === Multi-tenant ===
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+
     id_bien = Column(Integer, ForeignKey("biens.id_bien", ondelete="CASCADE"), nullable=False)
     id_technicien = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False)
     date_declaration = Column(DateTime, default=datetime.utcnow)
@@ -44,12 +58,13 @@ class Panne(Base):
     diagnostic = Column(Text, nullable=True)
     solution_apportee = Column(Text, nullable=True)
     cout_total_reparation = Column(Float, default=0.0)
-    
+
     # === NOUVEAUX CHAMPS TÂCHE 3 ===
     cout_main_oeuvre = Column(Float, default=0.0, comment="Coût main d'œuvre")
     cout_pieces = Column(Float, default=0.0, comment="Coût pièces détachées")
 
     # Relations
+    organisation = relationship("Organisation")
     bien = relationship("Bien", back_populates="pannes")
     technicien = relationship("Utilisateur", foreign_keys=[id_technicien])
     besoins = relationship("Besoin", back_populates="panne", cascade="all, delete-orphan")
@@ -75,7 +90,7 @@ class Panne(Base):
             self.date_fin = datetime.utcnow()
             # Mise à jour du coût total
             self.cout_total_reparation = self.cout_reparation_total
-    
+
     def ajouter_cout(self, main_oeuvre: float = 0, pieces: float = 0):
         """Ajoute des coûts à la panne"""
         self.cout_main_oeuvre = (self.cout_main_oeuvre or 0.0) + main_oeuvre

@@ -6,15 +6,18 @@ from typing import Optional
 from ..core.database import Base
 import enum
 
+
 class TypeMaintenance(enum.Enum):
     PREVENTIVE = "PREVENTIVE"
     CORRECTIVE = "CORRECTIVE"
     PREDICTIVE = "PREDICTIVE"
     CURATIVE = "CURATIVE"
 
+
 class TypeOrigineMaintenance(enum.Enum):
     AUTO = "AUTO"  # Généré automatiquement
     MANUEL = "MANUEL"  # Créé manuellement
+
 
 class StatutMaintenance(enum.Enum):
     PLANIFIEE = "PLANIFIEE"
@@ -23,10 +26,21 @@ class StatutMaintenance(enum.Enum):
     REPORTEE = "REPORTEE"
     ANNULEE = "ANNULEE"
 
+
 class Maintenance(Base):
     __tablename__ = "maintenances"
 
     id_maintenance = Column(Integer, primary_key=True, index=True)
+
+    # === Multi-tenant ===
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+
     id_bien = Column(Integer, ForeignKey("biens.id_bien", ondelete="CASCADE"), nullable=False)
     id_panne = Column(Integer, ForeignKey("pannes.id_panne", ondelete="SET NULL"), nullable=True, index=True)
     id_technicien = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False)
@@ -42,14 +56,15 @@ class Maintenance(Base):
     pieces_remplacees = Column(Text, nullable=True)
     rapport = Column(Text, nullable=True)
     date_creation = Column(DateTime, default=datetime.utcnow)
-    
+
     # === NOUVEAUX CHAMPS TÂCHE 3 ===
     origine = Column(SQLEnum(TypeOrigineMaintenance), default=TypeOrigineMaintenance.MANUEL)
     alerte_vnc_id = Column(Integer, ForeignKey("alertes_vnc.id", ondelete="SET NULL"), nullable=True)
     score_fiabilite_depart = Column(Float, nullable=True, comment="Score qui a déclenché la maintenance")
     a_genere_alerte = Column(Boolean, default=False, comment="True si cette maintenance a généré une alerte")
-    
+
     # Relations
+    organisation = relationship("Organisation")
     bien = relationship("Bien", back_populates="maintenances")
     panne = relationship("Panne", back_populates="maintenances")
     technicien = relationship("Utilisateur", foreign_keys=[id_technicien])
@@ -90,7 +105,7 @@ class Maintenance(Base):
         self.date_planifiee = nouvelle_date
         if motif:
             self.observation = motif
-    
+
     def generer_alerte(self):
         """Marque cette maintenance comme ayant généré une alerte"""
         self.a_genere_alerte = True
