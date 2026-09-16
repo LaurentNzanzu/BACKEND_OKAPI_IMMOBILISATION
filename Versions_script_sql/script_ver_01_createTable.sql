@@ -534,3 +534,47 @@ SELECT setval(
     (SELECT MAX(id_permission) FROM permissions),
     true
 );
+
+
+----==========mise a jour de permissions 
+
+BEGIN;
+
+UPDATE permissions SET module='mission',   action='create'       WHERE nom='MISSION_CREATE';
+UPDATE permissions SET module='mission',   action='validate_log' WHERE nom='MISSION_VALIDATE_LOG';
+UPDATE permissions SET module='mission',   action='validate_dg'  WHERE nom='MISSION_VALIDATE_DG';
+UPDATE permissions SET module='mission',   action='close'        WHERE nom='MISSION_CLOSE';
+UPDATE permissions SET module='carburant', action='saisir'       WHERE nom='CARBURANT_SAISIR';
+UPDATE permissions SET module='carburant', action='valider'      WHERE nom='CARBURANT_VALIDER';
+UPDATE permissions SET module='incident',  action='declarer'     WHERE nom='INCIDENT_DECLARER';
+UPDATE permissions SET module='incident',  action='valider'      WHERE nom='INCIDENT_VALIDER';
+UPDATE permissions SET module='chauffeur', action='gerer'        WHERE nom='CHAUFFEUR_GERER';
+UPDATE permissions SET module='projet',    action='gerer'        WHERE nom='PROJET_GERER';
+UPDATE permissions SET module='rapport',   action='voir'         WHERE nom='RAPPORT_FLOTTE_VOIR';
+UPDATE permissions SET module='rapport',   action='exporter'     WHERE nom='RAPPORT_FLOTTE_EXPORTER';
+UPDATE permissions SET module='alerte',    action='traiter'      WHERE nom='ALERTE_TRAITER';
+
+COMMIT;
+
+
+
+-------====AJOUT SUR LES PERMISSIONS
+-- 1. S'assurer que la permission WORKFLOW_VOIR existe
+INSERT INTO permissions (nom, description, module, action, actif)
+VALUES ('WORKFLOW_VOIR', 'Consulter les workflows', 'workflow', 'voir', true)
+ON CONFLICT (nom) DO NOTHING;
+
+-- 2. L'attribuer au rôle ADMIN
+INSERT INTO role_permissions (id_role, id_permission)
+SELECT r.id_role, p.id_permission
+FROM roles r, permissions p
+WHERE r.nom = 'ADMIN' AND p.nom = 'WORKFLOW_VOIR'
+ON CONFLICT DO NOTHING;
+
+-- 3. Vérification
+SELECT r.nom AS role, p.nom AS permission
+FROM roles r
+JOIN role_permissions rp ON rp.id_role = r.id_role
+JOIN permissions p ON p.id_permission = rp.id_permission
+WHERE r.nom = 'ADMIN' 
+  AND p.nom IN ('WORKFLOW_VOIR', 'WORKFLOW_GERER');

@@ -55,3 +55,18 @@ class Role(Base):
             return last.id_role + 1 if last and last.id_role else 1
         except:
             return 1
+        
+    def has_permission(self, permission_name: str) -> bool:
+       
+        if not permission_name:
+            return False
+        role_nom = (self.nom or "").strip().upper()
+        if role_nom == "ADMIN":
+            return True
+        if not self.permissions:
+            return False
+        return any(
+            (p.nom or "").strip().upper() == permission_name.strip().upper()
+            and getattr(p, "actif", True)
+            for p in self.permissions
+        )

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import uuid
@@ -571,3 +572,44 @@ async def reset_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Token invalide ou expiré"
         )
+
+
+@router.post("/token")
+async def login_oauth2_for_swagger(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    request: Request = None,
+    response: Response = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint OAuth2 dédié à Swagger UI.
+    
+    Accepte le format `application/x-www-form-urlencoded` avec :
+    - `username` : l'email de l'utilisateur
+    - `password` : le mot de passe
+    
+    Réutilise la logique du endpoint `/login` (aucune duplication de code).
+    """
+    # 1. Convertir le format OAuth2 (username/password) vers LoginRequest (email/mot_de_passe)
+    login_data = LoginRequest(
+        email=form_data.username,
+        mot_de_passe=form_data.password,
+    )
+    
+    # 2. Appeler la même logique que /login (aucune modification)
+    result = await login(
+        login_data=login_data,
+        request=request,
+        response=response,
+        db=db,
+    )
+    
+    # 3. Retourner avec `token_type` requis par la spécification OAuth2
+    #    (Swagger l'exige, votre frontend ne l'utilise pas)
+    return {
+        "access_token": result.access_token,
+        "token_type": "bearer",              # ⬅️ Exigé par Swagger
+        "session_uuid": result.session_uuid,
+        "expires_in": result.expires_in,
+        "user": result.user,
+    }
