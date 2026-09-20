@@ -20,6 +20,15 @@ class Utilisateur(Base):
     # === Champs de la table ===
     id = Column(Integer, primary_key=True, index=True)
 
+    # === Multi-tenant ===
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+
     # Informations personnelles
     email = Column(String(100), unique=True, nullable=False, index=True)
     nom = Column(String(100), nullable=False)
@@ -41,6 +50,7 @@ class Utilisateur(Base):
 
     # === Relations ===
     role = relationship("Role", back_populates="utilisateurs")
+    organisation = relationship("Organisation")
 
     @property
     def nom_complet(self) -> str:
@@ -79,9 +89,6 @@ class Utilisateur(Base):
         cascade="all, delete-orphan",
         lazy="dynamic"
     )
-
-    # ❌ SUPPRIMER CETTE LIGNE (car elle cause l'erreur)
-    # permissions = relationship("Permission", secondary="utilisateur_permissions", lazy="selectin")
 
     def __repr__(self):
         return f"<Utilisateur {self.email}>"
@@ -133,6 +140,7 @@ class Utilisateur(Base):
     def to_dict(self, include_sensitive: bool = False):
         data = {
             "id": self.id,
+            "organisation_id": self.organisation_id,
             "email": self.email,
             "nom": self.nom,
             "post_nom": self.post_nom,

@@ -44,6 +44,11 @@ from .type_bien import TypeBien
 # === NOUVEAUX IMPORTATIONS TÂCHE 4 ===
 from .session import SessionUtilisateur
 from .config_inventaire import ConfigInventaire  # NOUVEAU
+from .organisation import Organisation  # NOUVEAU
+from .abonnement_facturation import AbonnementFacturation  # NOUVEAU
+from .projet import Projet  # NOUVEAU
+from .workflow_etape import WorkflowEtape  # NOUVEAU
+
 
 
 __all__ = [
@@ -137,4 +142,9 @@ __all__ = [
     #=== NOUVEAUX MODÈLES TÂCHE 4 ===
     "TypeBien",
     "ConfigInventaire"
+    #organisation
+    "Organisation"
+    "AbonnementFacturation"
+    "Projet"
+    "WorkflowEtape"
 ]

@@ -26,8 +26,8 @@ class Projet(Base):
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     organisation = relationship("Organisation", back_populates="projets")
-    missions = relationship("Mission", back_populates="projet")
-    approvisionnements = relationship("ApprovisionnementCarburant", back_populates="projet")
+    #missions = relationship("Mission", back_populates="projet")
+    #approvisionnements = relationship("ApprovisionnementCarburant", back_populates="projet")
 
     __table_args__ = (
         # Un code projet unique par organisation

@@ -1,5 +1,5 @@
 # app/schemas/projet.py
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional

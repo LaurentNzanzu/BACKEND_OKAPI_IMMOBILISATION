@@ -5,13 +5,14 @@ from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from ..core.database import Base
 
+
 class TypeNotificationEnum(enum.Enum):
     BESOIN_CREE = "BESOIN_CREE"
     BESOIN_VALIDE = "BESOIN_VALIDE"
     BESOIN_REJETE = "BESOIN_REJETE"
     MAINTENANCE_PLANIFIEE = "MAINTENANCE_PLANIFIEE"
     ALERTE_STOCK = "ALERTE_STOCK"
-    
+
     # Nouveaux
     ALERTE_FIN_ECHANCE_MAINTENANCE = "ALERTE_FIN_ECHANCE_MAINTENANCE"
     ALERTE_VNC_ZERO = "ALERTE_VNC_ZERO"
@@ -34,6 +35,7 @@ class PrioriteNotificationEnum(enum.Enum):
     IMPORTANTE = "importante"
     CRITIQUE = "critique"
 
+
 # Table de liaison entre notifications et utilisateurs
 notification_user = Table(
     "notification_user",
@@ -45,13 +47,21 @@ notification_user = Table(
     Column("est_archivee", Boolean, default=False, nullable=False),
 )
 
+
 class Notification(Base):
     __tablename__ = "notifications"
-    
+
     id_notification = Column(Integer, primary_key=True, index=True)
-    # ⚠️ SUPPRIMEZ id_utilisateur - plus besoin car on utilise la table de liaison
-    # id_utilisateur = Column(Integer, ForeignKey("utilisateurs.id", ondelete="CASCADE"), nullable=False)  # À SUPPRIMER
-    
+
+    # === Multi-tenant ===
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+
     type_notification = Column(SQLEnum(TypeNotificationEnum), nullable=False)
     titre = Column(String(200), nullable=False)
     contenu = Column(Text, nullable=False)
@@ -60,4 +70,5 @@ class Notification(Base):
     date_creation = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Relations
+    organisation = relationship("Organisation")
     destinataires = relationship("Utilisateur", secondary=notification_user, back_populates="notifications")

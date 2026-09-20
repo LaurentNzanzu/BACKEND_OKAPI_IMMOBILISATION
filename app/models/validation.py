@@ -5,16 +5,19 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
 
+
 class OrdreValidation(enum.Enum):
     TECHNICIEN = "TECHNICIEN"
     COMPTABLE = "COMPTABLE"
     CAISSE = "CAISSE"
     DG = "DG"
 
+
 class DecisionValidation(enum.Enum):
     APPROUVE = "APPROUVE"
     REJETE = "REJETE"
     EN_ATTENTE = "EN_ATTENTE"
+
 
 class TypeValidation(enum.Enum):
     BESOIN = "BESOIN"
@@ -23,6 +26,7 @@ class TypeValidation(enum.Enum):
     AMORTISSEMENT = "AMORTISSEMENT"
     REBUT = "REBUT"
 
+
 # Ordre strict du workflow
 WORKFLOW_ORDER = [
     OrdreValidation.COMPTABLE,
@@ -30,10 +34,20 @@ WORKFLOW_ORDER = [
     OrdreValidation.DG
 ]
 
+
 class Validation(Base):
     __tablename__ = "validations"
-    
+
     id_validation = Column(Integer, primary_key=True, index=True)
+
+    # === Multi-tenant ===
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
 
     # Clés étrangères
     id_besoin = Column(Integer, ForeignKey("besoins.id_besoin", ondelete="CASCADE"), nullable=True)
@@ -59,6 +73,7 @@ class Validation(Base):
     commentaire = Column(Text, nullable=True)
 
     # Relations
+    organisation = relationship("Organisation")
     besoin = relationship("Besoin", back_populates="validations")
     bien = relationship("Bien", back_populates="validations")
     budget = relationship("Budget", back_populates="validations")
@@ -86,7 +101,7 @@ class Validation(Base):
     def est_rejete(self) -> bool:
         """
         Vérifie si le workflow a été rejeté à n'importe quelle étape.
-        
+
         Returns:
             bool: True si une validation a été rejetée, False sinon.
         """
@@ -100,49 +115,49 @@ class Validation(Base):
     def deja_valide_par(self, role: OrdreValidation) -> bool:
         """
         Vérifie si un rôle spécifique a déjà approuvé la validation pour cette entité.
-        
+
         Args:
             role (OrdreValidation): Le rôle à vérifier.
-            
+
         Returns:
             bool: True si le rôle a déjà approuvé, False sinon.
         """
         validations = self._get_entity_validations()
         return any(
-            v.ordre_validateur == role and v.decision == DecisionValidation.APPROUVE 
+            v.ordre_validateur == role and v.decision == DecisionValidation.APPROUVE
             for v in validations
         )
 
     def prochain_validateur(self) -> OrdreValidation:
         """
         Détermine le prochain rôle attendu dans le workflow.
-        
+
         Returns:
             OrdreValidation: Le prochain rôle à valider, ou None si le workflow est terminé.
         """
         if self.est_rejete():
             return None  # Workflow terminé par rejet
-            
+
         for role in WORKFLOW_ORDER:
             if not self.deja_valide_par(role):
                 return role
-                
+
         return None  # Workflow terminé (tous les rôles ont validé)
 
     def peut_valider(self) -> bool:
         """
         Vérifie si la validation actuelle est autorisée à être traitée.
         Cela signifie que son rôle est le prochain attendu et que le workflow n'est pas bloqué.
-        
+
         Returns:
             bool: True si cette validation peut être traitée, False sinon.
         """
         if self.est_rejete():
             return False
-            
+
         if self.decision != DecisionValidation.EN_ATTENTE:
             return False  # Déjà traitée
-            
+
         prochain = self.prochain_validateur()
         return prochain == self.ordre_validateur
 
@@ -150,7 +165,7 @@ class Validation(Base):
         """
         Vérifie si le workflow est entièrement terminé.
         Le workflow est terminé si le DG a validé OU si une validation a été rejetée.
-        
+
         Returns:
             bool: True si le workflow est terminé, False sinon.
         """
@@ -166,7 +181,7 @@ class Validation(Base):
     def approuver(self):
         """
         Approuve la validation actuelle.
-        
+
         Raises:
             ValueError: Si la validation ne peut pas être traitée (rôle non attendu ou workflow bloqué).
         """
@@ -175,17 +190,17 @@ class Validation(Base):
                 f"Impossible d'approuver : le rôle '{self.ordre_validateur.value}' "
                 f"n'est pas le prochain attendu dans le workflow ou le workflow est déjà terminé/bloqué."
             )
-        
+
         self.decision = DecisionValidation.APPROUVE
         self.date_decision = datetime.utcnow()
 
     def rejeter(self, motif_rejet: str):
         """
         Rejette la validation actuelle et stoppe définitivement le workflow.
-        
+
         Args:
             motif_rejet (str): Le motif du rejet (obligatoire).
-            
+
         Raises:
             ValueError: Si la validation ne peut pas être traitée ou si le motif est vide.
         """
@@ -194,10 +209,10 @@ class Validation(Base):
                 f"Impossible de rejeter : le rôle '{self.ordre_validateur.value}' "
                 f"n'est pas le prochain attendu dans le workflow ou le workflow est déjà terminé/bloqué."
             )
-            
+
         if not motif_rejet or not motif_rejet.strip():
             raise ValueError("Un motif de rejet est obligatoire.")
-            
+
         self.decision = DecisionValidation.REJETE
         self.motif_rejet = motif_rejet.strip()
         self.date_decision = datetime.utcnow()

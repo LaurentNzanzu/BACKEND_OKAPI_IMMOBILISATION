@@ -5,6 +5,7 @@ from datetime import datetime
 from ..core.database import Base
 import enum
 
+
 class StatutBesoin(enum.Enum):
     BROUILLON = "BROUILLON"
     EN_VALIDATION = "EN_VALIDATION"
@@ -28,8 +29,18 @@ class Besoin(Base):
     id_budget = Column(Integer, ForeignKey("budgets.id_budget", ondelete="SET NULL"), nullable=True)
     centre_cout = Column(String(100), nullable=True, index=True)
 
+    # === Projet (Sprint 0) ===
+    id_projet = Column(
+        Integer,
+        ForeignKey("projets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Projet bailleur associé (Sprint 0)"
+    )
+
     # Relations
     panne = relationship("Panne", back_populates="besoins")
+    projet = relationship("Projet")
     budget = relationship("Budget", foreign_keys=[id_budget])
     lignes = relationship("LigneBesoin", back_populates="besoin", cascade="all, delete-orphan")
     validations = relationship("Validation", back_populates="besoin", cascade="all, delete-orphan")
@@ -63,4 +74,3 @@ class Besoin(Base):
             self.statut = StatutBesoin.CAISSE_VALIDE
             return True
         return False
-
