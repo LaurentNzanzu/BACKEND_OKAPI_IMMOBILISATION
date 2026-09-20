@@ -26,9 +26,16 @@ class AuditService:
         anciennes_valeurs: Optional[Dict[str, Any]] = None,
         nouvelles_valeurs: Optional[Dict[str, Any]] = None,
         ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        request=None, 
     ) -> AuditLog:
         """Enregistre une action dans le journal d'audit"""
+
+        if request:
+            if ip_address is None and hasattr(request, 'client') and request.client:
+                ip_address = request.client.host
+            if user_agent is None and hasattr(request, 'headers'):
+                user_agent = request.headers.get('user-agent')
         
         # Nettoyer les valeurs pour éviter les erreurs JSON
         if anciennes_valeurs:
@@ -46,6 +53,10 @@ class AuditService:
             adresse_ip=ip_address,
             user_agent=user_agent
         )
+
+        
+
+        
         self.db.add(log)
         self.db.commit()
         self.db.refresh(log)

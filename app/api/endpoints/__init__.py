@@ -33,6 +33,13 @@ from .monitoring import router as monitoring_router
 from .admin_blacklist import router as admin_blacklist_router
 from .types_biens import router as types_biens_router
 from .config_inventaire import router as config_inventaire_router
+from .permissions import router as permissions_router
+from .workflow import router as workflow_router
+from .projets import router as projets_router
+from .abonnements import router as abonnements_router
+from .facturation import router as facturation_router
+from .import_csv import router as import_csv_router
+from .organisations import router as organisations_router
 
 
 
@@ -69,7 +76,14 @@ AVAILABLE_ROUTERS: list[str] = [
     "admin_sessions",
     "admin_blacklist",
     "types_biens",
-    "config_inventaire"
+    "config_inventaire",
+    "permissions",
+    "workflow",
+    "projets",
+    "abonnements",
+    "facturation",
+    "import_csv",
+    "organisations"
 ]
 
 
@@ -112,7 +126,14 @@ def get_router(name: str):
         "monitoring": monitoring_router,
         "admin_blacklist": admin_blacklist_router,
         "types_biens": types_biens_router,
-        "config_inventaire": config_inventaire_router
+        "config_inventaire": config_inventaire_router,
+        "permissions": permissions_router,
+        "workflow": workflow_router,
+        "projets": projets_router,
+        "abonnements": abonnements_router,
+        "facturation": facturation_router,
+        "import_csv": import_csv_router,
+        "organisations": organisations_router
     }
     return routers.get(name)
 
@@ -178,5 +199,12 @@ __all__ = [
     "monitoring_router",
     "admin_blacklist_router",
     "types_biens_router",
-    "config_inventaire_router"
+    "config_inventaire_router",
+    "permissions_router",
+    "workflow_router",
+    "projets_router",
+    "abonnements_router",
+    "facturation_router",
+    "import_csv_router",
+    "organisations_router"
 ]

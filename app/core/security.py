@@ -15,7 +15,9 @@ import uuid  # ⬅️ Ajouté pour générer des JTI uniques
 logger = logging.getLogger(__name__)
 
 # Configuration OAuth2 pour extraire le token depuis le header Authorization
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+#oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+#                                                            
 
 # Configuration du hachage des mots de passe (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

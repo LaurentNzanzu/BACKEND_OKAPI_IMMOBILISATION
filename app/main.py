@@ -71,7 +71,15 @@ from app.api.endpoints import (
     monitoring,
     admin_blacklist,
     types_biens,
-    config_inventaire
+    config_inventaire,
+    permissions,
+    workflow,
+    projets,
+    abonnements,
+    facturation,
+    import_csv,
+    organisations
+
 )
 
 # Import des tâches CRON
@@ -456,6 +464,13 @@ app.include_router(monitoring.router, prefix=API_V1_PREFIX)
 app.include_router(admin_blacklist.router, prefix=API_V1_PREFIX)
 app.include_router(types_biens.router, prefix=API_V1_PREFIX)
 app.include_router(config_inventaire.router, prefix=API_V1_PREFIX)
+app.include_router(permissions.router, prefix=API_V1_PREFIX)
+app.include_router(workflow.router, prefix=API_V1_PREFIX)
+app.include_router(projets.router, prefix=API_V1_PREFIX)
+app.include_router(abonnements.router, prefix=API_V1_PREFIX)
+app.include_router(facturation.router, prefix=API_V1_PREFIX)
+app.include_router(import_csv.router, prefix=API_V1_PREFIX)
+app.include_router(organisations.router, prefix=API_V1_PREFIX)
 
 
 
