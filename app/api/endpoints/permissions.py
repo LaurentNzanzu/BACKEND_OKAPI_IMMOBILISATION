@@ -45,6 +45,40 @@ def _verifier_permission(
         )
 
 
+# ═══════════════ AJOUT 5.11 — HELPER ═══════════════
+def _verifier_admin_plateforme(current_user: Utilisateur) -> None:
+    """
+    Vérifie que l'utilisateur est un ADMIN PLATEFORME strict.
+
+    Un ADMIN PLATEFORME est identifié par :
+    - organisation_id = NULL
+    - role.nom == "ADMIN"
+
+    Bloque tout ADMIN ONG qui tenterait de créer/modifier/supprimer
+    des permissions GLOBALES (les permissions globales sont partagées
+    par toutes les ONG, seul l'ADMIN plateforme peut les gérer).
+
+    Note : pour personnaliser les permissions de SES rôles, l'ADMIN ONG
+    doit utiliser les endpoints /permissions-organisation/ (override local).
+    """
+    if not getattr(current_user, "is_platform_admin", False):
+        logger.warning(
+            f"Tentative d'accès non autorisé aux permissions globales : "
+            f"user #{getattr(current_user, 'id', '?')} "
+            f"({getattr(current_user, 'email', '?')}) — "
+            f"organisation_id={getattr(current_user, 'organisation_id', '?')}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Accès réservé à l'ADMIN plateforme. "
+                "Les permissions globales ne peuvent pas être modifiées par un ADMIN ONG. "
+                "Utilisez /permissions-organisation/ pour personnaliser les permissions de votre ONG."
+            ),
+        )
+# ═══════════════ AJOUT 5.11 — HELPER (FIN) ═══════════════
+
+
 # ============================================================================
 # 1. LISTER LES PERMISSIONS
 # ============================================================================
@@ -80,6 +114,11 @@ def lister_permissions(
     summary="Lister les modules distincts",
     description="Retourne la liste de tous les modules distincts existants dans les permissions.",
 )
+@router.get(
+    "/modules/",
+    response_model=List[str],
+    include_in_schema=False,
+)
 def lister_modules(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
@@ -97,6 +136,11 @@ def lister_modules(
     response_model=List[PermissionResponse],
     summary="Obtenir mes permissions",
     description="Retourne la liste des permissions associées au rôle de l'utilisateur connecté.",
+)
+@router.get(
+    "/mes-permissions/",
+    response_model=List[PermissionResponse],
+    include_in_schema=False,
 )
 def mes_permissions(
     db: Session = Depends(get_db),
@@ -124,6 +168,11 @@ def mes_permissions(
     summary="Lister les permissions d'un rôle",
     description="Retourne toutes les permissions attribuées à un rôle spécifique.",
 )
+@router.get(
+    "/role/{role_id}/",
+    response_model=List[PermissionResponse],
+    include_in_schema=False,
+)
 def lister_permissions_role(
     role_id: int,
     db: Session = Depends(get_db),
@@ -146,6 +195,11 @@ def lister_permissions_role(
     summary="Obtenir une permission",
     description="Retourne les détails d'une permission par son ID.",
 )
+@router.get(
+    "/{id_permission}/",
+    response_model=PermissionResponse,
+    include_in_schema=False,
+)
 def obtenir_permission(
     id_permission: int,
     db: Session = Depends(get_db),
@@ -162,7 +216,7 @@ def obtenir_permission(
 
 
 # ============================================================================
-# 6. CRÉER UNE PERMISSION (ADMIN)
+# 6. CRÉER UNE PERMISSION (ADMIN PLATEFORME)
 # ============================================================================
 
 @router.post(
@@ -170,7 +224,7 @@ def obtenir_permission(
     response_model=PermissionResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Créer une permission",
-    description="Crée une nouvelle permission (réservé aux administrateurs).",
+    description="Crée une nouvelle permission (réservé à l'ADMIN plateforme).",
 )
 def creer_permission(
     payload: PermissionCreate = Body(...),
@@ -178,6 +232,9 @@ def creer_permission(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
+    # ═══ MODIF 5.11 — AJOUT appel ═══
+    _verifier_admin_plateforme(current_user)
+    # ═══ MODIF 5.11 — AJOUT appel (FIN) ═══
     _verifier_permission(db, current_user, "PERMISSION_GERER")
 
     service = PermissionService(db)
@@ -202,14 +259,19 @@ def creer_permission(
 
 
 # ============================================================================
-# 7. MODIFIER UNE PERMISSION (ADMIN)
+# 7. MODIFIER UNE PERMISSION (ADMIN PLATEFORME)
 # ============================================================================
 
 @router.put(
     "/{id_permission}",
     response_model=PermissionResponse,
     summary="Modifier une permission",
-    description="Met à jour une permission existante (réservé aux administrateurs).",
+    description="Met à jour une permission existante (réservé à l'ADMIN plateforme).",
+)
+@router.put(
+    "/{id_permission}/",
+    response_model=PermissionResponse,
+    include_in_schema=False,
 )
 def modifier_permission(
     id_permission: int,
@@ -218,6 +280,9 @@ def modifier_permission(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
+    # ═══ MODIF 5.11 — AJOUT appel ═══
+    _verifier_admin_plateforme(current_user)
+    # ═══ MODIF 5.11 — AJOUT appel (FIN) ═══
     _verifier_permission(db, current_user, "PERMISSION_GERER")
 
     service = PermissionService(db)
@@ -241,20 +306,28 @@ def modifier_permission(
 
 
 # ============================================================================
-# 8. SUPPRIMER UNE PERMISSION (ADMIN)
+# 8. SUPPRIMER UNE PERMISSION (ADMIN PLATEFORME)
 # ============================================================================
 
 @router.delete(
     "/{id_permission}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Supprimer une permission",
-    description="Supprime une permission et la détache de tous les rôles associés.",
+    description="Supprime une permission et la détache de tous les rôles associés (réservé à l'ADMIN plateforme).",
+)
+@router.delete(
+    "/{id_permission}/",
+    status_code=status.HTTP_204_NO_CONTENT,
+    include_in_schema=False,
 )
 def supprimer_permission(
     id_permission: int,
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
+    # ═══ MODIF 5.11 — AJOUT appel ═══
+    _verifier_admin_plateforme(current_user)
+    # ═══ MODIF 5.11 — AJOUT appel (FIN) ═══
     _verifier_permission(db, current_user, "PERMISSION_GERER")
 
     service = PermissionService(db)
@@ -271,13 +344,17 @@ def supprimer_permission(
 
 
 # ============================================================================
-# 9. ATTRIBUER UNE PERMISSION À UN RÔLE
+# 9. ATTRIBUER UNE PERMISSION À UN RÔLE (ADMIN PLATEFORME)
 # ============================================================================
 
 @router.post(
     "/role/{role_id}/attribuer",
     summary="Attribuer des permissions à un rôle",
-    description="Attribue une ou plusieurs permissions à un rôle donné.",
+    description="Attribue une ou plusieurs permissions à un rôle donné (réservé à l'ADMIN plateforme).",
+)
+@router.post(
+    "/role/{role_id}/attribuer/",
+    include_in_schema=False,
 )
 def attribuer_permissions_role(
     role_id: int,
@@ -285,6 +362,9 @@ def attribuer_permissions_role(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
+    # ═══ MODIF 5.11 — AJOUT appel ═══
+    _verifier_admin_plateforme(current_user)
+    # ═══ MODIF 5.11 — AJOUT appel (FIN) ═══
     _verifier_permission(db, current_user, "PERMISSION_GERER")
 
     service = PermissionService(db)
@@ -312,13 +392,17 @@ def attribuer_permissions_role(
 
 
 # ============================================================================
-# 10. RÉVOQUER UNE PERMISSION D'UN RÔLE
+# 10. RÉVOQUER UNE PERMISSION D'UN RÔLE (ADMIN PLATEFORME)
 # ============================================================================
 
 @router.post(
     "/role/{role_id}/revoquer",
     summary="Révoquer des permissions d'un rôle",
-    description="Révoque une ou plusieurs permissions d'un rôle donné.",
+    description="Révoque une ou plusieurs permissions d'un rôle donné (réservé à l'ADMIN plateforme).",
+)
+@router.post(
+    "/role/{role_id}/revoquer/",
+    include_in_schema=False,
 )
 def revoquer_permissions_role(
     role_id: int,
@@ -326,6 +410,9 @@ def revoquer_permissions_role(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
+    # ═══ MODIF 5.11 — AJOUT appel ═══
+    _verifier_admin_plateforme(current_user)
+    # ═══ MODIF 5.11 — AJOUT appel (FIN) ═══
     _verifier_permission(db, current_user, "PERMISSION_GERER")
 
     service = PermissionService(db)

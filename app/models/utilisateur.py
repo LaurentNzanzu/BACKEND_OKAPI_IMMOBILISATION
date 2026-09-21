@@ -40,6 +40,14 @@ class Utilisateur(Base):
     mot_de_passe = Column(String(255), nullable=False)  # Hashé
     est_actif = Column(Boolean, default=True, nullable=False)
 
+    # ✅ PHASE 3 — Force le changement de mot de passe à la 1ère connexion
+    doit_changer_mot_de_passe = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Si TRUE, force le changement de mot de passe à la prochaine connexion",
+    )
+
     # ⚠️ Clé étrangère vers Role : doit pointer vers 'roles.id_role'
     role_id = Column(Integer, ForeignKey("roles.id_role"), nullable=False)
 
@@ -51,6 +59,25 @@ class Utilisateur(Base):
     # === Relations ===
     role = relationship("Role", back_populates="utilisateurs")
     organisation = relationship("Organisation")
+
+    # ============================================================
+    # ✅ PHASE 3 — Distinction des 2 niveaux d'ADMIN
+    # ============================================================
+    @property
+    def is_platform_admin(self) -> bool:
+        """ADMIN plateforme = organisation_id NULL + rôle ADMIN."""
+        if self.organisation_id is not None:
+            return False
+        role_nom = (self.role.nom if self.role else "").strip().upper()
+        return role_nom == "ADMIN"
+
+    @property
+    def is_org_admin(self) -> bool:
+        """ADMIN ONG = organisation_id non NULL + rôle ADMIN."""
+        if self.organisation_id is None:
+            return False
+        role_nom = (self.role.nom if self.role else "").strip().upper()
+        return role_nom == "ADMIN"
 
     @property
     def nom_complet(self) -> str:
@@ -150,7 +177,11 @@ class Utilisateur(Base):
             "role_id": self.role_id,
             "role_nom": self.role.nom if self.role else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
-            "last_login": self.last_login.isoformat() if self.last_login else None
+            "last_login": self.last_login.isoformat() if self.last_login else None,
+            # ✅ PHASE 3
+            "is_platform_admin": self.is_platform_admin,
+            "is_org_admin": self.is_org_admin,
+            "doit_changer_mot_de_passe": self.doit_changer_mot_de_passe,
         }
         if include_sensitive:
             data["mot_de_passe_hash"] = self.mot_de_passe

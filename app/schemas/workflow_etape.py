@@ -9,6 +9,8 @@ class TypeWorkflowEnum(str, Enum):
     MISSION = "MISSION"
     RAVITAILLEMENT = "RAVITAILLEMENT"
     INCIDENT = "INCIDENT"
+    BESOIN = "BESOIN"      
+    CESSION = "CESSION"   
 
 
 class WorkflowEtapeCreate(BaseModel):

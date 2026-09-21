@@ -157,7 +157,8 @@ class OrdreRemplacementService:
         # Récupérer la désignation du bien
         bien = self.db.query(Bien).filter(Bien.id_bien == ordre.bien_id).first()
         designation = ordre.designation_bien or f"Bien #{ordre.bien_id}"
-        
+        organisation_id = getattr(bien, "organisation_id", None) if bien else None
+
         # Titre et contenu selon la priorité
         if ordre.priorite == PrioriteOrdre.CRITIQUE.value:
             titre = f"🚨 ORDRE CRITIQUE - Remplacement requis : {designation}"
@@ -173,8 +174,9 @@ class OrdreRemplacementService:
         contenu += f"\nÉchéance: {ordre.date_echeance.strftime('%d/%m/%Y') if ordre.date_echeance else 'Non définie'}"
         
         # Notifier le DG
-        self.notification_service.envoyer_notification_par_role(
+        self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="DG",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_VNC_ZERO,
             titre=titre,
             contenu=contenu,
@@ -182,8 +184,9 @@ class OrdreRemplacementService:
         )
         
         # Notifier le Comptable
-        self.notification_service.envoyer_notification_par_role(
+        self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="COMPTABLE",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
             titre=f"💰 {titre}",
             contenu=contenu,
@@ -191,8 +194,9 @@ class OrdreRemplacementService:
         )
         
         # Notifier l'Administrateur
-        self.notification_service.envoyer_notification_par_role(
+        self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="ADMIN",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
             titre=f"📋 {titre}",
             contenu=f"Un ordre de remplacement a été créé pour le bien {designation}. Veuillez suivre le traitement.",
@@ -300,8 +304,9 @@ class OrdreRemplacementService:
         bien = self.db.query(Bien).filter(Bien.id_bien == ordre.bien_id).first()
         designation = ordre.designation_bien or f"Bien #{ordre.bien_id}"
         
-        self.notification_service.envoyer_notification_par_role(
+        self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="DG",
+            organisation_id=getattr(bien, "organisation_id", None) if bien else None,
             type_notif=TypeNotificationEnum.BESOIN_VALIDE,
             titre=f"✅ Ordre validé - {designation}",
             contenu=f"L'ordre de remplacement pour le bien {designation} a été validé par {utilisateur.nom}.",
@@ -551,7 +556,7 @@ class OrdreRemplacementService:
             designation = ordre.designation_bien or f"Bien #{ordre.bien_id}"
             
             # Envoyer une notification de rappel
-            self.notification_service.envoyer_notification_par_role(
+            self.notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="DG",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre=f"⚠️ RAPPEL - Ordre en retard : {designation}",

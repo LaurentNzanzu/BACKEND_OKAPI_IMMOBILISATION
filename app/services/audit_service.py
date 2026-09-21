@@ -192,9 +192,25 @@ class AuditService:
         date_debut: Optional[datetime] = None,
         date_fin: Optional[datetime] = None,
         page: int = 1,
-        page_size: int = 50
+        page_size: int = 50,
+        organisation_id: Optional[int] = None,   # ═══ AJOUT 5.19 ═══
     ) -> tuple[List[AuditLog], int]:
+        """
+        ═══ MODIF 5.19 — Filtre multi-tenant via JOIN Utilisateur ═══
+        Si organisation_id est None → ADMIN plateforme (tous les logs).
+        Sinon → uniquement les logs dont l'auteur appartient à cette ONG
+                + exclut les logs système (id_utilisateur NULL).
+        """
         query = self.db.query(AuditLog)
+
+        # ═══ AJOUT 5.19 — Filtre ONG ═══
+        if organisation_id is not None:
+            query = query.join(
+                Utilisateur, Utilisateur.id == AuditLog.id_utilisateur
+            ).filter(
+                Utilisateur.organisation_id == organisation_id
+            )
+        # ═══ FIN AJOUT 5.19 ═══
 
         if utilisateur_id:
             query = query.filter(AuditLog.id_utilisateur == utilisateur_id)
@@ -214,15 +230,39 @@ class AuditService:
         return items, total
 
     def get_user_history(self, user_id: int, limit: int = 100) -> List[AuditLog]:
+        """
+        Récupère l'historique d'un utilisateur donné.
+        (Contrôle d'accès fait au niveau endpoint via _check_acces_log.)
+        """
         return self.db.query(AuditLog).filter(
             AuditLog.id_utilisateur == user_id
         ).order_by(AuditLog.date_action.desc()).limit(limit).all()
 
-    def get_record_history(self, table_name: str, record_id: int, limit: int = 50) -> List[AuditLog]:
-        return self.db.query(AuditLog).filter(
+    def get_record_history(
+        self,
+        table_name: str,
+        record_id: int,
+        limit: int = 50,
+        organisation_id: Optional[int] = None,   # ═══ AJOUT 5.19 ═══
+    ) -> List[AuditLog]:
+        """
+        ═══ MODIF 5.19 — Filtre multi-tenant via JOIN Utilisateur ═══
+        """
+        query = self.db.query(AuditLog).filter(
             AuditLog.table_concernee == table_name,
-            AuditLog.id_enregistrement == record_id
-        ).order_by(AuditLog.date_action.desc()).limit(limit).all()
+            AuditLog.id_enregistrement == record_id,
+        )
+
+        # ═══ AJOUT 5.19 — Filtre ONG ═══
+        if organisation_id is not None:
+            query = query.join(
+                Utilisateur, Utilisateur.id == AuditLog.id_utilisateur
+            ).filter(
+                Utilisateur.organisation_id == organisation_id
+            )
+        # ═══ FIN AJOUT 5.19 ═══
+
+        return query.order_by(AuditLog.date_action.desc()).limit(limit).all()
 
     # ============================================================
     # MÉTHODES TÂCHE 2 - AUDIT SPÉCIFIQUE

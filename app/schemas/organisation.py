@@ -1,7 +1,7 @@
 # app/schemas/organisation.py
 from pydantic import BaseModel, ConfigDict, Field, EmailStr, field_validator
 from datetime import datetime, date
-from typing import Optional
+from typing import Optional, List
 from enum import Enum
 
 
@@ -29,6 +29,16 @@ class OrganisationCreate(BaseModel):
     date_debut: Optional[date] = None
     date_fin: Optional[date] = None
 
+    # ✅ PHASE 3 — Modules à activer
+    # Si None ou vide → les modules par défaut du plan seront appliqués
+    modules_actifs: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Liste des codes modules à activer. "
+            "Si None, applique automatiquement les modules par défaut du plan."
+        ),
+    )
+
     @field_validator("code")
     @classmethod
     def code_upper(cls, v: str) -> str:
@@ -47,6 +57,9 @@ class OrganisationUpdate(BaseModel):
     date_fin: Optional[date] = None
     statut: Optional[StatutOrganisationEnum] = None
 
+    # ✅ PHASE 3 — Modifier les modules actifs
+    modules_actifs: Optional[List[str]] = None
+
 
 class OrganisationResponse(BaseModel):
     id: int
@@ -64,6 +77,9 @@ class OrganisationResponse(BaseModel):
     date_creation: Optional[datetime] = None
     date_modification: Optional[datetime] = None
 
+    # ✅ PHASE 3 — Modules actifs exposés
+    modules_actifs: List[str] = Field(default_factory=list)
+
     # Champs calculés
     plan_info: Optional[dict] = None
     quota_utilise: Optional[dict] = Field(
@@ -72,3 +88,17 @@ class OrganisationResponse(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class OrganisationCreatedResponse(OrganisationResponse):
+    """
+    Réponse enrichie lors de la création d'une ONG.
+    Contient les identifiants de l'admin créé automatiquement.
+    """
+    admin_email: str
+    admin_mot_de_passe_temporaire: Optional[str] = None
+    admin_doit_changer_mdp: bool = True
+    message: str = (
+        "Organisation créée avec succès. "
+        "Transmettez les identifiants à l'administrateur de l'ONG."
+    )

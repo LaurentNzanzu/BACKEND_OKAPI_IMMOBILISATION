@@ -1,11 +1,3 @@
-# backend/app/api/endpoints/projets.py
-"""
-Endpoints de gestion des projets bailleurs.
-Sprint 0 — Fondations multi-tenant OKAPI Flotte
-
-Un projet est rattaché à une organisation (multi-tenant) et porte
-un budget annuel consommé par les missions et les ravitaillements.
-"""
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Body, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -13,6 +5,9 @@ from datetime import datetime
 import logging
 
 from ...core.database import get_db
+# ═══ AJOUT 5.16 — Dépendance module ═══
+from ...core.dependencies_modules import require_module
+# ═══ FIN AJOUT 5.16 ═══
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
 from ...schemas.projet import (
@@ -25,11 +20,18 @@ from ...services.permission_service import PermissionService
 from ...services.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/projets", tags=["Projets"])
+
+# ═══ MODIF 5.16 — require_module sur le router ═══
+router = APIRouter(
+    prefix="/projets",
+    tags=["Projets"],
+    dependencies=[Depends(require_module("PROJET"))],
+)
+# ═══ FIN MODIF 5.16 ═══
 
 
 # ============================================================================
-# HELPERS
+# HELPERS (inchangés)
 # ============================================================================
 
 def _verifier_permission(
@@ -46,7 +48,6 @@ def _verifier_permission(
 def _verifier_isolation(projet_organisation_id: int, current_user: Utilisateur) -> None:
     """Vérifie que l'utilisateur peut accéder à ce projet (multi-tenant)."""
     if current_user.organisation_id is None:
-        # ADMIN plateforme → accès total
         return
     if projet_organisation_id != current_user.organisation_id:
         raise HTTPException(
@@ -58,15 +59,12 @@ def _verifier_isolation(projet_organisation_id: int, current_user: Utilisateur) 
 def _resoudre_organisation_id(current_user: Utilisateur, payload_org_id: Optional[int] = None) -> int:
     """Détermine l'organisation_id effectif pour la création d'un projet."""
     if current_user.organisation_id is None:
-        # ADMIN plateforme : doit fournir organisation_id
         if payload_org_id is None:
             raise HTTPException(
                 status_code=400,
                 detail="organisation_id est obligatoire pour un ADMIN plateforme",
             )
         return payload_org_id
-
-    # Utilisateur normal : forcé sur son organisation
     if payload_org_id is not None and payload_org_id != current_user.organisation_id:
         raise HTTPException(
             status_code=403,
@@ -84,7 +82,6 @@ def _resoudre_organisation_id(current_user: Utilisateur, payload_org_id: Optiona
     response_model=ProjetResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Créer un projet",
-    description="Crée un nouveau projet rattaché à l'organisation courante.",
 )
 def creer_projet(
     payload: ProjetCreate = Body(...),
@@ -141,11 +138,10 @@ def creer_projet(
     "/",
     response_model=List[ProjetResponse],
     summary="Lister les projets",
-    description="Liste les projets de l'organisation courante avec filtres optionnels.",
 )
 def lister_projets(
-    est_actif: Optional[bool] = Query(None, description="Filtrer par statut actif"),
-    search: Optional[str] = Query(None, description="Recherche sur nom/code/bailleur"),
+    est_actif: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):
@@ -173,7 +169,6 @@ def lister_projets(
     "/{projet_id}",
     response_model=ProjetResponse,
     summary="Obtenir un projet",
-    description="Retourne les détails d'un projet (avec vérification multi-tenant).",
 )
 def obtenir_projet(
     projet_id: int,
@@ -201,7 +196,6 @@ def obtenir_projet(
     "/{projet_id}",
     response_model=ProjetResponse,
     summary="Modifier un projet",
-    description="Met à jour les champs modifiables d'un projet existant.",
 )
 def modifier_projet(
     projet_id: int,
@@ -259,14 +253,13 @@ def modifier_projet(
 
 
 # ============================================================================
-# ROUTE 5 — DELETE /projets/{projet_id}  (soft delete)
+# ROUTE 5 — DELETE /projets/{projet_id}
 # ============================================================================
 
 @router.delete(
     "/{projet_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Désactiver un projet",
-    description="Effectue un soft delete (est_actif=False) sur un projet.",
 )
 def desactiver_projet(
     projet_id: int,
@@ -317,11 +310,10 @@ def desactiver_projet(
 @router.get(
     "/{projet_id}/budget",
     summary="Résumé budgétaire d'un projet",
-    description="Retourne le budget annuel, consommé, restant et le taux d'utilisation.",
 )
 def resume_budgetaire(
     projet_id: int,
-    exercice: Optional[int] = Query(None, description="Exercice (défaut: année courante)"),
+    exercice: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user),
 ):

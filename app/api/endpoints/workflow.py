@@ -1,9 +1,13 @@
+# backend/app/api/endpoints/workflow.py
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Body
 from sqlalchemy.orm import Session
 from typing import List
 import logging
 
 from ...core.database import get_db
+# ═══ AJOUT 5.17 — Dépendance module ═══
+from ...core.dependencies_modules import require_module
+# ═══ FIN AJOUT 5.17 ═══
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
 from ...schemas.workflow_etape import (
@@ -16,10 +20,25 @@ from ...services.permission_service import PermissionService
 from ...services.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/workflow", tags=["Workflow"])
+
+# ═══ MODIF 5.17 — require_module sur le router ═══
+router = APIRouter(
+    prefix="/workflow",
+    tags=["Workflow"],
+    dependencies=[Depends(require_module("WORKFLOW_PERSONNALISE"))],
+)
+# ═══ FIN MODIF 5.17 ═══
 
 
-TYPES_WORKFLOW_VALIDES = {"MISSION", "RAVITAILLEMENT", "INCIDENT"}
+# ═══ MODIF 5.17 — Ajout BESOIN et CESSION ═══
+TYPES_WORKFLOW_VALIDES = {
+    "MISSION",
+    "RAVITAILLEMENT",
+    "INCIDENT",
+    "BESOIN",     # ═══ AJOUT 5.17 ═══
+    "CESSION",    # ═══ AJOUT 5.17 ═══
+}
+# ═══ FIN MODIF 5.17 ═══
 
 
 def _verifier_permission(db: Session, current_user: Utilisateur, permission_code: str) -> None:
