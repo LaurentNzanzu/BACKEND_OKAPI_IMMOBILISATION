@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean
+# backend/app/models/regles_amortissement.py
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
@@ -9,7 +10,18 @@ class RegleAmortissement(Base):
     __tablename__ = "regles_amortissement"
     
     id_regle = Column(Integer, primary_key=True, index=True)
-    categorie_bien = Column(String(50), nullable=False, unique=True)  # vehicule, machine, ordinateur, mobilier, etc.
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
+    categorie_bien = Column(String(50), nullable=False)   # ═══ 5.22 — unique retiré ═══
     
     # Durées de vie par défaut
     duree_vie_ans = Column(Integer, nullable=False)
@@ -23,18 +35,27 @@ class RegleAmortissement(Base):
     coeff_deg_7_plus_ans = Column(Float, default=2.5)
     
     # Comptes comptables
-    compte_dotation = Column(String(20), default="6812")  # Dotations aux amortissements
-    compte_amortissement = Column(String(20), nullable=True)  # Compte d'amortissement (28xxx)
-    compte_depreciation = Column(String(20), default="2944")  # Compte OHADA dépréciation
+    compte_dotation = Column(String(20), default="6812")
+    compte_amortissement = Column(String(20), nullable=True)
+    compte_depreciation = Column(String(20), default="2944")
     
     # Base de calcul
-    base_jours_annee = Column(Integer, default=360)  # SYSCOHADA: 360 jours
-    prorata_debut_mois = Column(Boolean, default=True)  # Dégressif: début mois
+    base_jours_annee = Column(Integer, default=360)
+    prorata_debut_mois = Column(Boolean, default=True)
     
     # Actif
     est_active = Column(Boolean, default=True)
     date_modification = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     modifie_par = Column(String(100), nullable=True)
+    
+    # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
+
+    # ═══ 5.22 — Contrainte UNIQUE scopée par ONG ═══
+    __table_args__ = (
+        UniqueConstraint('organisation_id', 'categorie_bien', name='uq_regle_amort_org_categorie'),
+    )
+    # ═══ FIN 5.22 ═══
     
     def __repr__(self):
         return f"<RegleAmortissement(categorie='{self.categorie_bien}', duree={self.duree_vie_ans}ans, taux={self.taux_fiscal}%)>"
@@ -45,6 +66,17 @@ class RegleHistorique(Base):
     __tablename__ = "regles_historique"
     
     id_historique = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_regle = Column(Integer, nullable=False)
     categorie_bien = Column(String(50))
     ancienne_valeur = Column(String(500))
@@ -52,3 +84,6 @@ class RegleHistorique(Base):
     champ_modifie = Column(String(100))
     date_modification = Column(DateTime, default=datetime.utcnow)
     modifie_par = Column(String(100))
+
+    # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══

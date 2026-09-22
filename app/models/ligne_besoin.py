@@ -7,6 +7,17 @@ class LigneBesoin(Base):
     __tablename__ = "lignes_besoin"
 
     id_ligne = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire (héritée du besoin)"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_besoin = Column(Integer, ForeignKey("besoins.id_besoin", ondelete="CASCADE"), nullable=False)
     
     id_piece = Column(Integer, ForeignKey("pieces_rechange.id_piece", ondelete="SET NULL"), nullable=True)
@@ -19,6 +30,7 @@ class LigneBesoin(Base):
     designation_hors_catalogue = Column(String(200), nullable=True)
 
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     besoin = relationship("Besoin", back_populates="lignes")
     piece = relationship("PieceRechange", foreign_keys=[id_piece], back_populates="lignes_besoin")
 

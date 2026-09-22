@@ -12,19 +12,29 @@ class CaisseService:
         self.db = db
         self.taux_change_service = TauxChangeService(db)
 
-    def get_caisse_principale(self) -> Optional[Caisse]:
-        """Récupère la caisse principale (ou la première caisse active)."""
-        return self.db.query(Caisse).filter(Caisse.statut == "ACTIF").first()
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
+    def get_caisse_principale(self, organisation_id: Optional[int] = None) -> Optional[Caisse]:
+        """Récupère la caisse principale (ou la première caisse active) de l'ONG."""
+        query = self.db.query(Caisse).filter(Caisse.statut == "ACTIF")
+        if organisation_id is not None:
+            query = query.filter(Caisse.organisation_id == organisation_id)
+        return query.first()
 
-    def verifier_tresorerie(self, montant: float) -> dict:
+    def verifier_tresorerie(self, montant: float, organisation_id: Optional[int] = None) -> dict:
         """
         Vérifie si la trésorerie physique disponible en caisse est suffisante.
         Condition : caisse.solde_physique >= montant
         """
-        caisse = self.get_caisse_principale()
+        caisse = self.get_caisse_principale(organisation_id=organisation_id)
         if not caisse:
-            # Si aucune caisse n'existe en BDD, créer une caisse par défaut avec 0.0
-            caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="USD", statut="ACTIF")
+            # Si aucune caisse n'existe pour cette ONG → créer une caisse par défaut
+            caisse = Caisse(
+                solde_physique=0.0,
+                solde_theorique=0.0,
+                devise="USD",
+                statut="ACTIF",
+                organisation_id=organisation_id,   # ═══ 5.22 ═══
+            )
             self.db.add(caisse)
             self.db.commit()
             self.db.refresh(caisse)
@@ -43,21 +53,32 @@ class CaisseService:
             "message": message
         }
 
-    def lister_caisses(self) -> List[Caisse]:
-        return self.db.query(Caisse).all()
+    def lister_caisses(self, organisation_id: Optional[int] = None) -> List[Caisse]:
+        query = self.db.query(Caisse)
+        if organisation_id is not None:
+            query = query.filter(Caisse.organisation_id == organisation_id)
+        return query.all()
 
-    def obtenir_caisse(self, id_caisse: int) -> Optional[Caisse]:
-        return self.db.query(Caisse).filter(Caisse.id_caisse == id_caisse).first()
+    def obtenir_caisse(self, id_caisse: int, organisation_id: Optional[int] = None) -> Optional[Caisse]:
+        query = self.db.query(Caisse).filter(Caisse.id_caisse == id_caisse)
+        if organisation_id is not None:
+            query = query.filter(Caisse.organisation_id == organisation_id)
+        return query.first()
 
-    def creer_caisse(self, data: CaisseCreate) -> Caisse:
-        caisse = Caisse(**data.model_dump())
+    def creer_caisse(self, data: CaisseCreate, organisation_id: Optional[int] = None) -> Caisse:
+        payload = data.model_dump()
+        # ═══ 5.22 — Injection organisation_id ═══
+        if organisation_id is not None and "organisation_id" not in payload:
+            payload["organisation_id"] = organisation_id
+        # ═══ FIN 5.22 ═══
+        caisse = Caisse(**payload)
         self.db.add(caisse)
         self.db.commit()
         self.db.refresh(caisse)
         return caisse
 
-    def mettre_a_jour_caisse(self, id_caisse: int, data: CaisseUpdate) -> Optional[Caisse]:
-        caisse = self.obtenir_caisse(id_caisse)
+    def mettre_a_jour_caisse(self, id_caisse: int, data: CaisseUpdate, organisation_id: Optional[int] = None) -> Optional[Caisse]:
+        caisse = self.obtenir_caisse(id_caisse, organisation_id=organisation_id)
         if not caisse:
             return None
 
@@ -69,8 +90,8 @@ class CaisseService:
         self.db.refresh(caisse)
         return caisse
 
-    def effectuer_rapprochement(self, id_caisse: int, solde_physique_constate: float) -> Optional[Caisse]:
-        caisse = self.obtenir_caisse(id_caisse)
+    def effectuer_rapprochement(self, id_caisse: int, solde_physique_constate: float, organisation_id: Optional[int] = None) -> Optional[Caisse]:
+        caisse = self.obtenir_caisse(id_caisse, organisation_id=organisation_id)
         if not caisse:
             return None
 
@@ -79,6 +100,8 @@ class CaisseService:
         self.db.commit()
         self.db.refresh(caisse)
         return caisse
+    # ═══ FIN MODIF 5.22 ═══
+
     def ordonner_mouvement_multi_devise(
         self,
         type_mouvement: str,
@@ -96,7 +119,7 @@ class CaisseService:
         Ordonne un mouvement avec conversion automatique si la devise
         diffère de celle de la caisse.
         """
-        caisse = self.get_caisse_principale()
+        caisse = self.get_caisse_principale(organisation_id=organisation_id)
         if not caisse:
             raise ValueError("Aucune caisse active")
 
@@ -125,20 +148,23 @@ class CaisseService:
             motif=motif,
             beneficiaire=beneficiaire,
             mode_reglement=mode_reglement,
+            organisation_id=organisation_id,   # ═══ 5.22 ═══
         )
         if infos_conversion:
             result["conversion"] = infos_conversion
         return result
 
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
     def ordonner_mouvement_caisse(
         self,
-        type_mouvement: str,  # 'ENTREE' ou 'SORTIE'
+        type_mouvement: str,
         montant: float,
-        origine_type: str,    # 'BESOIN', 'MAINTENANCE', 'STOCK', 'ACQUISITION', 'CESSION', 'AMORTISSEMENT'
+        origine_type: str,
         origine_id: int,
         motif: str,
         beneficiaire: str = None,
-        mode_reglement: str = 'ESPECES'
+        mode_reglement: str = 'ESPECES',
+        organisation_id: Optional[int] = None,
     ) -> dict:
         """
         Fonction centrale qui orchestre un mouvement de caisse.
@@ -151,9 +177,15 @@ class CaisseService:
         from .mouvement_caisse_service import MouvementCaisseService
         from ..schemas.mouvement_caisse import MouvementCaisseCreate
         
-        caisse = self.get_caisse_principale()
+        caisse = self.get_caisse_principale(organisation_id=organisation_id)
         if not caisse:
-            caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="USD", statut="ACTIF")
+            caisse = Caisse(
+                solde_physique=0.0,
+                solde_theorique=0.0,
+                devise="USD",
+                statut="ACTIF",
+                organisation_id=organisation_id,   # ═══ 5.22 ═══
+            )
             self.db.add(caisse)
             self.db.commit()
             self.db.refresh(caisse)
@@ -197,3 +229,4 @@ class CaisseService:
             
         self.db.commit()
         return {"success": True, "mouvement": mvt}
+    # ═══ FIN MODIF 5.22 ═══

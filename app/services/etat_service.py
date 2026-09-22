@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from decimal import Decimal
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ..models.bien import Bien, EtatBien
 from ..models.panne import Panne
@@ -17,11 +17,15 @@ class EtatService:
     def __init__(self, db: Session):
         self.db = db
     
-    def get_fiche_stock(self) -> Dict:
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
+    def get_fiche_stock(self, organisation_id: Optional[int] = None) -> Dict:
         """
         Génère la fiche de stock.
         """
-        pieces = self.db.query(PieceRechange).all()
+        query = self.db.query(PieceRechange)
+        if organisation_id is not None:
+            query = query.filter(PieceRechange.organisation_id == organisation_id)
+        pieces = query.all()
         
         total_pieces = sum(p.stock_actuel for p in pieces) if pieces else 0
         valeur_totale = sum(p.stock_actuel * (p.prix_achat or 0) for p in pieces) if pieces else 0
@@ -54,11 +58,14 @@ class EtatService:
             "mouvements_recents": []
         }
     
-    def get_etat_parc(self) -> Dict:
+    def get_etat_parc(self, organisation_id: Optional[int] = None) -> Dict:
         """
         Génère l'état du parc (santé des biens).
         """
-        biens = self.db.query(Bien).all()
+        query = self.db.query(Bien)
+        if organisation_id is not None:
+            query = query.filter(Bien.organisation_id == organisation_id)
+        biens = query.all()
         
         repartition = {}
         for etat in EtatBien:
@@ -100,26 +107,35 @@ class EtatService:
             "biens_a_remplacer": biens_a_remplacer
         }
     
-    def get_etat_financier(self, exercice: int = None) -> Dict:
+    def get_etat_financier(self, exercice: int = None, organisation_id: Optional[int] = None) -> Dict:
         """
         Génère l'état financier.
         """
         if not exercice:
             exercice = datetime.utcnow().year
         
-        biens = self.db.query(Bien).all()
+        q_biens = self.db.query(Bien)
+        if organisation_id is not None:
+            q_biens = q_biens.filter(Bien.organisation_id == organisation_id)
+        biens = q_biens.all()
         valeur_patrimoine = sum(float(b.prix_acquisition or 0) for b in biens)
         cumul_amortissements = sum(float(b.cumul_amortissement or 0) for b in biens)
         vnc_totale = valeur_patrimoine - cumul_amortissements
         
-        maintenances = self.db.query(Maintenance).filter(
+        q_maint = self.db.query(Maintenance).filter(
             func.extract('year', Maintenance.date_debut) == exercice
-        ).all()
+        )
+        if organisation_id is not None:
+            q_maint = q_maint.filter(Maintenance.organisation_id == organisation_id)
+        maintenances = q_maint.all()
         depenses_maintenance = sum(float(m.cout or 0) for m in maintenances)
         
-        pannes = self.db.query(Panne).filter(
+        q_pannes = self.db.query(Panne).filter(
             func.extract('year', Panne.date_declaration) == exercice
-        ).all()
+        )
+        if organisation_id is not None:
+            q_pannes = q_pannes.filter(Panne.organisation_id == organisation_id)
+        pannes = q_pannes.all()
         cout_pannes = sum(float(p.cout_total_reparation or 0) for p in pannes)
         
         return {
@@ -131,16 +147,19 @@ class EtatService:
             "cout_pannes": round(cout_pannes, 2)
         }
     
-    def get_etat_sortie(self, exercice: int = None) -> Dict:
+    def get_etat_sortie(self, exercice: int = None, organisation_id: Optional[int] = None) -> Dict:
         """
         Génère l'état de sortie (dépenses par maintenance).
         """
         if not exercice:
             exercice = datetime.utcnow().year
         
-        maintenances = self.db.query(Maintenance).filter(
+        q_maint = self.db.query(Maintenance).filter(
             func.extract('year', Maintenance.date_debut) == exercice
-        ).all()
+        )
+        if organisation_id is not None:
+            q_maint = q_maint.filter(Maintenance.organisation_id == organisation_id)
+        maintenances = q_maint.all()
         
         par_type = {}
         for m in maintenances:
@@ -164,3 +183,4 @@ class EtatService:
             "par_type": {k: round(v, 2) for k, v in par_type.items()},
             "evolution_mensuelle": evolution
         }
+    # ═══ FIN MODIF 5.22 ═══

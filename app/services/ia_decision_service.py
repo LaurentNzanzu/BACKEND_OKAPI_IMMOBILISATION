@@ -1,3 +1,4 @@
+# backend/app/services/ia_decision_service.py
 import logging
 from ..models.role import Role
 from ..models.utilisateur import Utilisateur
@@ -27,6 +28,7 @@ PRIX_NEUF_FACTOR = getattr(settings, 'PRIX_NEUF_FACTOR', 1.20)
 MAINTENANCE_ESTIMEE_PCT = getattr(settings, 'MAINTENANCE_ESTIMEE_PCT', 0.10)
 SEUIL_REMPLACEMENT = getattr(settings, 'SEUIL_REMPLACEMENT', 0.85)
 
+
 class IADecisionService:
     def __init__(self, db: Session):
         self.db = db
@@ -43,10 +45,29 @@ class IADecisionService:
             designation = f"Bien #{bien.id_bien}"
         return designation
 
-    def calculer_health_score(self, bien_id: int, current_user_id: Optional[int] = None) -> Dict[str, Any]:
-        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+    # ═══ 5.22 — Helpers multi-tenant ═══
+    def _inject_organisation_si_colonne(self, instance, organisation_id: Optional[int]) -> None:
+        if organisation_id is None:
+            return
+        try:
+            if hasattr(type(instance), "organisation_id"):
+                setattr(instance, "organisation_id", organisation_id)
+        except Exception as e:
+            logger.warning(f"Impossible d'injecter organisation_id sur {type(instance).__name__}: {e}")
+    # ═══ FIN 5.22 ═══
+
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
+    def calculer_health_score(self, bien_id: int, current_user_id: Optional[int] = None, organisation_id: Optional[int] = None) -> Dict[str, Any]:
+        bien_query = self.db.query(Bien).filter(Bien.id_bien == bien_id)
+        if organisation_id is not None:
+            bien_query = bien_query.filter(Bien.organisation_id == organisation_id)
+        bien = bien_query.first()
         if not bien:
             raise ValueError("Bien non trouvé")
+
+        # ═══ 5.22 — Résolution org_id ═══
+        org_id = organisation_id if organisation_id is not None else getattr(bien, "organisation_id", None)
+        # ═══ FIN 5.22 ═══
 
         amort = self.db.query(Amortissement).filter(
             Amortissement.id_bien == bien_id
@@ -125,21 +146,23 @@ class IADecisionService:
             "date_analyse": datetime.utcnow().isoformat()
         }
 
-        # 🆕 NOTIFICATION: Health Score critique
+        # 🆕 NOTIFICATION: Health Score critique (filtrée par ONG)
         if current_user_id and score_final < 70:
             try:
-                # Envoyer aux DG et COMPTABLE
-                destinataires = self.db.query(Utilisateur).join(Role).filter(
+                dest_query = self.db.query(Utilisateur).join(Role).filter(
                     Role.nom.in_(["DG", "COMPTABLE"])
-                ).all()
-                
+                )
+                if org_id is not None:
+                    dest_query = dest_query.filter(Utilisateur.organisation_id == org_id)
+                destinataires = dest_query.all()
+
                 if score_final < 50:
                     titre = f"🚨 Alerte critique - {bien_id}"
                     contenu = f"Health Score: {score_final}/100. Remplacement immédiat recommandé."
                 else:
                     titre = f"⚠️ Bien critique - {bien_id}"
                     contenu = f"Health Score: {score_final}/100. Intervention dans les 6 mois."
-                
+
                 self.notification_service.envoyer_notification(
                     ids_destinataires=[d.id for d in destinataires],
                     type_notif=TypeNotificationEnum.DECISION_IA_HEALTH_SCORE,
@@ -150,7 +173,7 @@ class IADecisionService:
             except Exception as e:
                 logger.error(f"Erreur notification Health Score: {e}")
 
-
+        # Enregistrement dans DecisionIA
         if current_user_id:
             try:
                 decision_record = DecisionIA(
@@ -163,6 +186,9 @@ class IADecisionService:
                     source_modele="health_score_rule_based_v1",
                     date_creation=datetime.utcnow()
                 )
+                # ═══ 5.22 — Injection organisation_id si la colonne existe ═══
+                self._inject_organisation_si_colonne(decision_record, org_id)
+                # ═══ FIN 5.22 ═══
                 self.db.add(decision_record)
                 self.db.commit()
                 logger.info(f"Decision IA enregistrée pour bien ID: {bien_id}")
@@ -172,23 +198,25 @@ class IADecisionService:
 
         return response_data
 
-    def generer_recommandations_parc(self, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        tous_les_biens = self.db.query(Bien).all()
+    def generer_recommandations_parc(self, user_id: Optional[int] = None, organisation_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        query = self.db.query(Bien)
+        if organisation_id is not None:
+            query = query.filter(Bien.organisation_id == organisation_id)
+        tous_les_biens = query.all()
         resultats = []
 
         for bien in tous_les_biens:
             try:
-                health_data = self.calculer_health_score(bien.id_bien, user_id)
+                health_data = self.calculer_health_score(bien.id_bien, user_id, organisation_id=organisation_id)
                 resultats.append(health_data)
             except Exception as e:
                 logger.warning(f"Erreur calcul health score pour bien {bien.id_bien}: {e}")
                 continue
 
         resultats.sort(key=lambda x: x.get('score', 100))
-
         return resultats
 
-    def _get_moyenne_pannes_flotte(self, type_bien: str) -> float:
+    def _get_moyenne_pannes_flotte(self, type_bien: str, organisation_id: Optional[int] = None) -> float:
         one_year_ago = datetime.utcnow() - timedelta(days=365)
 
         subquery = self.db.query(
@@ -198,20 +226,28 @@ class IADecisionService:
             Panne.date_declaration >= one_year_ago
         ).group_by(Panne.id_bien).subquery()
 
-        avg_result = self.db.query(
+        q = self.db.query(
             sa.func.avg(subquery.c.nb_pannes)
         ).join(Bien, Bien.id_bien == subquery.c.id_bien).filter(
             Bien.type_bien == type_bien
-        ).scalar()
+        )
+        if organisation_id is not None:
+            q = q.filter(Bien.organisation_id == organisation_id)
+        avg_result = q.scalar()
 
         return float(avg_result) if avg_result else 0.0
 
-    def generer_decision_strategique(self, bien_id: int, id_utilisateur: int) -> Dict[str, Any]:
-        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+    def generer_decision_strategique(self, bien_id: int, id_utilisateur: int, organisation_id: Optional[int] = None) -> Dict[str, Any]:
+        bien_query = self.db.query(Bien).filter(Bien.id_bien == bien_id)
+        if organisation_id is not None:
+            bien_query = bien_query.filter(Bien.organisation_id == organisation_id)
+        bien = bien_query.first()
         if not bien:
             raise ValueError("Bien non trouvé")
 
-        metrics = self.calculer_health_score(bien_id, id_utilisateur)
+        org_id = organisation_id if organisation_id is not None else getattr(bien, "organisation_id", None)
+
+        metrics = self.calculer_health_score(bien_id, id_utilisateur, organisation_id=org_id)
 
         valeur_origine = metrics["valeur_origine"]
         duree_vie = metrics["duree_vie_totale"]
@@ -240,14 +276,13 @@ class IADecisionService:
             delai = "N/A"
 
         raisons = []
-
         if valeur_origine > 0:
             ratio_entretien = cout_maint_12m / valeur_origine
             if ratio_entretien > 0.15:
                 raisons.append(f"Ratio coût entretien / valeur = {int(ratio_entretien*100)}% (seuil max recommandé 15%)")
 
         if bien.type_bien:
-            moyenne_flotte = self._get_moyenne_pannes_flotte(bien.type_bien)
+            moyenne_flotte = self._get_moyenne_pannes_flotte(bien.type_bien, organisation_id=org_id)
             if moyenne_flotte > 0 and freq_pannes > moyenne_flotte:
                 raisons.append(f"Fréquence pannes: {freq_pannes}x (moyenne flotte: {self._round(moyenne_flotte)}x)")
 
@@ -299,6 +334,7 @@ class IADecisionService:
                 contenu=str(contenu_json),
                 source_modele="decision_strategique_rule_based_v1"
             )
+            self._inject_organisation_si_colonne(decision_ia, org_id)
             self.db.add(decision_ia)
             self.db.commit()
         except Exception as e:
@@ -318,12 +354,15 @@ class IADecisionService:
             "date_analyse": datetime.utcnow()
         }
 
-    def generer_alertes_achat_pieces(self, id_utilisateur: Optional[int] = None) -> List[Dict[str, Any]]:
-        pieces = self.db.query(PieceRechange).filter(PieceRechange.est_active == True).all()
-        
+    def generer_alertes_achat_pieces(self, id_utilisateur: Optional[int] = None, organisation_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        piece_query = self.db.query(PieceRechange).filter(PieceRechange.est_active == True)
+        if organisation_id is not None:
+            piece_query = piece_query.filter(PieceRechange.organisation_id == organisation_id)
+        pieces = piece_query.all()
+
         one_year_ago = datetime.utcnow() - timedelta(days=365)
-        
-        consommation = self.db.query(
+
+        conso_query = self.db.query(
             LigneBesoin.id_piece,
             sa.func.sum(LigneBesoin.quantite).label('total_sorties')
         ).join(
@@ -331,24 +370,24 @@ class IADecisionService:
         ).filter(
             Besoin.statut == StatutBesoin.APPROUVEE,
             Besoin.date_creation >= one_year_ago
-        ).group_by(
-            LigneBesoin.id_piece
-        ).all()
-        
+        )
+        if organisation_id is not None:
+            conso_query = conso_query.filter(Besoin.organisation_id == organisation_id)
+        consommation = conso_query.group_by(LigneBesoin.id_piece).all()
+
         consommation_dict = {row.id_piece: row.total_sorties for row in consommation}
-        
+
         alertes = []
         decisions_a_enregistrer = []
-        
+
         for piece in pieces:
             stock_actuel = piece.stock_actuel or 0
             stock_minimum = piece.stock_minimum or 5
             total_sorties = consommation_dict.get(piece.id_piece, 0)
             consommation_mensuelle = total_sorties / 12 if total_sorties > 0 else 0
-            
+
             stock_projete_60j = stock_actuel - (consommation_mensuelle * 2)
-            
-            # ✅ NOUVELLE CONDITION : Alerte basée sur stock actuel < stock minimum
+
             if stock_actuel < stock_minimum:
                 action = "ACHAT_URGENT"
                 quantite_recommandee = stock_minimum - stock_actuel
@@ -361,7 +400,7 @@ class IADecisionService:
             else:
                 action = "OK"
                 quantite_recommandee = 0
-            
+
             if action != "OK":
                 alerte = {
                     "piece_id": piece.id_piece,
@@ -376,19 +415,19 @@ class IADecisionService:
                     "date_analyse": datetime.utcnow().isoformat()
                 }
                 alertes.append(alerte)
-                
+
                 if id_utilisateur:
-                    decisions_a_enregistrer.append(
-                        DecisionIA(
-                            id_piece=piece.id_piece,
-                            id_utilisateur=id_utilisateur,
-                            type_decision=TypeDecisionEnum.ACHAT_RECOMMANDE,
-                            score=None,
-                            statut=action,
-                            contenu=str(alerte),
-                            source_modele="alerte_achat_rule_based_v1",
-                        )
+                    d = DecisionIA(
+                        id_piece=piece.id_piece,
+                        id_utilisateur=id_utilisateur,
+                        type_decision=TypeDecisionEnum.ACHAT_RECOMMANDE,
+                        score=None,
+                        statut=action,
+                        contenu=str(alerte),
+                        source_modele="alerte_achat_rule_based_v1",
                     )
+                    self._inject_organisation_si_colonne(d, organisation_id)
+                    decisions_a_enregistrer.append(d)
 
         if id_utilisateur and decisions_a_enregistrer:
             try:
@@ -397,10 +436,10 @@ class IADecisionService:
             except Exception as e:
                 logger.error(f"Erreur enregistrement alertes d'achat: {e}")
                 self.db.rollback()
-        
+
         alertes.sort(key=lambda x: 0 if x["action"] == "ACHAT_URGENT" else 1)
-        
         return alertes
+
     def _normaliser_question(self, question: str) -> str:
         texte = question.lower()
         texte = unicodedata.normalize('NFD', texte)
@@ -413,45 +452,31 @@ class IADecisionService:
 
     def _detecter_intention(self, question_norm: str) -> Optional[str]:
         intentions = {
-            "biens_critiques": {
-                "mots_cles": ["remplacer", "remplacement", "equipement", "critique", "urgent", "changer", "renouveler", "panne", "arret", "hs"]
-            },
-            "biens_a_surveiller": {
-                "mots_cles": ["surveiller", "attention", "prevenir", "anticiper", "fragile", "etat", "sante"]
-            },
-            "amortis_total": {
-                "mots_cles": ["amorti", "amortissement", "totalement", "plus de valeur", "vnc nulle", "fin de vie", "usure", "fin de course"]
-            },
-            "maintenance_couteuse": {
-                "mots_cles": ["maintenance", "entretien", "cout", "cher", "couteux", "depense", "reparation", "facture", "chere"]
-            },
-            "pannes_frequentes": {
-                "mots_cles": ["panne", "pannes", "frequent", "souvent", "tombe", "casse", "degradation", "defaillance", "probleme", "en panne"]
-            },
-            "alertes_pieces": {
-                "mots_cles": ["piece", "stock", "commander", "achat", "fournisseur", "rupture", "manque", "achat urgent", "commande"]
-            },
-            "sante_parc": {
-                "mots_cles": ["sante", "etat", "global", "vue d'ensemble", "synthese", "resume", "parc", "ensemble", "bilan"]
-            },
-            "valeur_parc": {
-                "mots_cles": ["valeur", "prix", "cout total", "investissement", "patrimoine", "totalite", "somme"]
-            }
+            "biens_critiques": {"mots_cles": ["remplacer", "remplacement", "equipement", "critique", "urgent", "changer", "renouveler", "panne", "arret", "hs"]},
+            "biens_a_surveiller": {"mots_cles": ["surveiller", "attention", "prevenir", "anticiper", "fragile", "etat", "sante"]},
+            "amortis_total": {"mots_cles": ["amorti", "amortissement", "totalement", "plus de valeur", "vnc nulle", "fin de vie", "usure", "fin de course"]},
+            "maintenance_couteuse": {"mots_cles": ["maintenance", "entretien", "cout", "cher", "couteux", "depense", "reparation", "facture", "chere"]},
+            "pannes_frequentes": {"mots_cles": ["panne", "pannes", "frequent", "souvent", "tombe", "casse", "degradation", "defaillance", "probleme", "en panne"]},
+            "alertes_pieces": {"mots_cles": ["piece", "stock", "commander", "achat", "fournisseur", "rupture", "manque", "achat urgent", "commande"]},
+            "sante_parc": {"mots_cles": ["sante", "etat", "global", "vue d'ensemble", "synthese", "resume", "parc", "ensemble", "bilan"]},
+            "valeur_parc": {"mots_cles": ["valeur", "prix", "cout total", "investissement", "patrimoine", "totalite", "somme"]}
         }
-
         for intent, data in intentions.items():
             for mot in data["mots_cles"]:
                 if mot in question_norm:
                     return intent
         return None
 
-    def _executer_requete(self, intention: str) -> tuple[str, List[Dict[str, Any]]]:
+    def _executer_requete(self, intention: str, organisation_id: Optional[int] = None) -> tuple[str, List[Dict[str, Any]]]:
         if intention == "biens_critiques":
-            biens = self.db.query(Bien).all()
+            query = self.db.query(Bien)
+            if organisation_id is not None:
+                query = query.filter(Bien.organisation_id == organisation_id)
+            biens = query.all()
             biens_critiques = []
             for b in biens:
                 try:
-                    score_data = self.calculer_health_score(b.id_bien)
+                    score_data = self.calculer_health_score(b.id_bien, organisation_id=organisation_id)
                     if score_data["score"] < 50:
                         biens_critiques.append({
                             "bien_id": b.id_bien,
@@ -465,11 +490,14 @@ class IADecisionService:
             return texte, biens_critiques
 
         elif intention == "biens_a_surveiller":
-            biens = self.db.query(Bien).all()
+            query = self.db.query(Bien)
+            if organisation_id is not None:
+                query = query.filter(Bien.organisation_id == organisation_id)
+            biens = query.all()
             biens_surveilles = []
             for b in biens:
                 try:
-                    score_data = self.calculer_health_score(b.id_bien)
+                    score_data = self.calculer_health_score(b.id_bien, organisation_id=organisation_id)
                     if 50 <= score_data["score"] < 70:
                         biens_surveilles.append({
                             "bien_id": b.id_bien,
@@ -483,9 +511,12 @@ class IADecisionService:
             return texte, biens_surveilles
 
         elif intention == "amortis_total":
-            biens = self.db.query(Bien, Amortissement).join(Amortissement, Bien.id_bien == Amortissement.id_bien).filter(
+            q = self.db.query(Bien, Amortissement).join(Amortissement, Bien.id_bien == Amortissement.id_bien).filter(
                 (Amortissement.valeur_nette_comptable / Amortissement.valeur_origine) < 0.10
-            ).all()
+            )
+            if organisation_id is not None:
+                q = q.filter(Bien.organisation_id == organisation_id)
+            biens = q.all()
             biens_amortis = []
             for b, a in biens:
                 biens_amortis.append({
@@ -506,13 +537,16 @@ class IADecisionService:
                 Maintenance.date_fin_reelle >= one_year_ago
             ).group_by(Maintenance.id_bien).subquery()
 
-            biens = self.db.query(Bien, Amortissement, maints.c.cout_total).join(
+            q = self.db.query(Bien, Amortissement, maints.c.cout_total).join(
                 Amortissement, Bien.id_bien == Amortissement.id_bien
             ).join(
                 maints, Bien.id_bien == maints.c.id_bien
             ).filter(
                 maints.c.cout_total > (Amortissement.valeur_origine * 0.20)
-            ).all()
+            )
+            if organisation_id is not None:
+                q = q.filter(Bien.organisation_id == organisation_id)
+            biens = q.all()
 
             biens_chers = []
             for b, a, cout in biens:
@@ -534,9 +568,12 @@ class IADecisionService:
                 Panne.date_declaration >= one_year_ago
             ).group_by(Panne.id_bien).having(sa.func.count(Panne.id_panne) > 3).subquery()
 
-            biens = self.db.query(Bien, pannes.c.nb_pannes).join(
+            q = self.db.query(Bien, pannes.c.nb_pannes).join(
                 pannes, Bien.id_bien == pannes.c.id_bien
-            ).all()
+            )
+            if organisation_id is not None:
+                q = q.filter(Bien.organisation_id == organisation_id)
+            biens = q.all()
 
             biens_freq = []
             for b, nb in biens:
@@ -549,7 +586,7 @@ class IADecisionService:
             return texte, biens_freq
 
         elif intention == "alertes_pieces":
-            alertes = self.generer_alertes_achat_pieces()
+            alertes = self.generer_alertes_achat_pieces(organisation_id=organisation_id)
             alertes_filtrees = [a for a in alertes if a["action"] in ["ACHAT_URGENT", "SURVEILLER"]]
             if alertes_filtrees:
                 pieces_liste = ", ".join([f"{a['designation']}" for a in alertes_filtrees])
@@ -559,7 +596,10 @@ class IADecisionService:
             return texte, alertes_filtrees
 
         elif intention == "sante_parc":
-            biens = self.db.query(Bien).all()
+            query = self.db.query(Bien)
+            if organisation_id is not None:
+                query = query.filter(Bien.organisation_id == organisation_id)
+            biens = query.all()
             total = len(biens)
             excellents = 0
             surveilles = 0
@@ -567,7 +607,7 @@ class IADecisionService:
             urgents = 0
             for b in biens:
                 try:
-                    score_data = self.calculer_health_score(b.id_bien)
+                    score_data = self.calculer_health_score(b.id_bien, organisation_id=organisation_id)
                     if score_data["score"] >= 90:
                         excellents += 1
                     elif 70 <= score_data["score"] < 90:
@@ -582,7 +622,10 @@ class IADecisionService:
             return texte, [{"total": total, "excellents": excellents, "surveilles": surveilles, "critiques": critiques, "urgents": urgents}]
 
         elif intention == "valeur_parc":
-            total_value = self.db.query(sa.func.sum(Bien.prix_acquisition)).scalar()
+            q = self.db.query(sa.func.sum(Bien.prix_acquisition))
+            if organisation_id is not None:
+                q = q.filter(Bien.organisation_id == organisation_id)
+            total_value = q.scalar()
             if total_value:
                 texte = f"La valeur totale du parc est de {total_value:,.0f} USD."
                 return texte, [{"valeur_totale": total_value}]
@@ -620,7 +663,7 @@ class IADecisionService:
                     noms.append(f"{nom}")
             return f"{len(biens)} biens {suffixe} : " + ", ".join(noms)
 
-    def assister_conversationnel(self, question: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+    def assister_conversationnel(self, question: str, user_id: Optional[int] = None, organisation_id: Optional[int] = None) -> Dict[str, Any]:
         question_norm = self._normaliser_question(question)
         intention = self._detecter_intention(question_norm)
 
@@ -637,5 +680,6 @@ class IADecisionService:
             )
             return {"reponse": texte_aide, "donnees": []}
 
-        texte_reponse, donnees_brutes = self._executer_requete(intention)
+        texte_reponse, donnees_brutes = self._executer_requete(intention, organisation_id=organisation_id)
         return {"reponse": texte_reponse, "donnees": donnees_brutes}
+    # ═══ FIN MODIF 5.22 ═══

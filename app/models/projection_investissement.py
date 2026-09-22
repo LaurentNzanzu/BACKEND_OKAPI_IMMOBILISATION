@@ -18,6 +18,17 @@ class ProjectionInvestissement(Base):
     __tablename__ = "projections_investissement"
     
     id = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     bien_id = Column(Integer, ForeignKey("biens.id_bien", ondelete="CASCADE"), nullable=False, index=True)
     
     # Année de projection (N+1, N+2, ... N+5)
@@ -38,9 +49,9 @@ class ProjectionInvestissement(Base):
     # Analyse
     score_fiabilite_projete = Column(Float, nullable=True)
     vnc_projetee = Column(Float, nullable=True)
-    taux_obsolescence = Column(Float, nullable=True)  # Taux d'obsolescence estimé
+    taux_obsolescence = Column(Float, nullable=True)
     
-    # Statut - ✅ Correction ici
+    # Statut
     statut = Column(ENUM(StatutProjection, name='statut_projection'), default=StatutProjection.ESTIMEE)
     
     # Métadonnées
@@ -52,6 +63,7 @@ class ProjectionInvestissement(Base):
     date_validation = Column(DateTime, nullable=True)
     
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     bien = relationship("Bien", back_populates="projections")
     valide_par = relationship("Utilisateur", foreign_keys=[valide_par_id])
     

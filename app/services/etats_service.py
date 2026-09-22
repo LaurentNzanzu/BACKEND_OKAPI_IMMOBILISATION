@@ -69,11 +69,14 @@ class EtatsService:
                 return loc.nom_localisation or ''
         return ''
 
-    def get_fiche_bien_data(self, bien_id: int) -> Optional[Dict[str, Any]]:
+    def get_fiche_bien_data(self, bien_id: int, organisation_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Récupère toutes les données nécessaires pour la fiche d'un bien"""
-        bien = self.db.query(Bien).options(
+        query = self.db.query(Bien).options(
             joinedload(Bien.localisation_ref)
-        ).filter(Bien.id_bien == bien_id).first()
+        ).filter(Bien.id_bien == bien_id)
+        if organisation_id is not None:
+            query = query.filter(Bien.organisation_id == organisation_id)
+        bien = query.first()
         
         if not bien:
             return None
@@ -184,15 +187,18 @@ class EtatsService:
         
         return {k: v for k, v in specifics.items() if v is not None}
 
-    def get_fiche_amortissement_data(self, bien_id: int) -> Optional[Dict[str, Any]]:
+    def get_fiche_amortissement_data(self, bien_id: int, organisation_id: Optional[int] = None) -> Optional[Dict[str, Any]]:        
         """Récupère toutes les données pour la fiche d'amortissement d'un bien"""
         from ..models.amortissement import Amortissement
         from ..models.regles_amortissement import RegleAmortissement
         from ..models.ecriture_comptable import EcritureComptable
         
-        bien = self.db.query(Bien).options(
+        query = self.db.query(Bien).options(
             joinedload(Bien.localisation_ref)
-        ).filter(Bien.id_bien == bien_id).first()
+        ).filter(Bien.id_bien == bien_id)
+        if organisation_id is not None:
+            query = query.filter(Bien.organisation_id == organisation_id)
+        bien = query.first()
         
         if not bien:
             return None
@@ -388,9 +394,9 @@ class EtatsService:
         value = statut.value if hasattr(statut, "value") else str(statut)
         return labels.get(value, value)
 
-    def get_etat_besoin_data(self, besoin_id: int) -> Optional[Dict[str, Any]]:
+    def get_etat_besoin_data(self, besoin_id: int, organisation_id: Optional[int] = None) -> Optional[Dict[str, Any]]:       
         """Données pour l'état de sortie imprimable d'une demande de besoin."""
-        besoin = (
+        query = (
             self.db.query(Besoin)
             .options(
                 joinedload(Besoin.lignes).joinedload(LigneBesoin.piece),
@@ -399,10 +405,13 @@ class EtatsService:
                 joinedload(Besoin.panne).joinedload(Panne.technicien),
             )
             .filter(Besoin.id_besoin == besoin_id)
-            .first()
         )
+        if organisation_id is not None:
+            query = query.filter(Besoin.organisation_id == organisation_id)
+        besoin = query.first()
         if not besoin:
             return None
+
 
         panne = besoin.panne
         bien = panne.bien if panne else None

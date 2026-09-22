@@ -87,18 +87,18 @@ class RapportService:
             return "remplacement_cyclique"
         return "estimation"
 
-    def get_rapport_amortissements(self, annee: int) -> dict:
+    def get_rapport_amortissements(self, annee: int, organisation_id: Optional[int] = None) -> dict:
         """Retourne le rapport détaillé des amortissements pour une année."""
-        return self._get_tableau_amortissements(annee)
+        return self._get_tableau_amortissements(annee, organisation_id=organisation_id)
 
-    def get_rapport_financier(self, date_debut: date, date_fin: date) -> dict:
+    def get_rapport_financier(self, date_debut: date, date_fin: date, organisation_id: Optional[int] = None) -> dict:
         """Retourne le rapport financier pour une période."""
-        return self.get_rapport_financier_ohada(date_debut, date_fin, date_fin.year)
+        return self.get_rapport_financier_ohada(date_debut, date_fin, date_fin.year, organisation_id=organisation_id)
 
-    def get_rapport_technique(self, date_debut: date, date_fin: date) -> dict:
+    def get_rapport_technique(self, date_debut: date, date_fin: date, organisation_id: Optional[int] = None) -> dict:
         """Retourne le rapport technique et de fiabilité des équipements."""
-        fiabilite = self.get_rapport_fiabilite()
-        maintenances = self.get_rapport_maintenances_preventives()
+        fiabilite = self.get_rapport_fiabilite(organisation_id=organisation_id)
+        maintenances = self.get_rapport_maintenances_preventives(organisation_id=organisation_id)
         return {
             "periode": {"date_debut": str(date_debut), "date_fin": str(date_fin)},
             "fiabilite": fiabilite,
@@ -113,7 +113,8 @@ class RapportService:
         self,
         date_debut: date,
         date_fin: date,
-        exercice: Optional[int] = None
+        exercice: Optional[int] = None,
+        organisation_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Génère le rapport financier complet conforme aux normes OHADA/SYSCOHADA.
@@ -124,23 +125,12 @@ class RapportService:
         if not exercice:
             exercice = date_fin.year
 
-        # A. SYNTHÈSE DU PATRIMOINE IMMOBILIER
-        patrimoine = self._get_patrimoine_synthese()
-
-        # B. AMORTISSEMENTS ET DOTATIONS (Note 3C SYSCOHADA)
-        amortissements = self._get_amortissements_ohada(exercice)
-
-        # C. CHARGES LIÉES AU CYCLE DE VIE (Pannes, Maintenances)
-        charges_cycle_vie = self._get_charges_cycle_vie(date_debut_dt, date_fin_dt)
-
-        # D. CESSIONS ET MOUVEMENTS (Note 3D SYSCOHADA)
-        cessions_mouvements = self._get_cessions_mouvements(date_debut_dt, date_fin_dt)
-
-        # E. TABLEAU DE SUIVI DES AMORTISSEMENTS (Note 3C)
-        tableau_amortissements = self._get_tableau_amortissements(exercice)
-
-        # F. NOTES ANNEXES SYSCOHADA
-        notes_annexes = self._get_notes_annexes_ohada(exercice)
+        patrimoine = self._get_patrimoine_synthese(organisation_id=organisation_id)
+        amortissements = self._get_amortissements_ohada(exercice, organisation_id=organisation_id)
+        charges_cycle_vie = self._get_charges_cycle_vie(date_debut_dt, date_fin_dt, organisation_id=organisation_id)
+        cessions_mouvements = self._get_cessions_mouvements(date_debut_dt, date_fin_dt, organisation_id=organisation_id)
+        tableau_amortissements = self._get_tableau_amortissements(exercice, organisation_id=organisation_id)
+        notes_annexes = self._get_notes_annexes_ohada(exercice, organisation_id=organisation_id)
 
         return {
             "periode": {
@@ -156,26 +146,34 @@ class RapportService:
             "notes_annexes": notes_annexes,
             "date_generation": datetime.now().strftime("%d/%m/%Y %H:%M")
         }
-
     # ============================================================
     # A. SYNTHÈSE DU PATRIMOINE IMMOBILIER
     # ============================================================
 
-    def _get_patrimoine_synthese(self) -> Dict[str, Any]:
+    def _get_patrimoine_synthese(self, organisation_id: Optional[int] = None) -> Dict[str, Any]:
         """Synthèse du patrimoine immobilier"""
         
         # Valeur totale d'acquisition
-        valeur_totale = self.db.query(func.sum(Bien.prix_acquisition)).scalar() or 0
+        q_valeur = self.db.query(func.sum(Bien.prix_acquisition))
+        if organisation_id is not None:
+            q_valeur = q_valeur.filter(Bien.organisation_id == organisation_id)
+        valeur_totale = q_valeur.scalar() or 0
         
         # Nombre total de biens
-        total_biens = self.db.query(func.count(Bien.id_bien)).scalar() or 0
+        q_count = self.db.query(func.count(Bien.id_bien))
+        if organisation_id is not None:
+            q_count = q_count.filter(Bien.organisation_id == organisation_id)
+        total_biens = q_count.scalar() or 0
         
         # Répartition par type de bien
-        repartition_type = self.db.query(
+        q_type = self.db.query(
             Bien.type_bien,
             func.count(Bien.id_bien).label('count'),
             func.sum(Bien.prix_acquisition).label('valeur')
-        ).group_by(Bien.type_bien).all()
+        )
+        if organisation_id is not None:
+            q_type = q_type.filter(Bien.organisation_id == organisation_id)
+        repartition_type = q_type.group_by(Bien.type_bien).all()
         
         repartition_type_dict = {
             t.type_bien or "autre": {
@@ -186,10 +184,13 @@ class RapportService:
         }
         
         # Répartition par état
-        repartition_etat = self.db.query(
+        q_etat = self.db.query(
             Bien.etat,
             func.count(Bien.id_bien).label('count')
-        ).group_by(Bien.etat).all()
+        )
+        if organisation_id is not None:
+            q_etat = q_etat.filter(Bien.organisation_id == organisation_id)
+        repartition_etat = q_etat.group_by(Bien.etat).all()
         
         repartition_etat_dict = {
             e.etat.value if e.etat else "INCONNU": e.count
@@ -197,10 +198,13 @@ class RapportService:
         }
         
         # Répartition par statut comptable
-        repartition_statut = self.db.query(
+        q_statut = self.db.query(
             Bien.statut_comptable,
             func.count(Bien.id_bien).label('count')
-        ).group_by(Bien.statut_comptable).all()
+        )
+        if organisation_id is not None:
+            q_statut = q_statut.filter(Bien.organisation_id == organisation_id)
+        repartition_statut = q_statut.group_by(Bien.statut_comptable).all()
         
         repartition_statut_dict = {
             s.statut_comptable or "INCONNU": s.count
@@ -208,11 +212,14 @@ class RapportService:
         }
         
         # Biens par fournisseur (top 10)
-        top_fournisseurs = self.db.query(
+        q_fournisseur = self.db.query(
             Fournisseur.nom,
             func.count(Bien.id_bien).label('count'),
             func.sum(Bien.prix_acquisition).label('valeur')
-        ).join(Bien, Bien.fournisseur_id == Fournisseur.id).group_by(
+        ).join(Bien, Bien.fournisseur_id == Fournisseur.id)
+        if organisation_id is not None:
+            q_fournisseur = q_fournisseur.filter(Bien.organisation_id == organisation_id)
+        top_fournisseurs = q_fournisseur.group_by(
             Fournisseur.id, Fournisseur.nom
         ).order_by(func.sum(Bien.prix_acquisition).desc()).limit(10).all()
         
@@ -238,36 +245,42 @@ class RapportService:
     # B. AMORTISSEMENTS ET DOTATIONS (Note 3C SYSCOHADA)
     # ============================================================
 
-    def _get_amortissements_ohada(self, exercice: int) -> Dict[str, Any]:
+    def _get_amortissements_ohada(self, exercice: int, organisation_id: Optional[int] = None) -> Dict[str, Any]:
         """Amortissements et dotations conformes à la Note 3C"""
         
-        # Dotations de l'exercice (compte 68)
-        dotations = self.db.query(
+        # Dotations de l'exercice
+        q_dot = self.db.query(
             func.sum(Amortissement.annuite_comptable)
         ).filter(
             Amortissement.exercice == exercice,
             Amortissement.statut == "EN_COURS"
-        ).scalar() or 0
+        )
+        if organisation_id is not None:
+            q_dot = q_dot.filter(Amortissement.organisation_id == organisation_id)
+        dotations = q_dot.scalar() or 0
         
         # Cumul total des amortissements
-        cumul_total = self.db.query(
-            func.sum(Bien.cumul_amortissement)
-        ).scalar() or 0
+        q_cumul = self.db.query(func.sum(Bien.cumul_amortissement))
+        if organisation_id is not None:
+            q_cumul = q_cumul.filter(Bien.organisation_id == organisation_id)
+        cumul_total = q_cumul.scalar() or 0
         
-        # Valeur nette comptable totale (VNC)
-        vnc_total = self.db.query(
-            func.sum(Bien.prix_acquisition - Bien.cumul_amortissement)
-        ).scalar() or 0
+        # Valeur nette comptable totale
+        q_vnc = self.db.query(func.sum(Bien.prix_acquisition - Bien.cumul_amortissement))
+        if organisation_id is not None:
+            q_vnc = q_vnc.filter(Bien.organisation_id == organisation_id)
+        vnc_total = q_vnc.scalar() or 0
         
-        # Détail par méthode d'amortissement
-        detail_methode = self.db.query(
+        # Détail par méthode
+        q_methode = self.db.query(
             Amortissement.methode,
             func.count(Amortissement.id_amortissement).label('count'),
             func.sum(Amortissement.annuite_comptable).label('dotation'),
             func.sum(Amortissement.cumul_comptable).label('cumul')
-        ).filter(
-            Amortissement.exercice == exercice
-        ).group_by(Amortissement.methode).all()
+        ).filter(Amortissement.exercice == exercice)
+        if organisation_id is not None:
+            q_methode = q_methode.filter(Amortissement.organisation_id == organisation_id)
+        detail_methode = q_methode.group_by(Amortissement.methode).all()
         
         detail_methode_dict = {
             m.methode.value if m.methode else "INCONNU": {
@@ -278,8 +291,8 @@ class RapportService:
             for m in detail_methode
         }
         
-        # Détail par catégorie de bien
-        detail_categorie = self.db.query(
+        # Détail par catégorie
+        q_cat = self.db.query(
             Bien.type_bien,
             func.count(Amortissement.id_amortissement).label('count'),
             func.sum(Amortissement.annuite_comptable).label('dotation'),
@@ -287,7 +300,10 @@ class RapportService:
             func.sum(Bien.prix_acquisition).label('valeur_brute')
         ).join(Bien, Amortissement.id_bien == Bien.id_bien).filter(
             Amortissement.exercice == exercice
-        ).group_by(Bien.type_bien).all()
+        )
+        if organisation_id is not None:
+            q_cat = q_cat.filter(Bien.organisation_id == organisation_id)
+        detail_categorie = q_cat.group_by(Bien.type_bien).all()
         
         detail_categorie_dict = {
             c.type_bien or "autre": {
@@ -313,28 +329,30 @@ class RapportService:
     # C. CHARGES LIÉES AU CYCLE DE VIE
     # ============================================================
 
-    def _get_charges_cycle_vie(self, date_debut: datetime, date_fin: datetime) -> Dict[str, Any]:
+    def _get_charges_cycle_vie(self, date_debut: datetime, date_fin: datetime, organisation_id: Optional[int] = None) -> Dict[str, Any]:
         """Charges liées aux pannes et maintenances"""
         
         # Coût total des pannes terminées
-        cout_pannes = self.db.query(
-            func.sum(Panne.cout_total_reparation)
-        ).filter(
+        q_pannes = self.db.query(func.sum(Panne.cout_total_reparation)).filter(
             Panne.date_declaration >= date_debut,
             Panne.date_declaration <= date_fin,
             Panne.statut == StatutPanne.TERMINEE
-        ).scalar() or 0
+        )
+        if organisation_id is not None:
+            q_pannes = q_pannes.filter(Panne.organisation_id == organisation_id)
+        cout_pannes = q_pannes.scalar() or 0
         
         # Nombre de pannes
-        nb_pannes = self.db.query(
-            func.count(Panne.id_panne)
-        ).filter(
+        q_nb = self.db.query(func.count(Panne.id_panne)).filter(
             Panne.date_declaration >= date_debut,
             Panne.date_declaration <= date_fin
-        ).scalar() or 0
+        )
+        if organisation_id is not None:
+            q_nb = q_nb.filter(Panne.organisation_id == organisation_id)
+        nb_pannes = q_nb.scalar() or 0
         
         # Pannes par type
-        pannes_par_type = self.db.query(
+        q_type = self.db.query(
             Panne.type_panne,
             func.count(Panne.id_panne).label('count'),
             func.sum(Panne.cout_total_reparation).label('cout')
@@ -342,7 +360,10 @@ class RapportService:
             Panne.date_declaration >= date_debut,
             Panne.date_declaration <= date_fin,
             Panne.statut == StatutPanne.TERMINEE
-        ).group_by(Panne.type_panne).all()
+        )
+        if organisation_id is not None:
+            q_type = q_type.filter(Panne.organisation_id == organisation_id)
+        pannes_par_type = q_type.group_by(Panne.type_panne).all()
         
         pannes_par_type_dict = {
             p.type_panne.value if p.type_panne else "AUTRE": {
@@ -352,25 +373,27 @@ class RapportService:
             for p in pannes_par_type
         }
         
-        # Coût total des maintenances terminées
-        cout_maintenances = self.db.query(
-            func.sum(Maintenance.cout)
-        ).filter(
+        # Coût total des maintenances
+        q_maint = self.db.query(func.sum(Maintenance.cout)).filter(
             Maintenance.date_debut_reelle >= date_debut,
             Maintenance.date_debut_reelle <= date_fin,
             Maintenance.statut == StatutMaintenance.TERMINEE
-        ).scalar() or 0
+        )
+        if organisation_id is not None:
+            q_maint = q_maint.filter(Maintenance.organisation_id == organisation_id)
+        cout_maintenances = q_maint.scalar() or 0
         
         # Nombre de maintenances
-        nb_maintenances = self.db.query(
-            func.count(Maintenance.id_maintenance)
-        ).filter(
+        q_nb_m = self.db.query(func.count(Maintenance.id_maintenance)).filter(
             Maintenance.date_debut_reelle >= date_debut,
             Maintenance.date_debut_reelle <= date_fin
-        ).scalar() or 0
+        )
+        if organisation_id is not None:
+            q_nb_m = q_nb_m.filter(Maintenance.organisation_id == organisation_id)
+        nb_maintenances = q_nb_m.scalar() or 0
         
         # Maintenances par type
-        maintenances_par_type = self.db.query(
+        q_m_type = self.db.query(
             Maintenance.type_maintenance,
             func.count(Maintenance.id_maintenance).label('count'),
             func.sum(Maintenance.cout).label('cout')
@@ -378,7 +401,10 @@ class RapportService:
             Maintenance.date_debut_reelle >= date_debut,
             Maintenance.date_debut_reelle <= date_fin,
             Maintenance.statut == StatutMaintenance.TERMINEE
-        ).group_by(Maintenance.type_maintenance).all()
+        )
+        if organisation_id is not None:
+            q_m_type = q_m_type.filter(Maintenance.organisation_id == organisation_id)
+        maintenances_par_type = q_m_type.group_by(Maintenance.type_maintenance).all()
         
         maintenances_par_type_dict = {
             m.type_maintenance.value if m.type_maintenance else "AUTRE": {
@@ -388,8 +414,8 @@ class RapportService:
             for m in maintenances_par_type
         }
         
-        # Top 5 biens les plus coûteux en maintenance + pannes
-        top_biens_cout = self.db.query(
+        # Top 5 biens les plus coûteux
+        q_top = self.db.query(
             Bien.id_bien,
             Bien.qr_code,
             Bien.type_bien,
@@ -405,7 +431,10 @@ class RapportService:
                 Panne.date_declaration.between(date_debut, date_fin),
                 Maintenance.date_debut_reelle.between(date_debut, date_fin)
             )
-        ).group_by(Bien.id_bien, Bien.qr_code, Bien.type_bien, Localisation.nom_localisation).order_by(
+        )
+        if organisation_id is not None:
+            q_top = q_top.filter(Bien.organisation_id == organisation_id)
+        top_biens_cout = q_top.group_by(Bien.id_bien, Bien.qr_code, Bien.type_bien, Localisation.nom_localisation).order_by(
             (func.coalesce(func.sum(Panne.cout_total_reparation), 0) + 
              func.coalesce(func.sum(Maintenance.cout), 0)).desc()
         ).limit(5).all()
@@ -441,36 +470,28 @@ class RapportService:
     # D. CESSIONS ET MOUVEMENTS (Note 3D SYSCOHADA)
     # ============================================================
 
-    def _get_cessions_mouvements(self, date_debut: datetime, date_fin: datetime) -> Dict[str, Any]:
+    def _get_cessions_mouvements(self, date_debut: datetime, date_fin: datetime, organisation_id: Optional[int] = None) -> Dict[str, Any]:
         """Cessions et mouvements conformes à la Note 3D"""
         
-        # Cessions enregistrées
-        cessions = self.db.query(
-            Cession.id_cession,
-            Cession.id_bien,
-            Cession.date_cession,
-            Cession.prix_vente,
-            Cession.acheteur,
-            Cession.type_cession,
-            Cession.resultat,
-            Bien.qr_code,
-            Bien.type_bien,
+        q_cessions = self.db.query(
+            Cession.id_cession, Cession.id_bien, Cession.date_cession,
+            Cession.prix_vente, Cession.acheteur, Cession.type_cession, Cession.resultat,
+            Bien.qr_code, Bien.type_bien,
             Localisation.nom_localisation.label("localisation"),
-            Bien.prix_acquisition,
-            Bien.cumul_amortissement
+            Bien.prix_acquisition, Bien.cumul_amortissement
         ).join(Bien, Cession.id_bien == Bien.id_bien).outerjoin(
             Localisation, Bien.id_localisation == Localisation.id_localisation
         ).filter(
             Cession.date_cession >= date_debut.date(),
             Cession.date_cession <= date_fin.date()
-        ).all()
+        )
+        if organisation_id is not None:
+            q_cessions = q_cessions.filter(Cession.organisation_id == organisation_id)
+        cessions = q_cessions.all()
         
         total_cessions = len(cessions)
         total_prix_vente = sum(float(c.prix_vente or 0) for c in cessions)
-        total_vnc = sum(
-            float(c.prix_acquisition or 0) - float(c.cumul_amortissement or 0)
-            for c in cessions
-        )
+        total_vnc = sum(float(c.prix_acquisition or 0) - float(c.cumul_amortissement or 0) for c in cessions)
         total_resultat = sum(float(c.resultat or 0) for c in cessions)
         
         details_cessions = []
@@ -481,38 +502,26 @@ class RapportService:
             vnc = float(c.prix_acquisition or 0) - float(c.cumul_amortissement or 0)
             prix_vente = float(c.prix_vente or 0)
             resultat = prix_vente - vnc
-            
             if resultat > 0:
                 plus_values += resultat
             else:
                 moins_values += abs(resultat)
-            
             details_cessions.append({
-                "id_cession": c.id_cession,
-                "id_bien": c.id_bien,
-                "qr_code": c.qr_code,
+                "id_cession": c.id_cession, "id_bien": c.id_bien, "qr_code": c.qr_code,
                 "designation": f"{c.type_bien or ''} - {c.localisation or ''}".strip() or f"Bien #{c.id_bien}",
                 "date_cession": c.date_cession.strftime("%d/%m/%Y") if c.date_cession else "",
                 "valeur_acquisition": self._round_value(c.prix_acquisition),
                 "cumul_amortissement": self._round_value(c.cumul_amortissement),
-                "vnc": self._round_value(vnc),
-                "prix_vente": self._round_value(prix_vente),
-                "type_cession": c.type_cession or "courante",
-                "acheteur": c.acheteur or "",
+                "vnc": self._round_value(vnc), "prix_vente": self._round_value(prix_vente),
+                "type_cession": c.type_cession or "courante", "acheteur": c.acheteur or "",
                 "resultat": self._round_value(resultat)
             })
         
-        # Mouvements de transfert
-        mouvements = self.db.query(
-            MouvementBien.id_mouvement,
-            MouvementBien.id_bien,
-            MouvementBien.type_mouvement,
-            MouvementBien.date_mouvement,
-            MouvementBien.localisation_source,
-            MouvementBien.localisation_destination,
-            MouvementBien.raison,
-            Bien.qr_code,
-            Bien.type_bien,
+        q_mvt = self.db.query(
+            MouvementBien.id_mouvement, MouvementBien.id_bien, MouvementBien.type_mouvement,
+            MouvementBien.date_mouvement, MouvementBien.localisation_source,
+            MouvementBien.localisation_destination, MouvementBien.raison,
+            Bien.qr_code, Bien.type_bien,
             Localisation.nom_localisation.label("localisation")
         ).join(Bien, MouvementBien.id_bien == Bien.id_bien).outerjoin(
             Localisation, Bien.id_localisation == Localisation.id_localisation
@@ -520,44 +529,41 @@ class RapportService:
             MouvementBien.date_mouvement >= date_debut,
             MouvementBien.date_mouvement <= date_fin,
             MouvementBien.type_mouvement == TypeMouvementEnum.TRANSFERT
-        ).all()
+        )
+        if organisation_id is not None:
+            q_mvt = q_mvt.filter(Bien.organisation_id == organisation_id)
+        mouvements = q_mvt.all()
         
         details_mouvements = [
             {
-                "id_mouvement": m.id_mouvement,
-                "id_bien": m.id_bien,
-                "qr_code": m.qr_code,
+                "id_mouvement": m.id_mouvement, "id_bien": m.id_bien, "qr_code": m.qr_code,
                 "designation": f"{m.type_bien or ''} - {m.localisation or ''}".strip() or f"Bien #{m.id_bien}",
                 "date_mouvement": m.date_mouvement.strftime("%d/%m/%Y") if m.date_mouvement else "",
                 "type": m.type_mouvement.value if m.type_mouvement else "",
-                "source": m.localisation_source or "",
-                "destination": m.localisation_destination or "",
+                "source": m.localisation_source or "", "destination": m.localisation_destination or "",
                 "raison": m.raison or ""
             }
             for m in mouvements
         ]
         
-        # Biens mis au rebut (statut comptable)
-        rebuts = self.db.query(
-            Bien.id_bien,
-            Bien.qr_code,
-            Bien.type_bien,
+        q_rebuts = self.db.query(
+            Bien.id_bien, Bien.qr_code, Bien.type_bien,
             Localisation.nom_localisation.label("localisation"),
-            Bien.prix_acquisition,
-            Bien.cumul_amortissement,
-            Bien.date_sortie
+            Bien.prix_acquisition, Bien.cumul_amortissement, Bien.date_sortie
         ).outerjoin(
             Localisation, Bien.id_localisation == Localisation.id_localisation
         ).filter(
             Bien.statut_comptable == "MIS_AU_REBUT",
             Bien.date_sortie >= date_debut,
             Bien.date_sortie <= date_fin
-        ).all()
+        )
+        if organisation_id is not None:
+            q_rebuts = q_rebuts.filter(Bien.organisation_id == organisation_id)
+        rebuts = q_rebuts.all()
         
         details_rebuts = [
             {
-                "id_bien": r.id_bien,
-                "qr_code": r.qr_code,
+                "id_bien": r.id_bien, "qr_code": r.qr_code,
                 "designation": f"{r.type_bien or ''} - {r.localisation or ''}".strip() or f"Bien #{r.id_bien}",
                 "valeur_acquisition": self._round_value(r.prix_acquisition),
                 "cumul_amortissement": self._round_value(r.cumul_amortissement),
@@ -580,28 +586,20 @@ class RapportService:
             "total_rebuts": len(rebuts),
             "details_rebuts": details_rebuts
         }
-
     # ============================================================
     # E. TABLEAU DE SUIVI DES AMORTISSEMENTS (Note 3C SYSCOHADA)
     # ============================================================
 
-    def _get_tableau_amortissements(self, exercice: int) -> Dict[str, Any]:
-        """Tableau de suivi des amortissements conforme à la Note 3C"""
+    def _get_tableau_amortissements(self, exercice: int, organisation_id: Optional[int] = None) -> Dict[str, Any]:
+        """Tableau de suivi des amortissements"""
         
-        amortissements = self.db.query(
-            Amortissement.id_amortissement,
-            Amortissement.id_bien,
-            Amortissement.exercice,
-            Amortissement.methode,
-            Amortissement.duree_vie_comptable_ans,
-            Amortissement.taux_comptable,
-            Amortissement.valeur_origine,
-            Amortissement.valeur_residuelle,
-            Amortissement.annuite_comptable,
-            Amortissement.cumul_comptable,
-            Amortissement.valeur_nette_comptable,
-            Bien.qr_code,
-            Bien.type_bien,
+        q = self.db.query(
+            Amortissement.id_amortissement, Amortissement.id_bien, Amortissement.exercice,
+            Amortissement.methode, Amortissement.duree_vie_comptable_ans,
+            Amortissement.taux_comptable, Amortissement.valeur_origine,
+            Amortissement.valeur_residuelle, Amortissement.annuite_comptable,
+            Amortissement.cumul_comptable, Amortissement.valeur_nette_comptable,
+            Bien.qr_code, Bien.type_bien,
             Localisation.nom_localisation.label("localisation"),
             Bien.date_acquisition
         ).join(Bien, Amortissement.id_bien == Bien.id_bien).outerjoin(
@@ -609,90 +607,27 @@ class RapportService:
         ).filter(
             Amortissement.exercice == exercice,
             Amortissement.statut == "EN_COURS"
-        ).all()
-        
-        details = []
-        total_valeur_origine = 0
-        total_annuite = 0
-        total_cumul = 0
-        total_vnc = 0
-        
-        for a in amortissements:
-            valeur_origine = self._round_value(a.valeur_origine)
-            annuite = self._round_value(a.annuite_comptable)
-            cumul = self._round_value(a.cumul_comptable)
-            vnc = self._round_value(a.valeur_nette_comptable)
-            
-            total_valeur_origine += valeur_origine
-            total_annuite += annuite
-            total_cumul += cumul
-            total_vnc += vnc
-            
-            details.append({
-                "id_bien": a.id_bien,
-                "qr_code": a.qr_code,
-                "designation": f"{a.type_bien or ''} - {a.localisation or ''}".strip() or f"Bien #{a.id_bien}",
-                "type_bien": a.type_bien or "",
-                "date_acquisition": a.date_acquisition.strftime("%d/%m/%Y") if a.date_acquisition else "",
-                "methode": a.methode.value if a.methode else "LINEAIRE",
-                "duree_vie": a.duree_vie_comptable_ans or 0,
-                "taux": self._round_value(a.taux_comptable),
-                "valeur_origine": valeur_origine,
-                "valeur_residuelle": self._round_value(a.valeur_residuelle),
-                "annuite_exercice": annuite,
-                "cumul_amortissements": cumul,
-                "valeur_nette_comptable": vnc
-            })
-        
-        # Regroupement par catégorie pour le résumé
-        regroupement = {}
-        for d in details:
-            cat = d["type_bien"] or "autre"
-            if cat not in regroupement:
-                regroupement[cat] = {
-                    "count": 0,
-                    "valeur_origine": 0,
-                    "annuite": 0,
-                    "cumul": 0,
-                    "vnc": 0
-                }
-            regroupement[cat]["count"] += 1
-            regroupement[cat]["valeur_origine"] += d["valeur_origine"]
-            regroupement[cat]["annuite"] += d["annuite_exercice"]
-            regroupement[cat]["cumul"] += d["cumul_amortissements"]
-            regroupement[cat]["vnc"] += d["valeur_nette_comptable"]
-        
-        # Arrondir les regroupements
-        for cat in regroupement:
-            regroupement[cat]["valeur_origine"] = self._round_value(regroupement[cat]["valeur_origine"])
-            regroupement[cat]["annuite"] = self._round_value(regroupement[cat]["annuite"])
-            regroupement[cat]["cumul"] = self._round_value(regroupement[cat]["cumul"])
-            regroupement[cat]["vnc"] = self._round_value(regroupement[cat]["vnc"])
-        
-        return {
-            "exercice": exercice,
-            "total_biens": len(details),
-            "total_valeur_origine": self._round_value(total_valeur_origine),
-            "total_annuite_exercice": self._round_value(total_annuite),
-            "total_cumul_amortissements": self._round_value(total_cumul),
-            "total_valeur_nette_comptable": self._round_value(total_vnc),
-            "regroupement_par_categorie": regroupement,
-            "details": details
-        }
-
+        )
+        # ═══ 5.22 — Filtre ONG ═══
+        if organisation_id is not None:
+            q = q.filter(Amortissement.organisation_id == organisation_id)
+        # ═══ FIN 5.22 ═══
+        amortissements = q.all()
     # ============================================================
     # F. NOTES ANNEXES SYSCOHADA
     # ============================================================
 
-    def _get_notes_annexes_ohada(self, exercice: int) -> Dict[str, Any]:
+    def _get_notes_annexes_ohada(self, exercice: int, organisation_id: Optional[int] = None) -> Dict[str, Any]:
         """Notes annexes conformes au SYSCOHADA"""
         
-        # Note 3A : Immobilisations brutes
-        immobilisations_brutes = self.db.query(
+        q_ib = self.db.query(
             Bien.type_bien,
             func.sum(Bien.prix_acquisition).label('valeur_brute'),
             func.count(Bien.id_bien).label('count')
-        ).group_by(Bien.type_bien).all()
+        )
+        if organisation_id is not None:
+            q_ib = q_ib.filter(Bien.organisation_id == organisation_id)
+        immobilisations_brutes = q_ib.group_by(Bien.type_bien).all()
         
         note_3a = {
             "titre": "Note 3A - Immobilisations brutes",
@@ -706,13 +641,13 @@ class RapportService:
             ]
         }
         
-        # Note 3C : Amortissements (déjà calculé)
-        amortissements_data = self.db.query(
+        q_amort = self.db.query(
             func.sum(Amortissement.annuite_comptable).label('dotation'),
             func.sum(Amortissement.cumul_comptable).label('cumul')
-        ).filter(
-            Amortissement.exercice == exercice
-        ).first()
+        ).filter(Amortissement.exercice == exercice)
+        if organisation_id is not None:
+            q_amort = q_amort.filter(Amortissement.organisation_id == organisation_id)
+        amortissements_data = q_amort.first()
         
         note_3c = {
             "titre": "Note 3C - Amortissements",
@@ -722,10 +657,10 @@ class RapportService:
             }
         }
         
-        # Note 3D : Plus/moins-values de cession (déjà calculé dans cessions)
-        cessions = self.db.query(
-            Cession.resultat
-        ).all()
+        q_cess = self.db.query(Cession.resultat)
+        if organisation_id is not None:
+            q_cess = q_cess.filter(Cession.organisation_id == organisation_id)
+        cessions = q_cess.all()
         
         plus_values = sum(float(c.resultat or 0) for c in cessions if float(c.resultat or 0) > 0)
         moins_values = sum(abs(float(c.resultat or 0)) for c in cessions if float(c.resultat or 0) < 0)
@@ -739,7 +674,6 @@ class RapportService:
             }
         }
         
-        # Note 3B : Location-acquisition (si applicable)
         note_3b = {
             "titre": "Note 3B - Location-acquisition",
             "details": {
@@ -755,61 +689,44 @@ class RapportService:
             "note_3c": note_3c,
             "note_3d": note_3d
         }
-
     # ============================================================
     # G. TABLEAU 8 OHADA (CORRIGÉ)
     # ============================================================
 
-    def generer_tableau8_ohada(self, annee: int) -> dict:
-        """
-        Génère le Tableau 8 OHADA pour une année donnée
-        """
-        # ✅ CORRECTION : Utiliser date() au lieu de datetime()
+    def generer_tableau8_ohada(self, annee: int, organisation_id: Optional[int] = None) -> dict:
+        """Génère le Tableau 8 OHADA pour une année donnée"""
         debut_annee = date(annee, 1, 1)
         fin_annee = date(annee, 12, 31)
         
-        biens = self.db.query(Bien).filter(
+        q_biens = self.db.query(Bien).filter(
             Bien.date_acquisition <= fin_annee,
             (Bien.date_sortie.is_(None) | (Bien.date_sortie >= debut_annee))
-        ).all()
+        )
+        if organisation_id is not None:
+            q_biens = q_biens.filter(Bien.organisation_id == organisation_id)
+        biens = q_biens.all()
         
         categories = {}
         for bien in biens:
             categorie = bien.type_bien or "autre"
             if categorie not in categories:
                 categories[categorie] = {
-                    "brut_debut": 0.0,
-                    "augmentations": 0.0,
-                    "diminutions": 0.0,
-                    "brut_fin": 0.0,
-                    "amortissements_cumules": 0.0,
-                    "vnc_fin": 0.0,
-                    "dotations_exercice": 0.0,
-                    "nombre_biens": 0
+                    "brut_debut": 0.0, "augmentations": 0.0, "diminutions": 0.0,
+                    "brut_fin": 0.0, "amortissements_cumules": 0.0, "vnc_fin": 0.0,
+                    "dotations_exercice": 0.0, "nombre_biens": 0
                 }
-            
             categories[categorie]["nombre_biens"] += 1
             prix = float(bien.prix_acquisition or 0)
-            
-            # ✅ Vérification que date_acquisition n'est pas None
             if bien.date_acquisition and bien.date_acquisition < debut_annee:
                 categories[categorie]["brut_debut"] += prix
-            
             if bien.date_acquisition and bien.date_acquisition >= debut_annee:
                 categories[categorie]["augmentations"] += prix
-            
             if bien.date_sortie and bien.date_sortie >= debut_annee:
                 categories[categorie]["diminutions"] += prix
-            
             cumul = float(bien.cumul_amortissement or 0)
             categories[categorie]["amortissements_cumules"] += cumul
-            
-            vnc_fin = prix - cumul
-            categories[categorie]["vnc_fin"] += vnc_fin
-            
-            dotation = self.db.query(
-                func.sum(Amortissement.annuite_comptable)
-            ).filter(
+            categories[categorie]["vnc_fin"] += (prix - cumul)
+            dotation = self.db.query(func.sum(Amortissement.annuite_comptable)).filter(
                 Amortissement.id_bien == bien.id_bien,
                 Amortissement.exercice == annee
             ).scalar() or 0
@@ -831,7 +748,6 @@ class RapportService:
             cat["amortissements_cumules"] = self._round_value(cat["amortissements_cumules"])
             cat["vnc_fin"] = self._round_value(cat["vnc_fin"])
             cat["dotations_exercice"] = self._round_value(cat["dotations_exercice"])
-            
             total_brut_debut += cat["brut_debut"]
             total_augmentations += cat["augmentations"]
             total_diminutions += cat["diminutions"]
@@ -840,27 +756,23 @@ class RapportService:
             total_vnc_fin += cat["vnc_fin"]
             total_dotations += cat["dotations_exercice"]
         
-        coherent, ecart = self._verifier_equilibrage_tableau8(annee, total_dotations)
+        coherent, ecart = self._verifier_equilibrage_tableau8(annee, total_dotations, organisation_id=organisation_id)
         
-        mouvements = self.db.query(
-            MouvementBien.id_mouvement,
-            MouvementBien.id_bien,
-            MouvementBien.type_mouvement,
-            MouvementBien.date_mouvement,
-            MouvementBien.localisation_source,
-            MouvementBien.localisation_destination,
-            Bien.qr_code,
-            Bien.type_bien
+        q_mvt = self.db.query(
+            MouvementBien.id_mouvement, MouvementBien.id_bien, MouvementBien.type_mouvement,
+            MouvementBien.date_mouvement, MouvementBien.localisation_source,
+            MouvementBien.localisation_destination, Bien.qr_code, Bien.type_bien
         ).join(Bien, MouvementBien.id_bien == Bien.id_bien).filter(
             MouvementBien.date_mouvement >= debut_annee,
             MouvementBien.date_mouvement <= fin_annee
-        ).all()
+        )
+        if organisation_id is not None:
+            q_mvt = q_mvt.filter(Bien.organisation_id == organisation_id)
+        mouvements = q_mvt.all()
         
         details_mouvements = [
             {
-                "id_mouvement": m.id_mouvement,
-                "id_bien": m.id_bien,
-                "qr_code": m.qr_code,
+                "id_mouvement": m.id_mouvement, "id_bien": m.id_bien, "qr_code": m.qr_code,
                 "designation": m.type_bien or f"Bien #{m.id_bien}",
                 "date_mouvement": m.date_mouvement.strftime("%d/%m/%Y") if m.date_mouvement else "",
                 "type": m.type_mouvement.value if m.type_mouvement else "",
@@ -883,14 +795,29 @@ class RapportService:
                 "dotations_exercice": self._round_value(total_dotations),
                 "nombre_total_biens": len(biens)
             },
-            "mouvements": {
-                "total": len(mouvements),
-                "details": details_mouvements
-            },
+            "mouvements": {"total": len(mouvements), "details": details_mouvements},
             "coherent": coherent,
             "ecart": round(ecart, 2) if not coherent else None
         }
 
+    def _verifier_equilibrage_tableau8(self, annee: int, total_dotations_tableau: float, organisation_id: Optional[int] = None) -> tuple:
+        """Vérifie que le Tableau 8 est cohérent avec le Grand Livre"""
+        debut_annee = date(annee, 1, 1)
+        fin_annee = date(annee, 12, 31)
+        
+        q = self.db.query(func.sum(EcritureComptable.montant)).filter(
+            EcritureComptable.compte_debit == "6812",
+            EcritureComptable.date_ecriture >= debut_annee,
+            EcritureComptable.date_ecriture <= fin_annee,
+            EcritureComptable.statut == StatutEcriture.VALIDEE
+        )
+        if organisation_id is not None:
+            q = q.filter(EcritureComptable.organisation_id == organisation_id)
+        total_dotations_livre = q.scalar() or 0
+        
+        ecart = abs(float(total_dotations_tableau or 0) - float(total_dotations_livre or 0))
+        coherent = ecart < 0.01
+        return coherent, ecart
     def _verifier_equilibrage_tableau8(self, annee: int, total_dotations_tableau: float) -> tuple:
         """
         Vérifie que le Tableau 8 est cohérent avec le Grand Livre
@@ -917,48 +844,36 @@ class RapportService:
     # H. ALERTES VNC
     # ============================================================
 
-    def get_synthese_alertes_vnc(self) -> dict:
-        """
-        Récupère la synthèse des alertes VNC pour le tableau de bord
-        """
-        alertes_attente = self.db.query(AlerteVNC).filter(
-            AlerteVNC.statut == StatutAlerteVNC.EN_ATTENTE
-        ).count()
+    def get_synthese_alertes_vnc(self, organisation_id: Optional[int] = None) -> dict:
+        """Récupère la synthèse des alertes VNC"""
+        q_att = self.db.query(AlerteVNC).filter(AlerteVNC.statut == StatutAlerteVNC.EN_ATTENTE)
+        q_cours = self.db.query(AlerteVNC).filter(AlerteVNC.statut == StatutAlerteVNC.EN_COURS)
+        q_trait = self.db.query(AlerteVNC).filter(AlerteVNC.statut == StatutAlerteVNC.TRAITEE)
+        q_crit = self.db.query(Bien).filter(
+            Bien.est_critique == True, Bien.vnc_alerte_declenchee == True, Bien.statut_comptable == 'ACTIF'
+        )
+        q_recentes = self.db.query(
+            AlerteVNC.id, AlerteVNC.bien_id, AlerteVNC.seuil_atteint, AlerteVNC.ratio_vnc,
+            AlerteVNC.valeur_vnc, AlerteVNC.date_alerte, AlerteVNC.statut,
+            Bien.qr_code, Bien.type_bien, Bien.prix_acquisition
+        ).join(Bien, AlerteVNC.bien_id == Bien.id_bien)
         
-        alertes_cours = self.db.query(AlerteVNC).filter(
-            AlerteVNC.statut == StatutAlerteVNC.EN_COURS
-        ).count()
+        if organisation_id is not None:
+            q_att = q_att.filter(AlerteVNC.organisation_id == organisation_id)
+            q_cours = q_cours.filter(AlerteVNC.organisation_id == organisation_id)
+            q_trait = q_trait.filter(AlerteVNC.organisation_id == organisation_id)
+            q_crit = q_crit.filter(Bien.organisation_id == organisation_id)
+            q_recentes = q_recentes.filter(Bien.organisation_id == organisation_id)
         
-        alertes_traitees = self.db.query(AlerteVNC).filter(
-            AlerteVNC.statut == StatutAlerteVNC.TRAITEE
-        ).count()
-        
-        biens_critiques_alerte = self.db.query(Bien).filter(
-            Bien.est_critique == True,
-            Bien.vnc_alerte_declenchee == True,
-            Bien.statut_comptable == 'ACTIF'
-        ).count()
-        
-        alertes_recentes = self.db.query(
-            AlerteVNC.id,
-            AlerteVNC.bien_id,
-            AlerteVNC.seuil_atteint,
-            AlerteVNC.ratio_vnc,
-            AlerteVNC.valeur_vnc,
-            AlerteVNC.date_alerte,
-            AlerteVNC.statut,
-            Bien.qr_code,
-            Bien.type_bien,
-            Bien.prix_acquisition
-        ).join(Bien, AlerteVNC.bien_id == Bien.id_bien).order_by(
-            AlerteVNC.date_alerte.desc()
-        ).limit(10).all()
+        alertes_attente = q_att.count()
+        alertes_cours = q_cours.count()
+        alertes_traitees = q_trait.count()
+        biens_critiques_alerte = q_crit.count()
+        alertes_recentes = q_recentes.order_by(AlerteVNC.date_alerte.desc()).limit(10).all()
         
         details_recentes = [
             {
-                "id": a.id,
-                "bien_id": a.bien_id,
-                "qr_code": a.qr_code,
+                "id": a.id, "bien_id": a.bien_id, "qr_code": a.qr_code,
                 "designation": a.type_bien or f"Bien #{a.bien_id}",
                 "seuil_atteint": a.seuil_atteint,
                 "ratio_vnc": self._round_value(a.ratio_vnc * 100),
@@ -972,28 +887,24 @@ class RapportService:
         
         return {
             "total_alertes": alertes_attente + alertes_cours + alertes_traitees,
-            "en_attente": alertes_attente,
-            "en_cours": alertes_cours,
-            "traitees": alertes_traitees,
+            "en_attente": alertes_attente, "en_cours": alertes_cours, "traitees": alertes_traitees,
             "biens_critiques_avec_alerte": biens_critiques_alerte,
             "alertes_recentes": details_recentes,
-            "seuils": {
-                "critique": SEUIL_VNC_CRITIQUE,
-                "standard": SEUIL_VNC_STANDARD
-            }
+            "seuils": {"critique": SEUIL_VNC_CRITIQUE, "standard": SEUIL_VNC_STANDARD}
         }
 
     # ============================================================
     # I. RAPPORT DE FIABILITÉ
     # ============================================================
 
-    def get_rapport_fiabilite(self) -> dict:
+    def get_rapport_fiabilite(self, organisation_id: Optional[int] = None) -> dict:
         """
         Génère un rapport sur la fiabilité des biens
         """
-        biens = self.db.query(Bien).filter(
-            Bien.statut_comptable == 'ACTIF'
-        ).all()
+        q_biens = self.db.query(Bien).filter(Bien.statut_comptable == 'ACTIF')
+        if organisation_id is not None:
+            q_biens = q_biens.filter(Bien.organisation_id == organisation_id)
+        biens = q_biens.all()
         
         total_biens = len(biens)
         biens_avec_score = [b for b in biens if b.score_fiabilite is not None]
@@ -1061,38 +972,46 @@ class RapportService:
     # J. ÉVOLUTION DU PATRIMOINE
     # ============================================================
 
-    def get_rapport_evolution_patrimoine(self, annee_debut: int, annee_fin: int) -> dict:
-        """
-        Génère un rapport d'évolution du patrimoine sur plusieurs années
-        """
+    def get_rapport_evolution_patrimoine(self, annee_debut: int, annee_fin: int, organisation_id: Optional[int] = None) -> dict:
+        """Génère un rapport d'évolution du patrimoine sur plusieurs années"""
         evolution = []
         
         for annee in range(annee_debut, annee_fin + 1):
             debut_annee = datetime(annee, 1, 1)
             fin_annee = datetime(annee, 12, 31)
             
-            biens = self.db.query(Bien).filter(
+            q_biens = self.db.query(Bien).filter(
                 Bien.date_acquisition <= fin_annee,
                 (Bien.date_sortie.is_(None) | (Bien.date_sortie >= debut_annee))
-            ).all()
+            )
+            if organisation_id is not None:
+                q_biens = q_biens.filter(Bien.organisation_id == organisation_id)
+            biens = q_biens.all()
             
-            acquisitions = self.db.query(Bien).filter(
+            q_acq = self.db.query(Bien).filter(
                 Bien.date_acquisition >= debut_annee,
                 Bien.date_acquisition <= fin_annee
-            ).all()
+            )
+            if organisation_id is not None:
+                q_acq = q_acq.filter(Bien.organisation_id == organisation_id)
+            acquisitions = q_acq.all()
             
-            sorties = self.db.query(Bien).filter(
+            q_sorties = self.db.query(Bien).filter(
                 Bien.date_sortie >= debut_annee,
                 Bien.date_sortie <= fin_annee
-            ).all()
+            )
+            if organisation_id is not None:
+                q_sorties = q_sorties.filter(Bien.organisation_id == organisation_id)
+            sorties = q_sorties.all()
             
             valeur_totale = sum(float(b.prix_acquisition or 0) for b in biens)
             valeur_acquisitions = sum(float(b.prix_acquisition or 0) for b in acquisitions)
             valeur_sorties = sum(float(b.prix_acquisition or 0) for b in sorties)
             
-            total_amort = self.db.query(func.sum(Amortissement.annuite_comptable)).filter(
-                Amortissement.exercice == annee
-            ).scalar() or 0
+            q_amort = self.db.query(func.sum(Amortissement.annuite_comptable)).filter(Amortissement.exercice == annee)
+            if organisation_id is not None:
+                q_amort = q_amort.filter(Amortissement.organisation_id == organisation_id)
+            total_amort = q_amort.scalar() or 0
             
             vnc_totale = sum(
                 float(b.prix_acquisition or 0) - float(b.cumul_amortissement or 0)
@@ -1100,8 +1019,7 @@ class RapportService:
             )
             
             evolution.append({
-                "annee": annee,
-                "nombre_biens": len(biens),
+                "annee": annee, "nombre_biens": len(biens),
                 "valeur_totale_brute": self._round_value(valeur_totale),
                 "valeur_acquisitions": self._round_value(valeur_acquisitions),
                 "valeur_sorties": self._round_value(valeur_sorties),
@@ -1111,12 +1029,10 @@ class RapportService:
             })
         
         return {
-            "annee_debut": annee_debut,
-            "annee_fin": annee_fin,
+            "annee_debut": annee_debut, "annee_fin": annee_fin,
             "evolution": evolution,
             "tendance": self._calculer_tendance_evolution(evolution)
         }
-
     def _calculer_tendance_evolution(self, evolution: list) -> dict:
         """Calcule la tendance d'évolution du patrimoine"""
         if len(evolution) < 2:
@@ -1139,13 +1055,14 @@ class RapportService:
     # K. RAPPORT MAINTENANCES PRÉVENTIVES AUTO-GÉNÉRÉES
     # ============================================================
 
-    def get_rapport_maintenances_preventives(self) -> dict:
+    def get_rapport_maintenances_preventives(self, organisation_id: Optional[int] = None) -> dict:
         """
         Génère un rapport sur les maintenances préventives auto-générées
         """
-        maintenances_auto = self.db.query(Maintenance).filter(
-            Maintenance.origine == TypeOrigineMaintenance.AUTO
-        ).all()
+        q_maint = self.db.query(Maintenance).filter(Maintenance.origine == TypeOrigineMaintenance.AUTO)
+        if organisation_id is not None:
+            q_maint = q_maint.filter(Maintenance.organisation_id == organisation_id)
+        maintenances_auto = q_maint.all()
         
         planifiees = [m for m in maintenances_auto if m.statut == StatutMaintenance.PLANIFIEE]
         en_cours = [m for m in maintenances_auto if m.statut == StatutMaintenance.EN_COURS]
@@ -1182,21 +1099,19 @@ class RapportService:
     # L. PROJECTIONS – UTILISATION DES DONNÉES PRÉ-CALCULÉES
     # ============================================================
 
-    def get_projections_pre_calculees(self, bien_id: int) -> List[ProjectionInvestissement]:
-        """
-        Retourne les projections pré-calculées par le CRON pour un bien.
-        Lecture rapide, pas de calcul.
-        """
-        return self.db.query(ProjectionInvestissement).filter(
+    def get_projections_pre_calculees(self, bien_id: int, organisation_id: Optional[int] = None) -> List[ProjectionInvestissement]:
+        """Retourne les projections pré-calculées par le CRON pour un bien."""
+        query = self.db.query(ProjectionInvestissement).filter(
             ProjectionInvestissement.bien_id == bien_id
-        ).order_by(ProjectionInvestissement.annee_projection).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(ProjectionInvestissement.organisation_id == organisation_id)
+        return query.order_by(ProjectionInvestissement.annee_projection).all()
 
-    def get_projections_synthese(self, bien_id: int) -> dict:
-        """
-        Retourne une synthèse des projections pré-calculées.
-        """
-        projections = self.get_projections_pre_calculees(bien_id)
-
+    def get_projections_synthese(self, bien_id: int, organisation_id: Optional[int] = None) -> dict:
+        """Retourne une synthèse des projections pré-calculées."""
+        projections = self.get_projections_pre_calculees(bien_id, organisation_id=organisation_id)
+        
         if not projections:
             bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
             return {
@@ -1206,7 +1121,7 @@ class RapportService:
                 "projections": [],
                 "message": "Aucune projection disponible. Veuillez exécuter le CRON de projections."
             }
-
+        
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         
         return {
@@ -1217,7 +1132,7 @@ class RapportService:
                 {
                     "annee": p.annee_projection,
                     "score_fiabilite_projete": float(p.score_fiabilite_projete or 0),
-                    "vnc_projetee": float(p.vnc_projetee or 0),
+                    "vnc_projetee": float(p.vnc_projete or 0),
                     "cout_remplacement": float(p.cout_remplacement_estime or 0),
                     "critere_fin_amortissement": p.critere_fin_amortissement,
                     "critere_score_fiabilite": p.critere_score_fiabilite,
@@ -1225,19 +1140,19 @@ class RapportService:
                 }
                 for p in projections
             ]
-        }
+        } 
 
-    def get_projections_pluriannuelles(self) -> dict:
-        """
-        Retourne les projections pluriannuelles agrégées pour tous les biens.
-        Utilise les données pré-calculées par le CRON.
-        """
+    def get_projections_pluriannuelles(self, organisation_id: Optional[int] = None) -> dict:
+        """Retourne les projections pluriannuelles agrégées."""
         annee_actuelle = datetime.now().year
-
-        projections = self.db.query(ProjectionInvestissement).filter(
+        
+        q = self.db.query(ProjectionInvestissement).filter(
             ProjectionInvestissement.annee_projection >= annee_actuelle + 1
-        ).all()
-
+        )
+        if organisation_id is not None:
+            q = q.filter(ProjectionInvestissement.organisation_id == organisation_id)
+        projections = q.all()
+        
         if not projections:
             return {
                 "annee_base": annee_actuelle,
@@ -1246,14 +1161,14 @@ class RapportService:
                 "total_5_ans": 0,
                 "message": "Aucune projection disponible. Veuillez exécuter le CRON de projections."
             }
-
+        
         projections_par_annee = {}
         for proj in projections:
             annee = proj.annee_projection
             if annee not in projections_par_annee:
                 projections_par_annee[annee] = []
             projections_par_annee[annee].append(proj)
-
+        
         resultat = {
             "annee_base": annee_actuelle,
             "total_projections": len(projections),
@@ -1261,7 +1176,7 @@ class RapportService:
             "total_5_ans": 0,
             "biens_a_remplacer": []
         }
-
+        
         for annee in sorted(projections_par_annee.keys()):
             projs = projections_par_annee[annee]
             budget_requis = sum(float(p.cout_remplacement_estime or 0) for p in projs)
@@ -1282,12 +1197,11 @@ class RapportService:
                     for p in projs
                 ]
             })
-
+        
         resultat["total_5_ans"] = self._round_value(resultat["total_5_ans"])
         resultat["biens_a_remplacer"] = self._get_biens_a_remplacer(projections, annee_actuelle)
-
+        
         return resultat
-
     def _get_biens_a_remplacer(self, projections: List[ProjectionInvestissement], annee_actuelle: int) -> List[dict]:
         """
         Identifie les biens à remplacer dans les 2 ans.

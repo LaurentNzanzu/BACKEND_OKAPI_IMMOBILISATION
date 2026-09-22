@@ -23,6 +23,17 @@ class DiscussionConcertation(Base):
     __tablename__ = "discussions_concertation"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_bien = Column(Integer, ForeignKey("biens.id_bien"), nullable=False)
     type_validation = Column(SQLEnum(TypeValidationEnum), nullable=False)
     titre = Column(String(255), nullable=False)
@@ -31,6 +42,7 @@ class DiscussionConcertation(Base):
     date_cloture = Column(DateTime, nullable=True)
 
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     bien = relationship("Bien")
     messages = relationship("MessageConcertation", back_populates="discussion", cascade="all, delete-orphan")
     validations = relationship("ValidationConcertation", back_populates="discussion", cascade="all, delete-orphan")
@@ -41,6 +53,17 @@ class MessageConcertation(Base):
     __tablename__ = "messages_concertation"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire (héritée de la discussion)"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_discussion = Column(Integer, ForeignKey("discussions_concertation.id"), nullable=False)
     id_utilisateur = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False)
     contenu = Column(Text, nullable=False)
@@ -50,6 +73,7 @@ class MessageConcertation(Base):
     date_modification = Column(DateTime, nullable=True)
 
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     discussion = relationship("DiscussionConcertation", back_populates="messages")
     utilisateur = relationship("Utilisateur")
     reponses = relationship("MessageConcertation", backref="parent", remote_side=[id])
@@ -60,6 +84,17 @@ class ValidationConcertation(Base):
     __tablename__ = "validations_concertation"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire (héritée de la discussion)"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_discussion = Column(Integer, ForeignKey("discussions_concertation.id"), nullable=False)
     id_validateur = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False)
     decision = Column(SQLEnum(DecisionValidationConcertation), nullable=False)
@@ -67,5 +102,6 @@ class ValidationConcertation(Base):
     date_decision = Column(DateTime, default=datetime.utcnow)
 
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     discussion = relationship("DiscussionConcertation", back_populates="validations")
     validateur = relationship("Utilisateur")

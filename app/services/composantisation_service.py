@@ -3,6 +3,11 @@
 """
 ComposantisationService — Composantisation OHADA
 Phase 4 — Distinguer charge d'entretien vs composant capitalisable
+
+⚠️ PHASE 5 VAGUE 4 (5.20.f) — Corrections multi-tenant :
+- Injection de `organisation_id` sur les Composant et JournalEvenementImmobilisation créés
+- Vérification d'accès ONG sur les Biens chargés
+- Filtrage ONG optionnel sur la liste des composants
 """
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -13,6 +18,7 @@ import re
 
 from ..models.bien import Bien
 from ..models.composant import Composant
+from ..models.utilisateur import Utilisateur
 from ..models.journal_evenements_immobilisation import (
     JournalEvenementImmobilisation,
     TypeEvenementImmobilisation,
@@ -43,6 +49,74 @@ class ComposantisationService:
         self.db = db
         self.audit_service = AuditService(db)
 
+    # ═══════════════════════════════════════════════════════════════
+    # ═══ AJOUT 5.20.f — Helpers multi-tenant                       ═══
+    # ═══════════════════════════════════════════════════════════════
+
+    def _is_platform_admin(self, user: Optional[Utilisateur]) -> bool:
+        """Retourne True si l'utilisateur est ADMIN plateforme."""
+        if not user:
+            return False
+        return bool(getattr(user, "is_platform_admin", False))
+
+    def _get_organisation_id_bien(self, bien_id: int) -> Optional[int]:
+        """Retourne l'organisation_id d'un Bien (None si introuvable)."""
+        if bien_id is None:
+            return None
+        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        return getattr(bien, "organisation_id", None) if bien else None
+
+    def _check_acces_bien(
+        self,
+        current_user: Utilisateur,
+        bien: Bien,
+        label: str = "bien",
+    ) -> None:
+        """
+        Vérifie l'accès d'un utilisateur à un Bien.
+        - ADMIN plateforme → accès total
+        - Sinon : le bien doit appartenir à la même ONG
+        - Bien sans organisation_id → refusé (donnée historique)
+        """
+        if self._is_platform_admin(current_user):
+            return
+
+        bien_org = getattr(bien, "organisation_id", None)
+        bien_id = getattr(bien, "id_bien", "?")
+
+        if bien_org is None:
+            raise ValueError(
+                f"Accès refusé : {label} #{bien_id} sans organisation "
+                f"(donnée historique). Contactez l'administrateur plateforme."
+            )
+
+        if bien_org != getattr(current_user, "organisation_id", None):
+            raise ValueError(
+                f"Accès refusé : {label} #{bien_id} appartient à une autre organisation."
+            )
+
+    def _inject_organisation_si_colonne(
+        self,
+        instance,
+        organisation_id: Optional[int],
+    ) -> None:
+        """
+        Injecte `organisation_id` sur une instance SQLAlchemy UNIQUEMENT
+        si la classe du modèle possède cette colonne.
+        """
+        if organisation_id is None:
+            return
+        try:
+            if hasattr(type(instance), "organisation_id"):
+                setattr(instance, "organisation_id", organisation_id)
+        except Exception as e:
+            logger.warning(
+                f"Impossible d'injecter organisation_id sur "
+                f"{type(instance).__name__} : {e}"
+            )
+
+    # ═══ FIN AJOUT 5.20.f ═══
+
     # ============================================================
     # 1. ANALYSE
     # ============================================================
@@ -52,6 +126,7 @@ class ComposantisationService:
         bien_id: int,
         montant: float,
         description: str,
+        current_user: Utilisateur,   # ═══ AJOUT 5.20.f — obligatoire ═══
     ) -> Dict[str, Any]:
         """
         Détermine si une dépense doit être traitée comme :
@@ -66,6 +141,10 @@ class ComposantisationService:
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         if not bien:
             raise ValueError(f"Bien #{bien_id} introuvable")
+
+        # ═══ AJOUT 5.20.f — Vérification d'accès ONG ═══
+        self._check_acces_bien(current_user, bien)
+        # ═══ FIN AJOUT 5.20.f ═══
 
         prix_acq = float(bien.prix_acquisition or 0)
         ratio = (montant / prix_acq) if prix_acq > 0 else 0
@@ -115,7 +194,7 @@ class ComposantisationService:
         montant: float,
         designation: str,
         duree_vie_ans: int,
-        user_id: Optional[int] = None,
+        current_user: Utilisateur,        # ═══ AJOUT 5.20.f — obligatoire ═══
         reference_piece: Optional[str] = None,
     ) -> Composant:
         """
@@ -131,6 +210,13 @@ class ComposantisationService:
         if not bien:
             raise ValueError(f"Bien #{bien_id} introuvable")
 
+        # ═══ AJOUT 5.20.f — Vérification d'accès ONG ═══
+        self._check_acces_bien(current_user, bien)
+
+        org_id = getattr(bien, "organisation_id", None)
+        user_id = getattr(current_user, "id", None)
+        # ═══ FIN AJOUT 5.20.f ═══
+
         composant = Composant(
             id_bien=bien_id,
             designation=designation,
@@ -140,6 +226,9 @@ class ComposantisationService:
             duree_vie_ans=duree_vie_ans,
             date_mise_en_service=datetime.utcnow(),
         )
+        # ═══ AJOUT 5.20.f — Injection organisation_id ═══
+        self._inject_organisation_si_colonne(composant, org_id)
+        # ═══ FIN AJOUT 5.20.f ═══
         self.db.add(composant)
         self.db.flush()
 
@@ -155,6 +244,9 @@ class ComposantisationService:
                 utilisateur_id=user_id,
                 metadonnees=f"Durée amortissement : {duree_vie_ans} ans",
             )
+            # ═══ AJOUT 5.20.f — Injection organisation_id ═══
+            self._inject_organisation_si_colonne(journal, org_id)
+            # ═══ FIN AJOUT 5.20.f ═══
             self.db.add(journal)
             self.db.flush()
         except Exception as e:
@@ -171,12 +263,16 @@ class ComposantisationService:
                         "designation": designation,
                         "montant": montant,
                         "duree_vie_ans": duree_vie_ans,
+                        "organisation_id": org_id,
                     },
                 )
             except Exception as e:
                 logger.warning(f"Audit capitalisation échoué : {e}")
 
-        logger.info(f"Composant capitalisé sur bien #{bien_id} : {designation} ({montant} USD)")
+        logger.info(
+            f"Composant capitalisé sur bien #{bien_id} : {designation} "
+            f"({montant} USD) [org={org_id}]"
+        )
         return composant
 
     # ============================================================
@@ -187,16 +283,29 @@ class ComposantisationService:
         self,
         composant_id: int,
         motif: str,
-        user_id: Optional[int] = None,
+        current_user: Utilisateur,        # ═══ AJOUT 5.20.f — obligatoire ═══
     ) -> Dict[str, Any]:
         """
         Met au rebut un ancien composant (remplacé) :
         - Désactive le composant
         - Génère un événement de sortie dans le journal
         """
-        composant = self.db.query(Composant).filter(Composant.id_composant == composant_id).first()
+        composant = self.db.query(Composant).filter(
+            Composant.id_composant == composant_id
+        ).first()
         if not composant:
             raise ValueError(f"Composant #{composant_id} introuvable")
+
+        # ═══ AJOUT 5.20.f — Vérification d'accès via le Bien ═══
+        bien = self.db.query(Bien).filter(
+            Bien.id_bien == composant.id_bien
+        ).first()
+        if bien:
+            self._check_acces_bien(current_user, bien)
+
+        org_id = getattr(bien, "organisation_id", None) if bien else None
+        user_id = getattr(current_user, "id", None)
+        # ═══ FIN AJOUT 5.20.f ═══
 
         # Marquer comme réformé (si le champ existe)
         if hasattr(composant, "est_actif"):
@@ -213,6 +322,9 @@ class ComposantisationService:
                 montant=valeur_vnc,
                 utilisateur_id=user_id,
             )
+            # ═══ AJOUT 5.20.f — Injection organisation_id ═══
+            self._inject_organisation_si_colonne(journal, org_id)
+            # ═══ FIN AJOUT 5.20.f ═══
             self.db.add(journal)
             self.db.flush()
         except Exception as e:
@@ -232,6 +344,7 @@ class ComposantisationService:
                         "designation": composant.designation,
                         "motif": motif,
                         "vnc": valeur_vnc,
+                        "organisation_id": org_id,
                     },
                 )
             except Exception as e:
@@ -248,5 +361,24 @@ class ComposantisationService:
     # 4. UTILITAIRES
     # ============================================================
 
-    def lister_composants_bien(self, bien_id: int) -> List[Composant]:
-        return self.db.query(Composant).filter(Composant.id_bien == bien_id).all()
+    def lister_composants_bien(
+        self,
+        bien_id: int,
+        current_user: Optional[Utilisateur] = None,   # ═══ AJOUT 5.20.f — optionnel ═══
+    ) -> List[Composant]:
+        """
+        Liste les composants d'un bien.
+        Si `current_user` est fourni → filtre ONG appliqué (sauf ADMIN plateforme).
+        """
+        query = self.db.query(Composant).filter(Composant.id_bien == bien_id)
+
+        # ═══ AJOUT 5.20.f — Filtre ONG ═══
+        if current_user is not None and not self._is_platform_admin(current_user):
+            query = query.join(
+                Bien, Bien.id_bien == Composant.id_bien
+            ).filter(
+                Bien.organisation_id == getattr(current_user, "organisation_id", None)
+            )
+        # ═══ FIN AJOUT 5.20.f ═══
+
+        return query.all()

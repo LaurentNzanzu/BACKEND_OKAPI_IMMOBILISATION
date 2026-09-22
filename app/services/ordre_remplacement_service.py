@@ -32,33 +32,48 @@ class OrdreRemplacementService:
         self.notification_service = NotificationService(db)
         self.audit_service = AuditService(db)
 
+    # ═══ 5.22 — Helpers multi-tenant ═══
+    def _get_organisation_id_bien(self, bien_id: Optional[int]) -> Optional[int]:
+        if not bien_id:
+            return None
+        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        return getattr(bien, "organisation_id", None) if bien else None
+
+    def _check_acces_ordre(self, ordre: OrdreRemplacement, organisation_id: Optional[int]) -> None:
+        if organisation_id is None or not ordre:
+            return
+        org = getattr(ordre, "organisation_id", None)
+        if org is None:
+            org = self._get_organisation_id_bien(ordre.bien_id)
+        if org is None:
+            raise ValueError(
+                f"Accès refusé : ordre #{ordre.id} sans organisation."
+            )
+        if org != organisation_id:
+            raise ValueError(
+                f"Accès refusé : ordre #{ordre.id} appartient à une autre organisation."
+            )
+    # ═══ FIN 5.22 ═══
+
+    # ═══ MODIF 5.22 — Injection organisation_id ═══
     def creer_ordre(
         self,
         bien_id: int,
         motif: str,
         alerte_id: Optional[int] = None,
         priorite: Optional[str] = None,
-        utilisateur_id: Optional[int] = None
+        utilisateur_id: Optional[int] = None,
+        organisation_id: Optional[int] = None,
     ) -> OrdreRemplacement:
-        """
-        Crée un ordre de remplacement pour le DG et le Comptable.
-        
-        Args:
-            bien_id: ID du bien à remplacer
-            motif: Motif du remplacement
-            alerte_id: ID de l'alerte VNC associée (optionnel)
-            priorite: Priorité de l'ordre (optionnel)
-            utilisateur_id: ID de l'utilisateur créateur (optionnel)
-        
-        Returns:
-            OrdreRemplacement: L'ordre créé
-        """
-        # Vérifier que le bien existe
+        """Crée un ordre de remplacement pour le DG et le Comptable."""
         bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
         if not bien:
             raise ValueError(f"Bien {bien_id} non trouvé")
-        
-        # Vérifier qu'un ordre n'existe pas déjà pour ce bien
+
+        # ═══ 5.22 — Résolution org_id ═══
+        org_id = organisation_id if organisation_id is not None else getattr(bien, "organisation_id", None)
+        # ═══ FIN 5.22 ═══
+
         ordre_existant = self.db.query(OrdreRemplacement).filter(
             OrdreRemplacement.bien_id == bien_id,
             OrdreRemplacement.statut.in_([
@@ -71,19 +86,16 @@ class OrdreRemplacementService:
         if ordre_existant:
             raise ValueError(f"Un ordre de remplacement existe déjà pour le bien {bien_id} (statut: {ordre_existant.statut.value})")
         
-        # Déterminer la priorité
         if not priorite:
             if bien.est_critique:
                 priorite = PrioriteOrdre.CRITIQUE.value
             else:
                 priorite = PrioriteOrdre.NORMALE.value
         
-        # Récupérer les informations du bien
         designation = self._get_bien_designation(bien)
         prix_acquisition = float(bien.prix_acquisition or 0)
         vnc = bien.valeur_nette_comptable
         
-        # Créer l'ordre
         ordre = OrdreRemplacement(
             bien_id=bien_id,
             alerte_vnc_id=alerte_id,
@@ -95,21 +107,20 @@ class OrdreRemplacementService:
             vnc_actuelle=vnc,
             date_creation=datetime.utcnow(),
             date_echeance=self._calculer_date_echeance(priorite, bien.est_critique),
-            cree_par_id=utilisateur_id
+            cree_par_id=utilisateur_id,
+            organisation_id=org_id,   # ═══ 5.22 ═══
         )
         
         self.db.add(ordre)
         self.db.commit()
         self.db.refresh(ordre)
         
-        # Si une alerte VNC est associée, la mettre à jour
         if alerte_id:
             alerte = self.db.query(AlerteVNC).filter(AlerteVNC.id == alerte_id).first()
             if alerte:
                 alerte.statut = StatutAlerteVNC.EN_COURS
                 self.db.commit()
         
-        # Journaliser la création
         self.audit_service.log_action(
             user_id=utilisateur_id,
             table_name="ordres_remplacement",
@@ -123,27 +134,24 @@ class OrdreRemplacementService:
             }
         )
         
-        # Envoyer les notifications
         self._notifier_creation_ordre(ordre)
         
         logger.info(f"Ordre de remplacement créé pour le bien {bien_id} - Motif: {motif}")
         return ordre
+    # ═══ FIN MODIF 5.22 ═══
 
     def _calculer_date_echeance(self, priorite: str, est_critique: bool) -> datetime:
-        """Calcule la date d'échéance en fonction de la priorité"""
         now = datetime.utcnow()
-        
         if priorite == PrioriteOrdre.CRITIQUE.value:
-            return now + timedelta(days=7)  # 7 jours pour les critiques
+            return now + timedelta(days=7)
         elif priorite == PrioriteOrdre.URGENT.value:
-            return now + timedelta(days=15)  # 15 jours pour les urgents
+            return now + timedelta(days=15)
         elif priorite == PrioriteOrdre.NORMALE.value:
-            return now + timedelta(days=30)  # 30 jours pour les normaux
+            return now + timedelta(days=30)
         else:
-            return now + timedelta(days=45)  # 45 jours par défaut
+            return now + timedelta(days=45)
 
     def _get_bien_designation(self, bien: Bien) -> str:
-        """Récupère la désignation d'un bien"""
         if hasattr(bien, 'marque') and bien.marque:
             designation = f"{bien.marque} {getattr(bien, 'modele', '')}".strip()
             return designation or f"Bien #{bien.id_bien}"
@@ -153,13 +161,11 @@ class OrdreRemplacementService:
         return bien.description or f"Bien #{bien.id_bien}"
 
     def _notifier_creation_ordre(self, ordre: OrdreRemplacement):
-        """Notifie les responsables de la création d'un ordre"""
-        # Récupérer la désignation du bien
+        """Notifie les responsables de la création d'un ordre."""
         bien = self.db.query(Bien).filter(Bien.id_bien == ordre.bien_id).first()
         designation = ordre.designation_bien or f"Bien #{ordre.bien_id}"
-        organisation_id = getattr(bien, "organisation_id", None) if bien else None
+        organisation_id = getattr(ordre, "organisation_id", None) or (getattr(bien, "organisation_id", None) if bien else None)
 
-        # Titre et contenu selon la priorité
         if ordre.priorite == PrioriteOrdre.CRITIQUE.value:
             titre = f"🚨 ORDRE CRITIQUE - Remplacement requis : {designation}"
             contenu = f"Le bien {designation} a atteint son seuil de sécurité VNC. Remplacement URGENT requis. VNC: {ordre.vnc_actuelle:.2f} USD"
@@ -173,7 +179,6 @@ class OrdreRemplacementService:
         contenu += f"\nMotif: {ordre.motif}"
         contenu += f"\nÉchéance: {ordre.date_echeance.strftime('%d/%m/%Y') if ordre.date_echeance else 'Non définie'}"
         
-        # Notifier le DG
         self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="DG",
             organisation_id=organisation_id,
@@ -183,7 +188,6 @@ class OrdreRemplacementService:
             lien=f"/ordres-remplacement/{ordre.id}"
         )
         
-        # Notifier le Comptable
         self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="COMPTABLE",
             organisation_id=organisation_id,
@@ -193,7 +197,6 @@ class OrdreRemplacementService:
             lien=f"/ordres-remplacement/{ordre.id}"
         )
         
-        # Notifier l'Administrateur
         self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="ADMIN",
             organisation_id=organisation_id,
@@ -203,33 +206,47 @@ class OrdreRemplacementService:
             lien=f"/ordres-remplacement/{ordre.id}"
         )
 
-    def get_ordre(self, ordre_id: int) -> Optional[OrdreRemplacement]:
-        """Récupère un ordre par son ID"""
-        return self.db.query(OrdreRemplacement).filter(
-            OrdreRemplacement.id == ordre_id
-        ).first()
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
+    def get_ordre(self, ordre_id: int, organisation_id: Optional[int] = None) -> Optional[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement).filter(OrdreRemplacement.id == ordre_id)
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.first()
 
-    def get_ordres_par_bien(self, bien_id: int) -> List[OrdreRemplacement]:
-        """Récupère tous les ordres pour un bien donné"""
-        return self.db.query(OrdreRemplacement).filter(
-            OrdreRemplacement.bien_id == bien_id
-        ).order_by(OrdreRemplacement.date_creation.desc()).all()
+    def get_ordres_par_bien(self, bien_id: int, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        self._check_acces_ordre_bien(bien_id, organisation_id)
+        query = self.db.query(OrdreRemplacement).filter(OrdreRemplacement.bien_id == bien_id)
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_creation.desc()).all()
 
-    def get_ordres_en_attente(self, limit: int = 50) -> List[OrdreRemplacement]:
-        """Récupère les ordres en attente de traitement"""
-        return self.db.query(OrdreRemplacement).filter(
+    def _check_acces_ordre_bien(self, bien_id: int, organisation_id: Optional[int]) -> None:
+        if organisation_id is None:
+            return
+        org = self._get_organisation_id_bien(bien_id)
+        if org is None:
+            raise ValueError(f"Accès refusé : bien #{bien_id} sans organisation.")
+        if org != organisation_id:
+            raise ValueError(f"Accès refusé : bien #{bien_id} appartient à une autre organisation.")
+
+    def get_ordres_en_attente(self, limit: int = 50, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement).filter(
             OrdreRemplacement.statut == StatutOrdreRemplacement.EN_ATTENTE
-        ).order_by(OrdreRemplacement.date_echeance.asc()).limit(limit).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_echeance.asc()).limit(limit).all()
 
-    def get_ordres_en_cours(self, limit: int = 50) -> List[OrdreRemplacement]:
-        """Récupère les ordres en cours de traitement"""
-        return self.db.query(OrdreRemplacement).filter(
+    def get_ordres_en_cours(self, limit: int = 50, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement).filter(
             OrdreRemplacement.statut == StatutOrdreRemplacement.EN_COURS
-        ).order_by(OrdreRemplacement.date_creation.desc()).limit(limit).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_creation.desc()).limit(limit).all()
 
-    def get_ordres_urgents(self) -> List[OrdreRemplacement]:
-        """Récupère les ordres urgents et critiques"""
-        return self.db.query(OrdreRemplacement).filter(
+    def get_ordres_urgents(self, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement).filter(
             OrdreRemplacement.statut.in_([
                 StatutOrdreRemplacement.EN_ATTENTE,
                 StatutOrdreRemplacement.EN_COURS
@@ -238,38 +255,35 @@ class OrdreRemplacementService:
                 PrioriteOrdre.CRITIQUE.value,
                 PrioriteOrdre.URGENT.value
             ])
-        ).order_by(OrdreRemplacement.date_echeance.asc()).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_echeance.asc()).all()
 
-    def get_ordres_en_retard(self) -> List[OrdreRemplacement]:
-        """Récupère les ordres en retard (échéance dépassée)"""
+    def get_ordres_en_retard(self, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
         now = datetime.utcnow()
-        return self.db.query(OrdreRemplacement).filter(
+        query = self.db.query(OrdreRemplacement).filter(
             OrdreRemplacement.statut.in_([
                 StatutOrdreRemplacement.EN_ATTENTE,
                 StatutOrdreRemplacement.EN_COURS
             ]),
             OrdreRemplacement.date_echeance < now,
             OrdreRemplacement.date_echeance.isnot(None)
-        ).order_by(OrdreRemplacement.date_echeance.asc()).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_echeance.asc()).all()
 
-    def valider_ordre(
-        self,
-        ordre_id: int,
-        utilisateur_id: int,
-        bien_remplacement_id: Optional[int] = None,
-        observations: Optional[str] = None
-    ) -> OrdreRemplacement:
-        """
-        Valide un ordre de remplacement.
-        """
-        ordre = self.get_ordre(ordre_id)
+    def valider_ordre(self, ordre_id: int, utilisateur_id: int, bien_remplacement_id: Optional[int] = None, observations: Optional[str] = None, organisation_id: Optional[int] = None) -> OrdreRemplacement:
+        ordre = self.get_ordre(ordre_id, organisation_id=organisation_id)
         if not ordre:
             raise ValueError(f"Ordre {ordre_id} non trouvé")
-        
+
+        self._check_acces_ordre(ordre, organisation_id)
+
         if ordre.statut != StatutOrdreRemplacement.EN_ATTENTE:
             raise ValueError(f"Impossible de valider un ordre en statut {ordre.statut.value}")
         
-        # Vérifier que l'utilisateur a les droits (DG ou Comptable)
         utilisateur = self.db.query(Utilisateur).filter(Utilisateur.id == utilisateur_id).first()
         if not utilisateur:
             raise ValueError(f"Utilisateur {utilisateur_id} non trouvé")
@@ -278,7 +292,6 @@ class OrdreRemplacementService:
         if not any(r in ["DG", "COMPTABLE", "ADMIN"] for r in roles):
             raise ValueError("Seul le DG, le Comptable ou l'Admin peut valider un ordre")
         
-        # Mettre à jour l'ordre
         ordre.statut = StatutOrdreRemplacement.VALIDE
         ordre.date_validation = datetime.utcnow()
         ordre.valide_par_id = utilisateur_id
@@ -288,7 +301,6 @@ class OrdreRemplacementService:
         self.db.commit()
         self.db.refresh(ordre)
         
-        # Journaliser la validation
         self.audit_service.log_action(
             user_id=utilisateur_id,
             table_name="ordres_remplacement",
@@ -300,13 +312,13 @@ class OrdreRemplacementService:
             }
         )
         
-        # Notifier le DG et le Comptable
         bien = self.db.query(Bien).filter(Bien.id_bien == ordre.bien_id).first()
         designation = ordre.designation_bien or f"Bien #{ordre.bien_id}"
+        org_id = getattr(ordre, "organisation_id", None) or (getattr(bien, "organisation_id", None) if bien else None)
         
         self.notification_service.envoyer_notification_par_role_avec_ong(
             role_nom="DG",
-            organisation_id=getattr(bien, "organisation_id", None) if bien else None,
+            organisation_id=org_id,
             type_notif=TypeNotificationEnum.BESOIN_VALIDE,
             titre=f"✅ Ordre validé - {designation}",
             contenu=f"L'ordre de remplacement pour le bien {designation} a été validé par {utilisateur.nom}.",
@@ -316,29 +328,20 @@ class OrdreRemplacementService:
         logger.info(f"Ordre {ordre_id} validé par l'utilisateur {utilisateur_id}")
         return ordre
 
-    def executer_ordre(
-        self,
-        ordre_id: int,
-        utilisateur_id: int,
-        bien_remplacement_id: int,
-        observations: Optional[str] = None
-    ) -> OrdreRemplacement:
-        """
-        Exécute un ordre de remplacement (remplacement effectué).
-        """
-        ordre = self.get_ordre(ordre_id)
+    def executer_ordre(self, ordre_id: int, utilisateur_id: int, bien_remplacement_id: int, observations: Optional[str] = None, organisation_id: Optional[int] = None) -> OrdreRemplacement:
+        ordre = self.get_ordre(ordre_id, organisation_id=organisation_id)
         if not ordre:
             raise ValueError(f"Ordre {ordre_id} non trouvé")
-        
+
+        self._check_acces_ordre(ordre, organisation_id)
+
         if ordre.statut not in [StatutOrdreRemplacement.EN_ATTENTE, StatutOrdreRemplacement.VALIDE]:
             raise ValueError(f"Impossible d'exécuter un ordre en statut {ordre.statut.value}")
         
-        # Vérifier que le bien de remplacement existe
         bien_remplacement = self.db.query(Bien).filter(Bien.id_bien == bien_remplacement_id).first()
         if not bien_remplacement:
             raise ValueError(f"Bien de remplacement {bien_remplacement_id} non trouvé")
         
-        # Mettre à jour l'ordre
         ordre.statut = StatutOrdreRemplacement.EXECUTE
         ordre.date_execution = datetime.utcnow()
         ordre.execute_par_id = utilisateur_id
@@ -346,7 +349,6 @@ class OrdreRemplacementService:
         if observations:
             ordre.observations = (ordre.observations or "") + f"\nExécution: {observations}"
         
-        # Mettre à jour le bien original
         bien_original = self.db.query(Bien).filter(Bien.id_bien == ordre.bien_id).first()
         if bien_original:
             bien_original.statut_comptable = "CEDE"
@@ -357,7 +359,6 @@ class OrdreRemplacementService:
         self.db.commit()
         self.db.refresh(ordre)
         
-        # Journaliser l'exécution
         self.audit_service.log_action(
             user_id=utilisateur_id,
             table_name="ordres_remplacement",
@@ -369,7 +370,6 @@ class OrdreRemplacementService:
             }
         )
         
-        # Notifier
         self.notification_service.envoyer_alerte_remplacement(
             bien_id=ordre.bien_id,
             bien_nouveau_id=bien_remplacement_id
@@ -378,19 +378,13 @@ class OrdreRemplacementService:
         logger.info(f"Ordre {ordre_id} exécuté avec le bien de remplacement {bien_remplacement_id}")
         return ordre
 
-    def rejeter_ordre(
-        self,
-        ordre_id: int,
-        utilisateur_id: int,
-        motif_rejet: str
-    ) -> OrdreRemplacement:
-        """
-        Rejette un ordre de remplacement.
-        """
-        ordre = self.get_ordre(ordre_id)
+    def rejeter_ordre(self, ordre_id: int, utilisateur_id: int, motif_rejet: str, organisation_id: Optional[int] = None) -> OrdreRemplacement:
+        ordre = self.get_ordre(ordre_id, organisation_id=organisation_id)
         if not ordre:
             raise ValueError(f"Ordre {ordre_id} non trouvé")
-        
+
+        self._check_acces_ordre(ordre, organisation_id)
+
         if ordre.statut != StatutOrdreRemplacement.EN_ATTENTE:
             raise ValueError(f"Impossible de rejeter un ordre en statut {ordre.statut.value}")
         
@@ -402,7 +396,6 @@ class OrdreRemplacementService:
         self.db.commit()
         self.db.refresh(ordre)
         
-        # Journaliser le rejet
         self.audit_service.log_action(
             user_id=utilisateur_id,
             table_name="ordres_remplacement",
@@ -417,19 +410,13 @@ class OrdreRemplacementService:
         logger.info(f"Ordre {ordre_id} rejeté par l'utilisateur {utilisateur_id}")
         return ordre
 
-    def annuler_ordre(
-        self,
-        ordre_id: int,
-        utilisateur_id: int,
-        motif_annulation: str
-    ) -> OrdreRemplacement:
-        """
-        Annule un ordre de remplacement.
-        """
-        ordre = self.get_ordre(ordre_id)
+    def annuler_ordre(self, ordre_id: int, utilisateur_id: int, motif_annulation: str, organisation_id: Optional[int] = None) -> OrdreRemplacement:
+        ordre = self.get_ordre(ordre_id, organisation_id=organisation_id)
         if not ordre:
             raise ValueError(f"Ordre {ordre_id} non trouvé")
-        
+
+        self._check_acces_ordre(ordre, organisation_id)
+
         if ordre.statut == StatutOrdreRemplacement.EXECUTE:
             raise ValueError("Impossible d'annuler un ordre déjà exécuté")
         
@@ -441,7 +428,6 @@ class OrdreRemplacementService:
         self.db.commit()
         self.db.refresh(ordre)
         
-        # Journaliser l'annulation
         self.audit_service.log_action(
             user_id=utilisateur_id,
             table_name="ordres_remplacement",
@@ -456,51 +442,44 @@ class OrdreRemplacementService:
         logger.info(f"Ordre {ordre_id} annulé par l'utilisateur {utilisateur_id}")
         return ordre
 
-    def get_statistiques(self) -> Dict[str, Any]:
-        """Retourne les statistiques des ordres de remplacement"""
-        total = self.db.query(func.count(OrdreRemplacement.id)).scalar() or 0
+    def get_statistiques(self, organisation_id: Optional[int] = None) -> Dict[str, Any]:
+        base = self.db.query(OrdreRemplacement)
+        if organisation_id is not None:
+            base = base.filter(OrdreRemplacement.organisation_id == organisation_id)
+        total = base.count()
+
+        def count_status(statut):
+            q = self.db.query(func.count(OrdreRemplacement.id)).filter(OrdreRemplacement.statut == statut)
+            if organisation_id is not None:
+                q = q.filter(OrdreRemplacement.organisation_id == organisation_id)
+            return q.scalar() or 0
+
+        en_attente = count_status(StatutOrdreRemplacement.EN_ATTENTE)
+        en_cours = count_status(StatutOrdreRemplacement.EN_COURS)
+        valides = count_status(StatutOrdreRemplacement.VALIDE)
+        executes = count_status(StatutOrdreRemplacement.EXECUTE)
+        rejetes = count_status(StatutOrdreRemplacement.REJETE)
+        annules = count_status(StatutOrdreRemplacement.ANNULE)
         
-        en_attente = self.db.query(func.count(OrdreRemplacement.id)).filter(
-            OrdreRemplacement.statut == StatutOrdreRemplacement.EN_ATTENTE
-        ).scalar() or 0
-        
-        en_cours = self.db.query(func.count(OrdreRemplacement.id)).filter(
-            OrdreRemplacement.statut == StatutOrdreRemplacement.EN_COURS
-        ).scalar() or 0
-        
-        valides = self.db.query(func.count(OrdreRemplacement.id)).filter(
-            OrdreRemplacement.statut == StatutOrdreRemplacement.VALIDE
-        ).scalar() or 0
-        
-        executes = self.db.query(func.count(OrdreRemplacement.id)).filter(
-            OrdreRemplacement.statut == StatutOrdreRemplacement.EXECUTE
-        ).scalar() or 0
-        
-        rejetes = self.db.query(func.count(OrdreRemplacement.id)).filter(
-            OrdreRemplacement.statut == StatutOrdreRemplacement.REJETE
-        ).scalar() or 0
-        
-        annules = self.db.query(func.count(OrdreRemplacement.id)).filter(
-            OrdreRemplacement.statut == StatutOrdreRemplacement.ANNULE
-        ).scalar() or 0
-        
-        # Ordres en retard
         now = datetime.utcnow()
-        en_retard = self.db.query(func.count(OrdreRemplacement.id)).filter(
+        q_retard = self.db.query(func.count(OrdreRemplacement.id)).filter(
             OrdreRemplacement.statut.in_([
                 StatutOrdreRemplacement.EN_ATTENTE,
                 StatutOrdreRemplacement.EN_COURS
             ]),
             OrdreRemplacement.date_echeance < now,
             OrdreRemplacement.date_echeance.isnot(None)
-        ).scalar() or 0
+        )
+        if organisation_id is not None:
+            q_retard = q_retard.filter(OrdreRemplacement.organisation_id == organisation_id)
+        en_retard = q_retard.scalar() or 0
         
-        # Ordres par priorité
         par_priorite = {}
         for p in PrioriteOrdre:
-            count = self.db.query(func.count(OrdreRemplacement.id)).filter(
-                OrdreRemplacement.priorite == p.value
-            ).scalar() or 0
+            q = self.db.query(func.count(OrdreRemplacement.id)).filter(OrdreRemplacement.priorite == p.value)
+            if organisation_id is not None:
+                q = q.filter(OrdreRemplacement.organisation_id == organisation_id)
+            count = q.scalar() or 0
             if count > 0:
                 par_priorite[p.value] = count
         
@@ -517,34 +496,35 @@ class OrdreRemplacementService:
             "taux_execution": round((executes / total * 100), 1) if total > 0 else 0
         }
 
-    def get_ordres_recents(self, limit: int = 10) -> List[OrdreRemplacement]:
-        """Récupère les ordres récents"""
-        return self.db.query(OrdreRemplacement).order_by(
-            OrdreRemplacement.date_creation.desc()
-        ).limit(limit).all()
+    def get_ordres_recents(self, limit: int = 10, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement)
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_creation.desc()).limit(limit).all()
 
-    def get_ordres_par_periode(self, date_debut: datetime, date_fin: datetime) -> List[OrdreRemplacement]:
-        """Récupère les ordres créés dans une période donnée"""
-        return self.db.query(OrdreRemplacement).filter(
+    def get_ordres_par_periode(self, date_debut: datetime, date_fin: datetime, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement).filter(
             OrdreRemplacement.date_creation >= date_debut,
             OrdreRemplacement.date_creation <= date_fin
-        ).order_by(OrdreRemplacement.date_creation.desc()).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_creation.desc()).all()
 
-    def get_ordres_par_utilisateur(self, utilisateur_id: int) -> List[OrdreRemplacement]:
-        """Récupère les ordres traités par un utilisateur"""
-        return self.db.query(OrdreRemplacement).filter(
+    def get_ordres_par_utilisateur(self, utilisateur_id: int, organisation_id: Optional[int] = None) -> List[OrdreRemplacement]:
+        query = self.db.query(OrdreRemplacement).filter(
             or_(
                 OrdreRemplacement.cree_par_id == utilisateur_id,
                 OrdreRemplacement.valide_par_id == utilisateur_id,
                 OrdreRemplacement.execute_par_id == utilisateur_id
             )
-        ).order_by(OrdreRemplacement.date_creation.desc()).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(OrdreRemplacement.organisation_id == organisation_id)
+        return query.order_by(OrdreRemplacement.date_creation.desc()).all()
 
-    def verifier_et_relancer_ordres_en_retard(self) -> Dict[str, Any]:
-        """
-        Vérifie les ordres en retard et envoie des rappels.
-        """
-        ordres_retard = self.get_ordres_en_retard()
+    def verifier_et_relancer_ordres_en_retard(self, organisation_id: Optional[int] = None) -> Dict[str, Any]:
+        ordres_retard = self.get_ordres_en_retard(organisation_id=organisation_id)
         resultats = {
             "total_en_retard": len(ordres_retard),
             "relances_envoyees": 0,
@@ -554,10 +534,11 @@ class OrdreRemplacementService:
         for ordre in ordres_retard:
             bien = self.db.query(Bien).filter(Bien.id_bien == ordre.bien_id).first()
             designation = ordre.designation_bien or f"Bien #{ordre.bien_id}"
+            org_id = getattr(ordre, "organisation_id", None) or (getattr(bien, "organisation_id", None) if bien else None)
             
-            # Envoyer une notification de rappel
             self.notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="DG",
+                organisation_id=org_id,
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre=f"⚠️ RAPPEL - Ordre en retard : {designation}",
                 contenu=f"L'ordre de remplacement pour le bien {designation} est en retard (échéance: {ordre.date_echeance.strftime('%d/%m/%Y') if ordre.date_echeance else 'Non définie'}). Veuillez prendre les mesures nécessaires.",
@@ -577,12 +558,11 @@ class OrdreRemplacementService:
         
         return resultats
 
-    def get_dashboard_data(self) -> Dict[str, Any]:
-        """Retourne les données pour le tableau de bord des ordres"""
-        stats = self.get_statistiques()
-        ordres_urgents = self.get_ordres_urgents()
-        ordres_retard = self.get_ordres_en_retard()
-        ordres_recents = self.get_ordres_recents(5)
+    def get_dashboard_data(self, organisation_id: Optional[int] = None) -> Dict[str, Any]:
+        stats = self.get_statistiques(organisation_id=organisation_id)
+        ordres_urgents = self.get_ordres_urgents(organisation_id=organisation_id)
+        ordres_retard = self.get_ordres_en_retard(organisation_id=organisation_id)
+        ordres_recents = self.get_ordres_recents(5, organisation_id=organisation_id)
         
         return {
             "statistiques": stats,
@@ -618,3 +598,4 @@ class OrdreRemplacementService:
                 for o in ordres_recents
             ]
         }
+    # ═══ FIN MODIF 5.22 ═══

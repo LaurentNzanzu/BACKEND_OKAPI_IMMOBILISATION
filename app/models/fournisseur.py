@@ -1,5 +1,5 @@
 # backend/app/models/fournisseur.py
-from sqlalchemy import Column, Integer, String, DateTime, Text
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
@@ -8,6 +8,17 @@ class Fournisseur(Base):
     __tablename__ = "fournisseurs"
     
     id = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     nom = Column(String(200), nullable=False, index=True)
     adresse = Column(String(500), nullable=True)
     telephone = Column(String(50), nullable=True)
@@ -16,4 +27,5 @@ class Fournisseur(Base):
     date_creation = Column(DateTime, default=datetime.utcnow)
     
     # Relation
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     biens = relationship("Bien", back_populates="fournisseur", foreign_keys="Bien.fournisseur_id")

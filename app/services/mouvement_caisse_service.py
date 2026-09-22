@@ -16,31 +16,65 @@ class MouvementCaisseService:
     def __init__(self, db: Session):
         self.db = db
 
-    def creer_mouvement(self, data: MouvementCaisseCreate) -> MouvementCaisse:
+    # ═══ 5.22 — Helpers multi-tenant ═══
+    def _get_organisation_id_caisse(self, id_caisse: Optional[int]) -> Optional[int]:
+        """Récupère l'organisation_id d'une Caisse (None si introuvable)."""
+        if not id_caisse:
+            return None
+        caisse = self.db.query(Caisse).filter(Caisse.id_caisse == id_caisse).first()
+        return getattr(caisse, "organisation_id", None) if caisse else None
+
+    def _check_acces_mouvement(self, mouvement: MouvementCaisse, organisation_id: Optional[int]) -> None:
+        """Vérifie que le mouvement appartient à l'organisation (None = admin plateforme)."""
+        if organisation_id is None or not mouvement:
+            return
+        org = getattr(mouvement, "organisation_id", None)
+        if org is None:
+            org = self._get_organisation_id_caisse(mouvement.id_caisse)
+        if org is None:
+            raise ValueError(
+                f"Accès refusé : mouvement #{mouvement.id_mouvement} sans organisation."
+            )
+        if org != organisation_id:
+            raise ValueError(
+                f"Accès refusé : mouvement #{mouvement.id_mouvement} appartient à une autre organisation."
+            )
+    # ═══ FIN 5.22 ═══
+
+    # ═══ MODIF 5.22 — Injection organisation_id + numéro scopé ONG ═══
+    def creer_mouvement(self, data: MouvementCaisseCreate, organisation_id: Optional[int] = None) -> MouvementCaisse:
         caisse = self.db.query(Caisse).filter(Caisse.id_caisse == data.id_caisse).first()
         if not caisse:
             raise ValueError("Caisse non trouvée")
+
+        # ═══ 5.22 — Résolution organisation_id : depuis la caisse si non fourni ═══
+        org_id = organisation_id if organisation_id is not None else getattr(caisse, "organisation_id", None)
+        # ═══ FIN 5.22 ═══
 
         solde_avant = caisse.solde_physique
 
         if data.type_mouvement == "SORTIE":
             if caisse.solde_physique < data.montant:
-                # Si fonds insuffisants, on crée quand même le mouvement en statut 'BROUILLON' ou 'EN_ATTENTE_FONDS'
-                # Mais on lèvera une erreur si l'on tente de valider
+                # Si fonds insuffisants, on crée quand même le mouvement en statut 'BROUILLON'
+                # mais on lèvera une erreur si l'on tente de valider
                 pass
             solde_apres = solde_avant - data.montant
         else:
             solde_apres = solde_avant + data.montant
 
-        # Générer le numéro de pièce séquentiel
+        # ═══ MODIF 5.22 — Numéro de pièce séquentiel scopé par ONG ═══
         year = datetime.utcnow().year
-        count = self.db.query(MouvementCaisse).filter(
+        count_query = self.db.query(MouvementCaisse).filter(
             MouvementCaisse.date_mouvement >= datetime(year, 1, 1),
             MouvementCaisse.date_mouvement < datetime(year + 1, 1, 1)
-        ).count()
+        )
+        if org_id is not None:
+            count_query = count_query.filter(MouvementCaisse.organisation_id == org_id)
+        count = count_query.count()
         seq = count + 1
         prefix = "BEC" if data.type_mouvement == "ENTREE" else "BSC"
         numero_piece = f"{prefix}-{year}-{seq:04d}"
+        # ═══ FIN MODIF 5.22 ═══
 
         mouvement = MouvementCaisse(
             id_caisse=data.id_caisse,
@@ -54,7 +88,8 @@ class MouvementCaisseService:
             origine_id=data.origine_id,
             mode_reglement=data.mode_reglement or "ESPECES",
             beneficiaire=data.beneficiaire,
-            statut="BROUILLON"
+            statut="BROUILLON",
+            organisation_id=org_id,   # ═══ 5.22 ═══
         )
         self.db.add(mouvement)
         self.db.flush()
@@ -68,17 +103,22 @@ class MouvementCaisseService:
             id_mouvement=mouvement.id_mouvement,
             type_document=prefix,
             numero_document=numero_piece,
-            url_fichier=pdf_url
+            url_fichier=pdf_url,
+            organisation_id=org_id,   # ═══ 5.22 ═══
         )
         self.db.add(piece)
         self.db.flush()
 
         return mouvement
+    # ═══ FIN MODIF 5.22 ═══
 
-    def valider_mouvement(self, id_mouvement: int, valide_par_id: int) -> MouvementCaisse:
+    # ═══ MODIF 5.22 — Vérif accès ═══
+    def valider_mouvement(self, id_mouvement: int, valide_par_id: int, organisation_id: Optional[int] = None) -> MouvementCaisse:
         mouvement = self.db.query(MouvementCaisse).filter(MouvementCaisse.id_mouvement == id_mouvement).first()
         if not mouvement:
             raise ValueError("Mouvement non trouvé")
+
+        self._check_acces_mouvement(mouvement, organisation_id)
 
         if mouvement.statut == "VALIDE":
             return mouvement
@@ -120,18 +160,17 @@ class MouvementCaisseService:
         self.db.commit()
         return mouvement
 
-    def signer_dg(self, id_mouvement: int, approuve: bool, motif: Optional[str] = None) -> MouvementCaisse:
+    def signer_dg(self, id_mouvement: int, approuve: bool, motif: Optional[str] = None, organisation_id: Optional[int] = None) -> MouvementCaisse:
         mouvement = self.db.query(MouvementCaisse).filter(MouvementCaisse.id_mouvement == id_mouvement).first()
         if not mouvement:
             raise ValueError("Mouvement non trouvé")
+
+        self._check_acces_mouvement(mouvement, organisation_id)
 
         if approuve:
             if mouvement.piece_justificative:
                 mouvement.piece_justificative.signature_dg = True
                 mouvement.piece_justificative.date_signature_dg = datetime.utcnow()
-            
-            # Si déjà validé par le caissier, on s'assure que le statut est mis à jour
-            # mais généralement pour le BSC la validation DG vient approuver le décaissement.
         else:
             mouvement.statut = "REJETEE"
 
@@ -145,6 +184,7 @@ class MouvementCaisseService:
 
         self.db.commit()
         return mouvement
+    # ═══ FIN MODIF 5.22 ═══
 
     def generer_pdf_mouvement(self, mouvement: MouvementCaisse) -> str:
         """Génère le PDF du bon de caisse et retourne son URL relative."""
@@ -153,8 +193,20 @@ class MouvementCaisseService:
         # Trouver la signature DG si elle existe
         dg_nom = ""
         if mouvement.piece_justificative and mouvement.piece_justificative.signature_dg:
-            dg_user = self.db.query(Utilisateur).filter(Utilisateur.id == mouvement.piece_justificative.id_mouvement).first() # ou DG par défaut
+            from ..models.role import Role
+            dg_query = (
+                self.db.query(Utilisateur)
+                .join(Role, Utilisateur.role_id == Role.id_role)
+                .filter(Role.nom == "DG")
+            )
+            org_id = getattr(mouvement, "organisation_id", None)
+            if org_id is None:
+                org_id = self._get_organisation_id_caisse(mouvement.id_caisse)
+            if org_id is not None:
+                dg_query = dg_query.filter(Utilisateur.organisation_id == org_id)
+            dg_user = dg_query.first()
             dg_nom = dg_user.nom_complet if dg_user else "Direction Générale"
+        # ═══ FIN 5.22 ═══
 
         if mouvement.type_mouvement == "ENTREE":
             pdf_bytes = generer_bec_pdf(mouvement, caissier, dg_nom)
@@ -171,8 +223,11 @@ class MouvementCaisseService:
 
         return f"/static/bons_caisse/{filename}"
 
-    def lister_mouvements(self, filter_type: Optional[str] = None, page: int = 1, limit: int = 10) -> dict:
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
+    def lister_mouvements(self, filter_type: Optional[str] = None, page: int = 1, limit: int = 10, organisation_id: Optional[int] = None) -> dict:
         query = self.db.query(MouvementCaisse)
+        if organisation_id is not None:
+            query = query.filter(MouvementCaisse.organisation_id == organisation_id)
         if filter_type:
             query = query.filter(MouvementCaisse.type_mouvement == filter_type)
 
@@ -187,14 +242,27 @@ class MouvementCaisseService:
             "pages": pages
         }
 
-    def obtenir_mouvement(self, id_mouvement: int) -> Optional[MouvementCaisse]:
-        return self.db.query(MouvementCaisse).filter(MouvementCaisse.id_mouvement == id_mouvement).first()
+    def obtenir_mouvement(self, id_mouvement: int, organisation_id: Optional[int] = None) -> Optional[MouvementCaisse]:
+        query = self.db.query(MouvementCaisse).filter(MouvementCaisse.id_mouvement == id_mouvement)
+        if organisation_id is not None:
+            query = query.filter(MouvementCaisse.organisation_id == organisation_id)
+        return query.first()
 
-    def get_solde_caisse(self) -> dict:
-        # Récupère la caisse principale active
-        caisse = self.db.query(Caisse).filter(Caisse.statut == "ACTIF").first()
+    def get_solde_caisse(self, organisation_id: Optional[int] = None) -> dict:
+        """Récupère la caisse principale active de l'ONG."""
+        query = self.db.query(Caisse).filter(Caisse.statut == "ACTIF")
+        if organisation_id is not None:
+            query = query.filter(Caisse.organisation_id == organisation_id)
+        caisse = query.first()
+
         if not caisse:
-            caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="USD", statut="ACTIF")
+            caisse = Caisse(
+                solde_physique=0.0,
+                solde_theorique=0.0,
+                devise="USD",
+                statut="ACTIF",
+                organisation_id=organisation_id,   # ═══ 5.22 ═══
+            )
             self.db.add(caisse)
             self.db.commit()
             self.db.refresh(caisse)
@@ -204,3 +272,4 @@ class MouvementCaisseService:
             "solde_theorique": caisse.solde_theorique,
             "devise": caisse.devise
         }
+    # ═══ FIN MODIF 5.22 ═══
