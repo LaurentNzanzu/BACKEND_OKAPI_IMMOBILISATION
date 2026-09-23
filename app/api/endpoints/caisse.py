@@ -20,7 +20,13 @@ from ...schemas.taux_change import (
 )
 # ═══════════════ AJOUT 5.8 — IMPORTS TAUX CHANGE (FIN) ═══════════════
 
-router = APIRouter(prefix="/caisses", tags=["Caisses"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/caisses",
+    tags=["Caisses"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 @router.get("/verifier-tresorerie", response_model=TresorerieVerificationResponse)
@@ -31,7 +37,7 @@ def verifier_tresorerie(
 ):
     """Vérifie si le solde physique disponible en caisse est suffisant."""
     service = CaisseService(db)
-    return service.verifier_tresorerie(montant)
+    return service.verifier_tresorerie(montant, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/", response_model=List[CaisseResponse])
@@ -41,7 +47,7 @@ def lister_caisses(
 ):
     """Liste toutes les caisses enregistrées."""
     service = CaisseService(db)
-    return service.lister_caisses()
+    return service.lister_caisses(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/principale", response_model=CaisseResponse)
@@ -51,7 +57,7 @@ def obtenir_caisse_principale(
 ):
     """Obtient la caisse active principale."""
     service = CaisseService(db)
-    caisse = service.get_caisse_principale()
+    caisse = service.get_caisse_principale(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not caisse:
         raise HTTPException(status_code=404, detail="Aucune caisse active trouvée")
     return caisse
@@ -225,7 +231,7 @@ def obtenir_caisse(
 ):
     """Récupère les détails d'une caisse spécifique."""
     service = CaisseService(db)
-    caisse = service.obtenir_caisse(id_caisse)
+    caisse = service.obtenir_caisse(id_caisse, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not caisse:
         raise HTTPException(status_code=404, detail="Caisse non trouvée")
     return caisse
@@ -242,7 +248,7 @@ def creer_caisse(
     if role not in ["ADMIN", "DG", "CAISSE", "COMPTABLE"]:
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = CaisseService(db)
-    return service.creer_caisse(data)
+    return service.creer_caisse(data, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.put("/{id_caisse}", response_model=CaisseResponse)
@@ -257,7 +263,7 @@ def mettre_a_jour_caisse(
     if role not in ["ADMIN", "DG", "CAISSE", "COMPTABLE"]:
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = CaisseService(db)
-    caisse = service.mettre_a_jour_caisse(id_caisse, data)
+    caisse = service.mettre_a_jour_caisse(id_caisse, data, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not caisse:
         raise HTTPException(status_code=404, detail="Caisse non trouvée")
     return caisse
@@ -275,7 +281,7 @@ def effectuer_rapprochement(
     if role not in ["ADMIN", "DG", "CAISSE"]:
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = CaisseService(db)
-    caisse = service.effectuer_rapprochement(id_caisse, solde_physique)
+    caisse = service.effectuer_rapprochement(id_caisse, solde_physique, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not caisse:
         raise HTTPException(status_code=404, detail="Caisse non trouvée")
     return caisse

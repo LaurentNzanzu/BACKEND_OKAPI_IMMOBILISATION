@@ -14,7 +14,13 @@ from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
 from ...models.besoin import Besoin
 
-router = APIRouter(prefix="/besoins", tags=["Besoins"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/besoins",
+    tags=["Besoins"],
+    dependencies=[Depends(require_module("MAINTENANCE"))],
+)
 
 
 def check_besoin_permission(user: Utilisateur, action: str) -> bool:
@@ -42,7 +48,7 @@ async def create_besoin(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = BesoinService(db)
     try:
-        return service.create_besoin(data)
+        return service.create_besoin(data, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -56,12 +62,12 @@ async def get_besoins_attente_stock(
     if role not in ["GESTIONNAIRE", "ADMIN", "DG"]:
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     from ...models.besoin import StatutBesoin
-    return (
-        db.query(Besoin)
-        .filter(Besoin.statut == StatutBesoin.ATTENTE_STOCK)
-        .order_by(Besoin.date_creation.desc())
-        .all()
-    )
+    # ═══ 5.22 — Filtre ONG ═══
+    query = db.query(Besoin).filter(Besoin.statut == StatutBesoin.ATTENTE_STOCK)
+    if current_user.organisation_id is not None:
+        query = query.filter(Besoin.organisation_id == current_user.organisation_id)
+    return query.order_by(Besoin.date_creation.desc()).all()
+    # ═══ FIN 5.22 ═══
 
 
 @router.get("/panne/{panne_id}", response_model=List[BesoinResponse])
@@ -73,7 +79,7 @@ async def get_besoins_by_panne(
     if not check_besoin_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = BesoinService(db)
-    return service.get_besoins_by_panne(panne_id)
+    return service.get_besoins_by_panne(panne_id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/a-valider", response_model=List[BesoinResponse])
@@ -85,7 +91,7 @@ async def get_besoins_a_valider(
     if role not in ["DG", "COMPTABLE", "CAISSE"]:
         raise HTTPException(status_code=403, detail="Permissions insuffisantes pour valider")
     service = BesoinService(db)
-    return service.get_besoins_a_valider(role)
+    return service.get_besoins_a_valider(role, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.post("/{besoin_id}/valider")
@@ -101,7 +107,14 @@ async def valider_besoin(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes pour valider")
     service = BesoinService(db)
     try:
-        besoin = service.valider_besoin(besoin_id, current_user.id, role, decision, commentaire)
+        besoin = service.valider_besoin(
+            besoin_id,
+            current_user.id,
+            role,
+            decision,
+            commentaire,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+        )
         if not besoin:
             raise HTTPException(status_code=404, detail="Besoin non trouvé")
         return besoin
@@ -118,8 +131,12 @@ async def get_all_besoins(
 ):
     if not check_besoin_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    query = db.query(Besoin).order_by(Besoin.date_creation.desc())
-    return query.offset(skip).limit(limit).all()
+    # ═══ 5.22 — Filtre ONG ═══
+    query = db.query(Besoin)
+    if current_user.organisation_id is not None:
+        query = query.filter(Besoin.organisation_id == current_user.organisation_id)
+    return query.order_by(Besoin.date_creation.desc()).offset(skip).limit(limit).all()
+    # ═══ FIN 5.22 ═══
 
 
 @router.get("/{besoin_id}", response_model=BesoinResponse)
@@ -131,7 +148,7 @@ async def get_besoin(
     if not check_besoin_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = BesoinService(db)
-    besoin = service.get_besoin(besoin_id)
+    besoin = service.get_besoin(besoin_id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not besoin:
         raise HTTPException(status_code=404, detail="Besoin non trouvé")
     return besoin
@@ -148,7 +165,12 @@ async def ajouter_ligne_besoin(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = BesoinService(db)
     try:
-        besoin = service.ajouter_ligne(besoin_id, data.id_piece, data.quantite)
+        besoin = service.ajouter_ligne(
+            besoin_id,
+            data.id_piece,
+            data.quantite,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+        )
         return besoin
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -172,7 +194,8 @@ async def ajouter_ligne_hors_catalogue(
             besoin_id,
             data.designation,
             data.prix_unitaire,
-            data.quantite
+            data.quantite,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
         return besoin
     except ValueError as e:
@@ -193,7 +216,11 @@ async def supprimer_ligne_besoin(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = BesoinService(db)
     try:
-        besoin = service.supprimer_ligne(besoin_id, ligne_id)
+        besoin = service.supprimer_ligne(
+            besoin_id,
+            ligne_id,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+        )
         if not besoin:
             raise HTTPException(status_code=404, detail="Besoin non trouvé")
         return besoin

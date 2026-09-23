@@ -24,7 +24,13 @@ from ...services.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/budgets", tags=["Budgets"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/budgets",
+    tags=["Budgets"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 # ============================================================
@@ -63,14 +69,13 @@ async def create_budget(
     
     try:
         with db.begin_nested() if db.in_transaction() else db.begin():
-            budget = service.creer_budget(data)
+            budget = service.creer_budget(data, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SQLAlchemyError as e:
         logger.error(f"Erreur BDD création budget: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
 
-    # Logging audit outside the transaction block to avoid db.commit() conflict inside with db.begin()
     try:
         audit_service.log_create(
             user_id=current_user.id,
@@ -109,6 +114,11 @@ async def get_budgets(
     
     query = db.query(Budget)
     
+    # ═══ 5.22 — Filtre ONG ═══
+    if current_user.organisation_id is not None:
+        query = query.filter(Budget.organisation_id == current_user.organisation_id)
+    # ═══ FIN 5.22 ═══
+    
     if exercice:
         query = query.filter(Budget.exercice == exercice)
     if centre_cout:
@@ -128,7 +138,12 @@ async def get_budget(
     if not check_budget_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    budget = db.query(Budget).filter(Budget.id_budget == id_budget).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    query = db.query(Budget).filter(Budget.id_budget == id_budget)
+    if current_user.organisation_id is not None:
+        query = query.filter(Budget.organisation_id == current_user.organisation_id)
+    budget = query.first()
+    # ═══ FIN 5.22 ═══
     if not budget:
         raise HTTPException(status_code=404, detail="Budget non trouvé")
     
@@ -150,7 +165,12 @@ async def update_budget(
     service = BudgetService(db)
     audit_service = AuditService(db)
     
-    old_budget = db.query(Budget).filter(Budget.id_budget == id_budget).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_old = db.query(Budget).filter(Budget.id_budget == id_budget)
+    if current_user.organisation_id is not None:
+        q_old = q_old.filter(Budget.organisation_id == current_user.organisation_id)
+    old_budget = q_old.first()
+    # ═══ FIN 5.22 ═══
     if not old_budget:
         raise HTTPException(status_code=404, detail="Budget non trouvé")
     
@@ -159,14 +179,13 @@ async def update_budget(
     
     try:
         with db.begin_nested() if db.in_transaction() else db.begin():
-            budget = service.update_budget(id_budget, data)
+            budget = service.update_budget(id_budget, data, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SQLAlchemyError as e:
         logger.error(f"Erreur BDD mise à jour budget {id_budget}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
 
-    # Logging audit outside the transaction block to avoid db.commit() conflict inside with db.begin()
     try:
         audit_service.log_update(
             user_id=current_user.id,
@@ -204,7 +223,12 @@ async def delete_budget(
     if not check_budget_permission(current_user, "delete"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    budget = db.query(Budget).filter(Budget.id_budget == id_budget).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_budget = db.query(Budget).filter(Budget.id_budget == id_budget)
+    if current_user.organisation_id is not None:
+        q_budget = q_budget.filter(Budget.organisation_id == current_user.organisation_id)
+    budget = q_budget.first()
+    # ═══ FIN 5.22 ═══
     if not budget:
         raise HTTPException(status_code=404, detail="Budget non trouvé")
     
@@ -221,7 +245,6 @@ async def delete_budget(
         logger.error(f"Erreur BDD suppression budget {id_budget}: {e}")
         raise HTTPException(status_code=503, detail="Erreur de base de données")
 
-    # Logging audit outside the transaction block to avoid db.commit() conflict inside with db.begin()
     try:
         audit_service = AuditService(db)
         audit_service.log_delete(
@@ -258,7 +281,7 @@ async def verifier_disponibilite(
         raise HTTPException(status_code=400, detail="Le montant doit être strictement positif")
     
     service = BudgetService(db)
-    return service.verifier_disponibilite(centre_cout, exercice, montant)
+    return service.verifier_disponibilite(centre_cout, exercice, montant, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/consommation/{centre_cout}", response_model=BudgetConsommation)
@@ -277,7 +300,7 @@ async def get_consommation_budget(
     if not exercice:
         exercice = datetime.datetime.utcnow().year
     
-    budget = service.get_budget(centre_cout, exercice)
+    budget = service.get_budget(centre_cout, exercice, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not budget:
         raise HTTPException(status_code=404, detail="Budget non trouvé")
     
@@ -316,7 +339,7 @@ async def get_synthese_budgetaire(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = BudgetService(db)
-    return service.get_synthese_budgetaire(exercice)
+    return service.get_synthese_budgetaire(exercice, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/tresorerie/verification")
@@ -333,4 +356,4 @@ async def verifier_tresorerie(
         raise HTTPException(status_code=400, detail="Le montant doit être strictement positif")
     
     service = BudgetService(db)
-    return service.verifier_tresorerie(montant)
+    return service.verifier_tresorerie(montant, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══

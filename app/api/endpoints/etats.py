@@ -11,7 +11,13 @@ from ...models.utilisateur import Utilisateur
 from ...services.etats_service import EtatsService
 from ...utils.etats_pdf_generator import generate_fiche_bien_pdf
 
-router = APIRouter(prefix="/etats", tags=["États imprimables"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/etats",
+    tags=["États imprimables"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 # backend/app/api/endpoints/etats.py
 # Modifier la fonction check_etat_permission
@@ -48,7 +54,7 @@ async def export_fiche_bien(
         )
     
     service = EtatsService(db)
-    data = service.get_fiche_bien_data(bien_id)
+    data = service.get_fiche_bien_data(bien_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -85,7 +91,7 @@ async def export_etat_besoin(
         )
 
     service = EtatsService(db)
-    data = service.get_etat_besoin_data(besoin_id)
+    data = service.get_etat_besoin_data(besoin_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -122,7 +128,7 @@ async def export_fiche_amortissement(
         )
     
     service = EtatsService(db)
-    data = service.get_fiche_amortissement_data(bien_id)
+    data = service.get_fiche_amortissement_data(bien_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

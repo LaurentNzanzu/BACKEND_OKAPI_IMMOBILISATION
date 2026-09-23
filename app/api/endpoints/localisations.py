@@ -8,7 +8,13 @@ from ...models.utilisateur import Utilisateur
 from ...schemas.localisation import LocalisationResponse, LocalisationListResponse, LocalisationCreate
 from ...services.localisation_service import LocalisationService
 
-router = APIRouter(prefix="/localisations", tags=["Localisations"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/localisations",
+    tags=["Localisations"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 @router.get("/", response_model=LocalisationListResponse)
@@ -20,7 +26,7 @@ async def list_localisations(
     current_user: Utilisateur = Depends(get_current_user),
 ):
     service = LocalisationService(db)
-    items = service.get_all(skip=skip, limit=limit)
+    items = service.get_all(skip=skip, limit=limit, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return LocalisationListResponse(
         total=len(items),
         localisations=[LocalisationResponse.model_validate(i) for i in items],
@@ -38,7 +44,7 @@ async def create_localisation(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = LocalisationService(db)
     try:
-        return service.create(data)
+        return service.create(data, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     except Exception as exc:
         if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
             raise HTTPException(status_code=400, detail="Cette localisation existe déjà")

@@ -10,10 +10,15 @@ from ...core.security import get_current_user
 from ...api.dependencies import deny_comptable_pieces_access
 from ...models.utilisateur import Utilisateur
 
+from ...core.dependencies_modules import require_module
+
 router = APIRouter(
     prefix="/pieces-detachees",
     tags=["Pièces détachées"],
-    dependencies=[Depends(deny_comptable_pieces_access)],
+    dependencies=[
+        Depends(deny_comptable_pieces_access),
+        Depends(require_module("MAINTENANCE")),
+    ],
 )
 
 def check_piece_permission(user: Utilisateur, action: str) -> bool:
@@ -38,7 +43,7 @@ async def create_piece(
     service = PieceService(db)
     audit_service = AuditService(db)
     
-    piece = service.create_piece(data)
+    piece = service.create_piece(data, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     
     # Enregistrer l'audit
     audit_service.log_create(
@@ -70,7 +75,7 @@ async def rechercher_par_designation(
         raise HTTPException(status_code=400, detail="Le terme de recherche est requis")
     
     service = PieceService(db)
-    piece = service.rechercher_par_designation(q.strip())
+    piece = service.rechercher_par_designation(q.strip(), organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     
     if not piece:
         raise HTTPException(status_code=404, detail=f"Aucune pièce trouvée pour '{q}'")
@@ -91,7 +96,7 @@ async def rechercher_par_numero_serie(
         raise HTTPException(status_code=400, detail="Le numéro de série est requis")
     
     service = PieceService(db)
-    piece = service.rechercher_par_numero_serie(numero_serie.strip())
+    piece = service.rechercher_par_numero_serie(numero_serie.strip(), organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     
     if not piece:
         raise HTTPException(status_code=404, detail=f"Aucune pièce trouvée pour le numéro de série '{numero_serie}'")
@@ -110,7 +115,7 @@ async def get_pieces(
     if not check_piece_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = PieceService(db)
-    return service.get_all_pieces(skip, limit, est_active)
+    return service.get_all_pieces(skip, limit, est_active, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/{piece_id}", response_model=PieceRechangeResponse)
@@ -122,7 +127,7 @@ async def get_piece(
     if not check_piece_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = PieceService(db)
-    piece = service.get_piece(piece_id)
+    piece = service.get_piece(piece_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not piece:
         raise HTTPException(status_code=404, detail="Pièce non trouvée")
     return piece
@@ -143,11 +148,11 @@ async def update_piece(
     audit_service = AuditService(db)
     
     # Récupérer l'ancienne pièce
-    old_piece = service.get_piece(piece_id)
+    old_piece = service.get_piece(piece_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not old_piece:
         raise HTTPException(status_code=404, detail="Pièce non trouvée")
     
-    piece = service.update_piece(piece_id, data)
+    piece = service.update_piece(piece_id, data, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not piece:
         raise HTTPException(status_code=404, detail="Pièce non trouvée")
     
@@ -188,7 +193,7 @@ async def delete_piece(
     audit_service = AuditService(db)
     
     # Récupérer la pièce avant suppression
-    piece = service.get_piece(piece_id)
+    piece = service.get_piece(piece_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not piece:
         raise HTTPException(status_code=404, detail="Pièce non trouvée")
     
@@ -204,5 +209,5 @@ async def delete_piece(
         request=request
     )
     
-    if not service.delete_piece(piece_id):
+    if not service.delete_piece(piece_id, organisation_id=current_user.organisation_id):  # ═══ 5.22 ═══
         raise HTTPException(status_code=404, detail="Pièce non trouvée")

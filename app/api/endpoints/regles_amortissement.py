@@ -12,7 +12,13 @@ from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
 from ...models.regles_amortissement import RegleAmortissement
 
-router = APIRouter(prefix="/regles-amortissement", tags=["Règles Amortissement"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/regles-amortissement",
+    tags=["Règles Amortissement"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 def check_regle_permission(user: Utilisateur, action: str) -> bool:
     if not user:
@@ -32,7 +38,12 @@ async def get_all_regles(
     if not check_regle_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    regles = db.query(RegleAmortissement).offset(skip).limit(limit).all()
+    # ═══ 5.22 — Filtre ONG ═══
+    query = db.query(RegleAmortissement)
+    if current_user.organisation_id is not None:
+        query = query.filter(RegleAmortissement.organisation_id == current_user.organisation_id)
+    regles = query.offset(skip).limit(limit).all()
+    # ═══ FIN 5.22 ═══
     return regles
 
 @router.get("/{categorie}", response_model=RegleAmortissementResponse)
@@ -45,7 +56,7 @@ async def get_regle_by_categorie(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = AmortissementService(db)
-    regle = service.get_regle_par_categorie(categorie)
+    regle = service.get_regle_par_categorie(categorie, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not regle:
         raise HTTPException(status_code=404, detail=f"Règle non trouvée pour la catégorie: {categorie}")
     return regle
@@ -59,9 +70,14 @@ async def create_regle(
     if not check_regle_permission(current_user, "create"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    existing = db.query(RegleAmortissement).filter(
+    # ═══ 5.22 — Filtre ONG sur la vérif d'unicité ═══
+    q_existing = db.query(RegleAmortissement).filter(
         RegleAmortissement.categorie_bien == data.categorie_bien
-    ).first()
+    )
+    if current_user.organisation_id is not None:
+        q_existing = q_existing.filter(RegleAmortissement.organisation_id == current_user.organisation_id)
+    existing = q_existing.first()
+    # ═══ FIN 5.22 ═══
     if existing:
         raise HTTPException(
             status_code=400, 
@@ -81,7 +97,8 @@ async def create_regle(
         base_jours_annee=data.base_jours_annee,
         prorata_debut_mois=data.prorata_debut_mois,
         est_active=data.est_active,
-        modifie_par=current_user.nom if current_user else "systeme"
+        modifie_par=current_user.nom if current_user else "systeme",
+        organisation_id=current_user.organisation_id,   # ═══ 5.22 — AJOUT ═══
     )
     
     db.add(regle)
@@ -108,7 +125,12 @@ async def update_regle(
     
     service = AmortissementService(db)
     update_data = data.model_dump(exclude_unset=True)
-    regle = service.update_regle_configuration(id_regle, update_data, current_user.nom_utilisateur)
+    regle = service.update_regle_configuration(
+        id_regle,
+        update_data,
+        current_user.nom_utilisateur,
+        organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+    )
     
     if not regle:
         raise HTTPException(status_code=404, detail="Règle non trouvée")
@@ -131,7 +153,12 @@ async def delete_regle(
     if not check_regle_permission(current_user, "delete"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    regle = db.query(RegleAmortissement).filter(RegleAmortissement.id_regle == id_regle).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_regle = db.query(RegleAmortissement).filter(RegleAmortissement.id_regle == id_regle)
+    if current_user.organisation_id is not None:
+        q_regle = q_regle.filter(RegleAmortissement.organisation_id == current_user.organisation_id)
+    regle = q_regle.first()
+    # ═══ FIN 5.22 ═══
     if not regle:
         raise HTTPException(status_code=404, detail="Règle non trouvée")
     
@@ -222,14 +249,20 @@ async def initialiser_regles_default(
     
     created_regles = []
     for regle_data in regles_default:
-        existing = db.query(RegleAmortissement).filter(
+        # ═══ 5.22 — Filtre ONG sur la vérif d'existence ═══
+        q_existing = db.query(RegleAmortissement).filter(
             RegleAmortissement.categorie_bien == regle_data["categorie_bien"]
-        ).first()
+        )
+        if current_user.organisation_id is not None:
+            q_existing = q_existing.filter(RegleAmortissement.organisation_id == current_user.organisation_id)
+        existing = q_existing.first()
+        # ═══ FIN 5.22 ═══
         
         if not existing:
             regle = RegleAmortissement(
                 **regle_data,
-                modifie_par=current_user.nom_utilisateur if current_user else "systeme"
+                modifie_par=current_user.nom_utilisateur if current_user else "systeme",
+                organisation_id=current_user.organisation_id,   # ═══ 5.22 — AJOUT ═══
             )
             db.add(regle)
             created_regles.append(regle)

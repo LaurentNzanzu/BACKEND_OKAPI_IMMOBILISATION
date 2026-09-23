@@ -480,3 +480,41 @@ SELECT 'decisions_ia' AS table_name,
        COUNT(*) FILTER (WHERE organisation_id IS NULL) AS null_org,
        COUNT(*) AS total
 FROM decisions_ia;
+
+
+----==================migration 05========================
+-- ============================================================
+-- 09e_add_organisation_id_mouvements_biens.sql
+-- Phase 5 Vague 5.22 — Table mouvements_biens (Groupe 8)
+-- ============================================================
+-- ⚠️ IDEMPOTENT
+-- ============================================================
+
+BEGIN;
+
+-- 1. AJOUT COLONNE organisation_id
+ALTER TABLE mouvements_biens ADD COLUMN IF NOT EXISTS organisation_id INTEGER;
+CREATE INDEX IF NOT EXISTS ix_mouvements_biens_organisation_id ON mouvements_biens(organisation_id);
+
+-- 2. FOREIGN KEY
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_mouvements_biens_organisation') THEN
+        ALTER TABLE mouvements_biens ADD CONSTRAINT fk_mouvements_biens_organisation
+            FOREIGN KEY (organisation_id) REFERENCES organisations(id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
+-- 3. BACKFILL via biens
+UPDATE mouvements_biens m
+SET organisation_id = b.organisation_id
+FROM biens b
+WHERE m.id_bien = b.id_bien AND m.organisation_id IS NULL;
+
+COMMIT;
+
+-- Vérification
+SELECT 'mouvements_biens' AS table_name,
+       COUNT(*) FILTER (WHERE organisation_id IS NULL) AS null_org,
+       COUNT(*) AS total
+FROM mouvements_biens;
