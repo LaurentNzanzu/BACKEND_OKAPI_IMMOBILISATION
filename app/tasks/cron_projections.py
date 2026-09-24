@@ -108,7 +108,7 @@ def generer_projections():
         # ✅ Notification si taux d'échec élevé
         taux_echec = (echecs / total * 100) if total > 0 else 0
         if taux_echec > 20:
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="ADMIN",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre="⚠️ CRON Projections - Taux d'échec élevé",
@@ -119,7 +119,7 @@ def generer_projections():
         # ✅ Envoyer une notification au DG si des biens sont à remplacer
         if biens_a_remplacer:
             total_cout = sum(b["cout_remplacement"] for b in biens_a_remplacer)
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="DG",
                 type_notif=TypeNotificationEnum.RAPPEL_AMORTISSEMENT_MANQUANT,
                 titre="📊 Projections d'investissement N+1 à N+5",
@@ -132,7 +132,7 @@ def generer_projections():
                 lien="/rapports/projections"
             )
 
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="COMPTABLE",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre=f"💰 Projections d'investissement - {annee_actuelle}",
@@ -151,7 +151,7 @@ def generer_projections():
 
         try:
             notification_service = NotificationService(db)
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="ADMIN",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre="🚨 ERREUR - Génération des projections",

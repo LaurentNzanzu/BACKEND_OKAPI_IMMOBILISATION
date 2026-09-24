@@ -78,7 +78,11 @@ from app.api.endpoints import (
     abonnements,
     facturation,
     import_csv,
+    modules,
+    permissions_organisation,
     organisations
+    
+    
 
 )
 
@@ -471,6 +475,9 @@ app.include_router(abonnements.router, prefix=API_V1_PREFIX)
 app.include_router(facturation.router, prefix=API_V1_PREFIX)
 app.include_router(import_csv.router, prefix=API_V1_PREFIX)
 app.include_router(organisations.router, prefix=API_V1_PREFIX)
+app.include_router(modules.router, prefix=API_V1_PREFIX)
+app.include_router(permissions_organisation.router, prefix=API_V1_PREFIX)
+
 
 
 

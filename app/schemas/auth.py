@@ -3,6 +3,7 @@ from typing import Optional, List
 from datetime import datetime
 import re
 
+
 class LoginCredentials(BaseModel):
     """Identifiants de connexion (sans validation de complexité du mot de passe)."""
     email: EmailStr
@@ -29,7 +30,7 @@ class TokenPayload(BaseModel):
     sub: Optional[str] = None
     exp: Optional[datetime] = None
     type: Optional[str] = None
-    jti: Optional[str] = None  # ⬅️ Ajout du JTI
+    jti: Optional[str] = None
 
 
 class UserAuthResponse(BaseModel):
@@ -42,22 +43,30 @@ class UserAuthResponse(BaseModel):
     roles: List[str] = []
     est_actif: bool
     last_login: Optional[datetime] = None
+
+    # ✅ PHASE 3 — Contexte multi-tenant & niveau admin
+    organisation_id: Optional[int] = None
+    is_platform_admin: bool = False
+    is_org_admin: bool = False
+    modules_actifs: List[str] = []
+    doit_changer_mot_de_passe: bool = False
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class LoginResponse(BaseModel):
     """Réponse de connexion avec Access Token et session UUID."""
     access_token: str
-    session_uuid: str  # ⬅️ Nouveau
+    session_uuid: str
     user: UserAuthResponse
-    expires_in: int = 900  # ⬅️ Nouveau - 15 minutes en secondes
+    expires_in: int = 900
 
 
 class RefreshTokenResponse(BaseModel):
     """Réponse de rafraîchissement de token."""
     access_token: str
-    session_uuid: str  # ⬅️ Nouveau
-    expires_in: int = 900  # ⬅️ Nouveau - 15 minutes en secondes
+    session_uuid: str
+    expires_in: int = 900
 
 
 class LogoutResponse(BaseModel):
@@ -66,6 +75,27 @@ class LogoutResponse(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     ancien_mot_de_passe: str
+    nouveau_mot_de_passe: str
+
+    @field_validator('nouveau_mot_de_passe')
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Le mot de passe doit contenir au moins 8 caractères")
+        if not re.search(r'[A-Z]', v):
+            raise ValueError("Le mot de passe doit contenir au moins une majuscule")
+        if not re.search(r'[a-z]', v):
+            raise ValueError("Le mot de passe doit contenir au moins une minuscule")
+        if not re.search(r'\d', v):
+            raise ValueError("Le mot de passe doit contenir au moins un chiffre")
+        return v
+
+
+class ForceChangePasswordRequest(BaseModel):
+    """
+    ✅ PHASE 3 — Changement forcé de mot de passe (1ère connexion admin ONG).
+    Aucun ancien mot de passe requis (utilisateur déjà authentifié avec mdp temporaire).
+    """
     nouveau_mot_de_passe: str
 
     @field_validator('nouveau_mot_de_passe')

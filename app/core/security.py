@@ -10,14 +10,19 @@ from .cookies import ACCESS_COOKIE
 from ..models.utilisateur import Utilisateur
 from ..core.database import get_db
 import logging
-import uuid  # ⬅️ Ajouté pour générer des JTI uniques
+import uuid
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# ✅ PHASE 5 — Versioning du cache utilisateur
+# Incrémenter cette version invalide automatiquement les anciennes entrées
+# (utile quand la structure de user_dict change)
+# ============================================================================
+USER_CACHE_VERSION = 2
+
 # Configuration OAuth2 pour extraire le token depuis le header Authorization
-#oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
-#                                                            
 
 # Configuration du hachage des mots de passe (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -46,19 +51,16 @@ def get_password_hash(password: str) -> str:
 # === Gestion des tokens JWT ===
 
 def create_access_token(
-    user_id: Union[str, int], 
-    session_uuid: Optional[str] = None, 
+    user_id: Union[str, int],
+    session_uuid: Optional[str] = None,
     jti: Optional[str] = None
 ) -> str:
-    """
-    Crée un token d'accès JWT signé avec JTI et SID (session_uuid).
-    Durée de vie : 15 minutes (configurable via settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    """
+    """Crée un token d'accès JWT signé avec JTI et SID (session_uuid)."""
     if jti is None:
-        jti = str(uuid.uuid4())  # Génère un JTI unique
-    
+        jti = str(uuid.uuid4())
+
     expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
     to_encode = {
         "exp": expire,
         "sub": str(user_id),
@@ -67,24 +69,21 @@ def create_access_token(
     }
     if session_uuid is not None:
         to_encode["sid"] = str(session_uuid)
-    
+
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(
-    user_id: Union[str, int], 
-    session_uuid: Optional[str] = None, 
+    user_id: Union[str, int],
+    session_uuid: Optional[str] = None,
     jti: Optional[str] = None
 ) -> str:
-    """
-    Crée un refresh token JWT avec JTI et SID (session_uuid).
-    Durée de vie : 7 jours (configurable via settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    """
+    """Crée un refresh token JWT avec JTI et SID (session_uuid)."""
     if jti is None:
-        jti = str(uuid.uuid4())  # Génère un JTI unique
-    
+        jti = str(uuid.uuid4())
+
     expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    
+
     to_encode = {
         "exp": expire,
         "sub": str(user_id),
@@ -93,16 +92,12 @@ def create_refresh_token(
     }
     if session_uuid is not None:
         to_encode["sid"] = str(session_uuid)
-    
-    # Utilise une clé séparée pour les refresh tokens
+
     return jwt.encode(to_encode, settings.REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def decode_token(token: str, is_refresh: bool = False) -> dict:
-    """
-    Décode et vérifie un token JWT.
-    is_refresh: Si True, utilise la clé de refresh, sinon la clé d'access.
-    """
+    """Décode et vérifie un token JWT."""
     try:
         secret_key = settings.REFRESH_SECRET_KEY if is_refresh else settings.SECRET_KEY
         return jwt.decode(token, secret_key, algorithms=[settings.ALGORITHM])
@@ -137,10 +132,32 @@ def get_token_jti(token: str, is_refresh: bool = False) -> Optional[str]:
 from .redis import CacheService
 from .database import LocalCache
 
+
+def _build_cache_key(user_id: Union[str, int]) -> str:
+    """
+    ✅ Construit la clé de cache AVEC la version.
+    Permet d'invalider les anciennes entrées automatiquement.
+    """
+    return f"user:{user_id}:v{USER_CACHE_VERSION}"
+
+
+def _build_cache_key_legacy(user_id: Union[str, int]) -> str:
+    """Clé legacy (sans version) — pour supprimer d'éventuels résidus."""
+    return f"user:{user_id}"
+
+
 def invalidate_user_cache(user_id: int):
-    """Invalide le cache utilisateur (mémoire + Redis)."""
-    LocalCache.delete(f"user:{user_id}")
-    CacheService.delete(f"user:{user_id}")
+    """
+    Invalide le cache utilisateur (mémoire + Redis).
+    ✅ Supprime AUSSI les anciennes clés (sans version) par sécurité.
+    """
+    # Nouvelle clé versionnée
+    LocalCache.delete(_build_cache_key(user_id))
+    CacheService.delete(_build_cache_key(user_id))
+
+    # Ancienne clé (nettoyage résidus)
+    LocalCache.delete(_build_cache_key_legacy(user_id))
+    CacheService.delete(_build_cache_key_legacy(user_id))
 
 
 def get_current_user(
@@ -150,7 +167,14 @@ def get_current_user(
 ) -> Utilisateur:
     """
     Dépendance FastAPI pour récupérer l'utilisateur authentifié.
-    ZÉRO requête BDD si l'utilisateur est présent dans le cache (optimisé latence réseau).
+    ZÉRO requête BDD si l'utilisateur est présent dans le cache.
+
+    ✅ PHASE 5 — Le cache contient maintenant :
+    - id, email, nom, prenom, post_nom
+    - role_id, role_nom
+    - organisation_id  ← CRITIQUE pour le multi-tenant
+    - doit_changer_mot_de_passe
+    - est_actif
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -167,7 +191,7 @@ def get_current_user(
         raise credentials_exception
 
     try:
-        payload = decode_token(token, is_refresh=False)  # Token d'access
+        payload = decode_token(token, is_refresh=False)
         if payload.get("type") != "access":
             raise credentials_exception
         user_id = payload.get("sub")
@@ -176,9 +200,10 @@ def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    cache_key = f"user:{user_id}"
-    
-    # OPTIMISATION LATENCE : Restitution instantanée depuis le cache local
+    # ✅ Clé de cache VERSIONNÉE
+    cache_key = _build_cache_key(user_id)
+
+    # OPTIMISATION LATENCE : Restitution depuis le cache
     cached_user = LocalCache.get(cache_key) or CacheService.get(cache_key)
     if cached_user:
         user = Utilisateur()
@@ -191,6 +216,7 @@ def get_current_user(
         if getattr(user, 'est_actif', True):
             return user
 
+    # === Chargement BDD (cache miss ou cache expiré) ===
     user = (
         db.query(Utilisateur)
         .options(joinedload(Utilisateur.role))
@@ -206,6 +232,7 @@ def get_current_user(
             detail="Compte utilisateur désactivé",
         )
 
+    # ✅ user_dict COMPLET (tous les champs critiques)
     user_dict = {
         "id": user.id,
         "email": user.email,
@@ -214,7 +241,9 @@ def get_current_user(
         "post_nom": user.post_nom,
         "role_id": user.role_id,
         "role_nom": user.role.nom if user.role else None,
-        "est_actif": user.est_actif
+        "organisation_id": user.organisation_id,                              # ✅ CRITIQUE
+        "doit_changer_mot_de_passe": getattr(user, "doit_changer_mot_de_passe", False),  # ✅
+        "est_actif": user.est_actif,
     }
     LocalCache.set(cache_key, user_dict, 600)
     CacheService.set(cache_key, user_dict, ttl=600)
@@ -224,9 +253,7 @@ def get_current_user(
 def get_current_active_user(
     current_user: Utilisateur = Depends(get_current_user)
 ) -> Utilisateur:
-    """
-    Dépendance supplémentaire pour vérifier que l'utilisateur est actif.
-    """
+    """Dépendance supplémentaire pour vérifier que l'utilisateur est actif."""
     if not current_user.est_actif:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

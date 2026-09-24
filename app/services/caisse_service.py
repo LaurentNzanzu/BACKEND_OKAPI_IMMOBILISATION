@@ -4,11 +4,13 @@ from datetime import datetime
 from typing import Optional, List
 from ..models.caisse import Caisse
 from ..schemas.caisse import CaisseCreate, CaisseUpdate
+from ..services.taux_change_service import TauxChangeService
 
 
 class CaisseService:
     def __init__(self, db: Session):
         self.db = db
+        self.taux_change_service = TauxChangeService(db)
 
     def get_caisse_principale(self) -> Optional[Caisse]:
         """Récupère la caisse principale (ou la première caisse active)."""
@@ -77,6 +79,56 @@ class CaisseService:
         self.db.commit()
         self.db.refresh(caisse)
         return caisse
+    def ordonner_mouvement_multi_devise(
+        self,
+        type_mouvement: str,
+        montant: float,
+        devise_operation: str,
+        organisation_id: int,
+        origine_type: str,
+        origine_id: int,
+        motif: str,
+        beneficiaire: str = None,
+        mode_reglement: str = 'ESPECES',
+        user_id: Optional[int] = None,
+    ) -> dict:
+        """
+        Ordonne un mouvement avec conversion automatique si la devise
+        diffère de celle de la caisse.
+        """
+        caisse = self.get_caisse_principale()
+        if not caisse:
+            raise ValueError("Aucune caisse active")
+
+        devise_caisse = caisse.devise or "USD"
+
+        # Conversion si nécessaire
+        if (devise_operation or "USD").upper() != devise_caisse.upper():
+            conversion = self.taux_change_service.convertir(
+                organisation_id=organisation_id,
+                montant=montant,
+                devise_source=devise_operation,
+                devise_cible=devise_caisse,
+            )
+            montant_caisse = conversion["montant_converti"]
+            infos_conversion = conversion
+        else:
+            montant_caisse = montant
+            infos_conversion = None
+
+        # Déléguer au flux existant
+        result = self.ordonner_mouvement_caisse(
+            type_mouvement=type_mouvement,
+            montant=montant_caisse,
+            origine_type=origine_type,
+            origine_id=origine_id,
+            motif=motif,
+            beneficiaire=beneficiaire,
+            mode_reglement=mode_reglement,
+        )
+        if infos_conversion:
+            result["conversion"] = infos_conversion
+        return result
 
     def ordonner_mouvement_caisse(
         self,

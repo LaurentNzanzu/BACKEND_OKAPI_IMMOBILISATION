@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import uuid
 import logging
+import re  # ═══════════════ AJOUT 5.7 — import re pour validation mdp ═══════════════
 
 from ...core.database import get_db
 from ...core.security import (
@@ -27,13 +29,22 @@ from ...schemas.auth import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
-    PasswordResetResponse
+    PasswordResetResponse,
+    ForceChangePasswordRequest,  # ═══════════════ AJOUT 5.7 — schéma force-change ═══════════════
 )
 from ...models.utilisateur import Utilisateur
 from ...models.role import Role
 from ...core.config import settings
 from ...services.session_service import SessionService
 from ...services.session_cache_service import SessionCacheService
+from ...core.text_normalization import (
+    normalize_email,
+    normalize_password,
+    detect_ambiguous_chars,
+)
+# ═══ AJOUT 5.21 — Import AuditService ═══
+from ...services.audit_service import AuditService
+# ═══ FIN AJOUT 5.21 ═══
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -53,6 +64,30 @@ def set_refresh_token_cookie(response: Response, token: str):
         path="/",
     )
 
+def _build_login_error_message(user: Utilisateur, password_typed: str) -> str:
+    """
+    Construit un message d'erreur plus utile pour l'utilisateur,
+    SANS révéler le mot de passe ni l'existence du compte.
+
+    Guide l'utilisateur vers la résolution du problème.
+    """
+    base = "Email ou mot de passe incorrect."
+
+    # Cas spécial : admin ONG avec mot de passe temporaire non encore changé
+    if getattr(user, "doit_changer_mot_de_passe", False):
+        info = detect_ambiguous_chars(password_typed)
+        if info["has_ambiguous"]:
+            return (
+                f"{base} "
+                f"⚠️ Votre mot de passe temporaire contient des caractères "
+                f"visuellement ambigus. Vérifiez notamment : "
+                f"O (lettre) ≠ 0 (chiffre) • l (L minuscule) ≠ 1 (un) ≠ I (i majuscule). "
+                f"Conseil : utilisez la fonction « Copier » depuis la page de "
+                f"création pour éviter les erreurs de saisie."
+            )
+
+    # Message standard pour les autres cas
+    return base
 
 def clear_refresh_token_cookie(response: Response):
     """Supprime le cookie refresh token."""
@@ -77,50 +112,100 @@ async def login(
     """
     Authentifie un utilisateur et génère un Access Token + Refresh Token.
     Crée une session en base de données pour la traçabilité.
+
+    ✅ PHASE 5 — Amélioration robustesse :
+    - Normalisation de l'email (trim + lowercase + NFC)
+    - Normalisation du mot de passe (trim + suppression caractères invisibles)
+    - Messages d'erreur pédagogiques pour les caractères ambigus
+    - Sécurité inchangée (bcrypt strict)
     """
-    # 1. Recherche de l'utilisateur
+    # === 1. NORMALISATION DES ENTRÉES ===
+    email_clean = normalize_email(login_data.email)
+    password_clean = normalize_password(login_data.mot_de_passe)
+
+    if not email_clean or not password_clean:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email ou mot de passe incorrect"
+        )
+
+    # === 2. RECHERCHE DE L'UTILISATEUR (email insensible à la casse) ===
     user = db.query(Utilisateur).filter(
-        Utilisateur.email == login_data.email,
+        func.lower(Utilisateur.email) == email_clean,
         Utilisateur.est_actif == True
     ).first()
-    
+
     if not user:
+        # Message générique : ne pas révéler que l'email n'existe pas
+        logger.warning(f"Tentative de connexion : email inconnu ({email_clean})")
+
+        # ═══ AJOUT 5.21 — Log LOGIN_FAILED (email inconnu) ═══
+        try:
+            AuditService(db).log_login(
+                user_id=None,
+                email=email_clean,
+                success=False,
+                request=request,
+            )
+        except Exception as e:
+            logger.warning(f"Échec log audit LOGIN_FAILED (email inconnu) : {e}")
+        # ═══ FIN AJOUT 5.21 ═══
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou mot de passe incorrect"
         )
-    
-    # 2. Vérification du mot de passe
-    if not verify_password(login_data.mot_de_passe, user.mot_de_passe):
+
+    # === 3. VÉRIFICATION DU MOT DE PASSE (STRICT, bcrypt) ===
+    if not verify_password(password_clean, user.mot_de_passe):
+        # Message enrichi pour guider l'utilisateur
+        detail = _build_login_error_message(user, password_clean)
+
+        logger.warning(
+            f"Échec de connexion : {email_clean} — "
+            f"doit_changer_mdp={getattr(user, 'doit_changer_mot_de_passe', False)}"
+        )
+
+        # ═══ AJOUT 5.21 — Log LOGIN_FAILED (mot de passe incorrect) ═══
+        try:
+            AuditService(db).log_login(
+                user_id=None,   # volontairement None : on ne confirme pas l'existence du compte
+                email=email_clean,
+                success=False,
+                request=request,
+            )
+        except Exception as e:
+            logger.warning(f"Échec log audit LOGIN_FAILED (mdp incorrect) : {e}")
+        # ═══ FIN AJOUT 5.21 ═══
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect"
+            detail=detail,
         )
-    
-    # 3. Mise à jour de last_login
+
+    # === 4. MISE À JOUR DU last_login ===
     user.last_login = datetime.utcnow()
     db.commit()
-    
-    # 4. Génération des identifiants et tokens
+
+    # === 5. GÉNÉRATION DES TOKENS (inchangé) ===
     session_uuid = str(uuid.uuid4())
     access_jti = str(uuid.uuid4())
     refresh_jti = str(uuid.uuid4())
-    
+
     access_token = create_access_token(user.id, session_uuid=session_uuid, jti=access_jti)
     refresh_token = create_refresh_token(user.id, session_uuid=session_uuid, jti=refresh_jti)
-    
-    # 5. Récupération des informations client
+
+    # === 6. INFOS CLIENT ===
     user_agent = request.headers.get("user-agent")
     ip_address = request.client.host if request.client else None
-    
-    # Récupérer l'IP via X-Forwarded-For si derrière un proxy
+
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
         ip_address = forwarded_for.split(",")[0].strip()
-    
+
     fingerprint = request.headers.get("x-fingerprint")
-    
-    # 6. CRÉATION DE LA SESSION EN BDD
+
+    # === 7. CRÉATION DE LA SESSION ===
     try:
         session = SessionService.create_session(
             db=db,
@@ -132,21 +217,21 @@ async def login(
             session_data={
                 "login_method": "password",
                 "access_jti": access_jti,
-                "refresh_jti": refresh_jti
+                "refresh_jti": refresh_jti,
             },
-            session_uuid=session_uuid
+            session_uuid=session_uuid,
         )
     except Exception as e:
-        logger.error(f"Erreur lors de la création de la session: {e}")
+        logger.error(f"Erreur création session : {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erreur lors de la création de la session"
+            detail="Erreur lors de la création de la session",
         )
-    
-    # 7. Définition du cookie refresh token
+
+    # === 8. COOKIE REFRESH ===
     set_refresh_token_cookie(response, refresh_token)
-    
-    # 8. Construction de la réponse
+
+    # === 9. RÉPONSE ===
     user_response = UserAuthResponse(
         id=user.id,
         email=user.email,
@@ -156,16 +241,27 @@ async def login(
         telephone=user.telephone,
         roles=[user.role.nom] if user.role else [],
         est_actif=user.est_actif,
-        last_login=user.last_login
+        last_login=user.last_login,
     )
-    
+
+    # ═══ AJOUT 5.21 — Log LOGIN_SUCCESS ═══
+    try:
+        AuditService(db).log_login(
+            user_id=user.id,
+            email=user.email,
+            success=True,
+            request=request,
+        )
+    except Exception as e:
+        logger.warning(f"Échec log audit LOGIN_SUCCESS : {e}")
+    # ═══ FIN AJOUT 5.21 ═══
+
     return LoginResponse(
         access_token=access_token,
         session_uuid=session_uuid,
         user=user_response,
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
-
 
 @router.post("/refresh", response_model=RefreshTokenResponse)
 async def refresh(
@@ -403,6 +499,17 @@ async def logout(
     
     # 6. Nettoyer le cookie refresh token
     clear_refresh_token_cookie(response)
+
+    # ═══ AJOUT 5.21 — Log LOGOUT ═══
+    try:
+        if user_id:
+            AuditService(db).log_logout(
+                user_id=int(user_id),
+                request=request,
+            )
+    except Exception as e:
+        logger.warning(f"Échec log audit LOGOUT : {e}")
+    # ═══ FIN AJOUT 5.21 ═══
     
     return LogoutResponse(message="Déconnexion réussie")
 
@@ -612,4 +719,69 @@ async def login_oauth2_for_swagger(
         "session_uuid": result.session_uuid,
         "expires_in": result.expires_in,
         "user": result.user,
+    }
+
+
+# ═══════════════ AJOUT 5.7 — DÉBUT ═══════════════
+
+@router.post("/force-change-password")
+async def force_change_password(
+    request: ForceChangePasswordRequest,
+    current_user: Utilisateur = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Change le mot de passe lors de la PREMIÈRE CONNEXION de l'admin ONG.
+
+    Contexte :
+    - L'admin ONG est créé automatiquement avec un mot de passe temporaire
+    - `doit_changer_mot_de_passe = True` jusqu'à ce qu'il change son mot de passe
+    - Cet endpoint ne nécessite PAS l'ancien mot de passe (déjà validé au login)
+
+    Règles de validation du nouveau mot de passe :
+    - 8 caractères minimum
+    - Au moins 1 majuscule
+    - Au moins 1 minuscule
+    - Au moins 1 chiffre
+    """
+    # 1. Vérifier que le changement est bien requis
+    if not getattr(current_user, "doit_changer_mot_de_passe", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun changement de mot de passe forcé n'est requis pour ce compte.",
+        )
+
+    # 2. Valider le nouveau mot de passe
+    nouveau = request.nouveau_mot_de_passe or ""
+    erreurs = []
+    if len(nouveau) < 8:
+        erreurs.append("au moins 8 caractères")
+    if not re.search(r"[A-Z]", nouveau):
+        erreurs.append("au moins une majuscule")
+    if not re.search(r"[a-z]", nouveau):
+        erreurs.append("au moins une minuscule")
+    if not re.search(r"\d", nouveau):
+        erreurs.append("au moins un chiffre")
+
+    if erreurs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mot de passe invalide : " + ", ".join(erreurs) + ".",
+        )
+
+    # 3. Mettre à jour le mot de passe + retirer le flag
+    current_user.mot_de_passe = get_password_hash(nouveau)
+    current_user.doit_changer_mot_de_passe = False
+    db.commit()
+    db.refresh(current_user)
+
+    logger.info(
+        f"Mot de passe forcé changé avec succès pour l'utilisateur "
+        f"#{current_user.id} ({current_user.email})"
+    )
+
+    return {
+        "success": True,
+        "message": "Mot de passe changé avec succès. Vous pouvez maintenant utiliser l'application.",
+        "doit_changer_mot_de_passe": False,
     }

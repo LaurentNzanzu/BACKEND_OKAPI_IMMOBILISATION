@@ -72,8 +72,9 @@ class AmortissementWorkflowService:
 
         # Notification pour la caisse
         try:
-            self.notification_service.envoyer_notification_par_role(
+            self.notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="CAISSE",
+                organisation_id=getattr(amortissement, "organisation_id", None),
                 type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                 titre="Nouvel amortissement à vérifier",
                 contenu=f"Un amortissement de {amortissement.annuite_comptable:,.2f} USD (#{amortissement.id_amortissement}) requiert votre vérification de trésorerie.",
@@ -137,8 +138,9 @@ class AmortissementWorkflowService:
 
             # Notification DG : DECAISSEMENT_A_VALIDER
             try:
-                self.notification_service.envoyer_notification_par_role(
+                self.notification_service.envoyer_notification_par_role_avec_ong(
                     role_nom="DG",
+                    organisation_id=getattr(amortissement, "organisation_id", None),
                     type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                     titre="Décaissement à valider",
                     contenu=f"La caisse a confirmé la disponibilité des fonds pour l'amortissement {id_amortissement}. Veuillez autoriser le décaissement.",
@@ -155,8 +157,9 @@ class AmortissementWorkflowService:
 
             # Notification DG : TRESORERIE_INSUFFISANTE
             try:
-                self.notification_service.envoyer_notification_par_role(
+                self.notification_service.envoyer_notification_par_role_avec_ong(
                     role_nom="DG",
+                    organisation_id=getattr(amortissement, "organisation_id", None),
                     type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                     titre="Réapprovisionnement nécessaire",
                     contenu=f"Fonds insuffisants en caisse pour l'amortissement {id_amortissement}. Réapprovisionnement nécessaire.",
@@ -252,8 +255,9 @@ class AmortissementWorkflowService:
 
             # Notification COMPTABLE : ECRITURE_A_VALIDER
             try:
-                self.notification_service.envoyer_notification_par_role(
+                self.notification_service.envoyer_notification_par_role_avec_ong(
                     role_nom="COMPTABLE",
+                    organisation_id=getattr(amortissement, "organisation_id", None),
                     type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                     titre="Écriture à valider",
                     contenu=f"Le décaissement pour l'amortissement {id_amortissement} est approuvé. Pièce justificative disponible. Veuillez valider l'écriture.",
@@ -269,8 +273,9 @@ class AmortissementWorkflowService:
 
             # Notification COMPTABLE : AMORTISSEMENT_REJETE
             try:
-                self.notification_service.envoyer_notification_par_role(
+                self.notification_service.envoyer_notification_par_role_avec_ong(
                     role_nom="COMPTABLE",
+                    organisation_id=getattr(amortissement, "organisation_id", None),
                     type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                     titre="Amortissement rejeté",
                     contenu=f"L'amortissement {id_amortissement} a été rejeté à l'étape DG. Motif : {motif}",
@@ -357,8 +362,9 @@ class AmortissementWorkflowService:
 
         # Notification de fin : AMORTISSEMENT_VALIDE
         try:
-            self.notification_service.envoyer_notification_par_role(
+            self.notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="COMPTABLE",
+                organisation_id=getattr(amortissement, "organisation_id", None),
                 type_notif=TypeNotificationEnum.AMORTISSEMENT_CALCULE,
                 titre="Amortissement verrouillé",
                 contenu=f"L'amortissement {id_amortissement} a été validé et verrouillé définitivement.",

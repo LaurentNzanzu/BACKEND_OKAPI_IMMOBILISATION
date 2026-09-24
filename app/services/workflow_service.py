@@ -356,8 +356,18 @@ class WorkflowService:
         - MISSION : DEMANDE → VALIDEE_LOG → VALIDEE_DG (optionnelle) → EN_COURS → TERMINEE
         - RAVITAILLEMENT : SAISIE → VALIDEE_LOG
         - INCIDENT : DECLARE → VALIDE_LOG
+        - BESOIN : COMPTABLE → CAISSE → DG  (circuit legacy conservé)
+        - CESSION : COMPTABLE → CAISSE → DG  (circuit legacy conservé)
         """
-        workflows_crees = {"MISSION": 0, "RAVITAILLEMENT": 0, "INCIDENT": 0}
+        # ═══ MODIF 5.10.c — ajout BESOIN et CESSION au dict ═══
+        workflows_crees = {
+            "MISSION": 0,
+            "RAVITAILLEMENT": 0,
+            "INCIDENT": 0,
+            "BESOIN": 0,      # ═══ AJOUT 5.10.c ═══
+            "CESSION": 0,     # ═══ AJOUT 5.10.c ═══
+        }
+        # ═══ FIN MODIF 5.10.c ═══
 
         # Workflow MISSION
         etapes_mission = [
@@ -384,10 +394,29 @@ class WorkflowService:
             {"ordre": 2, "role_requis": "LOGISTICIEN", "permission_requise": "INCIDENT_VALIDER", "est_optionnelle": False},
         ]
 
+        # ═══ AJOUT 5.10.c — Workflow BESOIN (circuit legacy COMPTABLE → CAISSE → DG) ═══
+        etapes_besoin = [
+            {"ordre": 1, "role_requis": "COMPTABLE", "permission_requise": None, "est_optionnelle": False},
+            {"ordre": 2, "role_requis": "CAISSE",    "permission_requise": None, "est_optionnelle": False},
+            {"ordre": 3, "role_requis": "DG",        "permission_requise": None, "est_optionnelle": False},
+        ]
+        # ═══ FIN AJOUT 5.10.c ═══
+
+        # ═══ AJOUT 5.10.c — Workflow CESSION (circuit legacy COMPTABLE → CAISSE → DG) ═══
+        etapes_cession = [
+            {"ordre": 1, "role_requis": "COMPTABLE", "permission_requise": None, "est_optionnelle": False},
+            {"ordre": 2, "role_requis": "CAISSE",    "permission_requise": None, "est_optionnelle": False},
+            {"ordre": 3, "role_requis": "DG",        "permission_requise": None, "est_optionnelle": False},
+        ]
+        # ═══ FIN AJOUT 5.10.c ═══
+
+        # ═══ MODIF 5.10.c — ajout BESOIN et CESSION à la boucle ═══
         for type_wf, etapes in [
             ("MISSION", etapes_mission),
             ("RAVITAILLEMENT", etapes_ravitaillement),
             ("INCIDENT", etapes_incident),
+            ("BESOIN", etapes_besoin),    # ═══ AJOUT 5.10.c ═══
+            ("CESSION", etapes_cession),  # ═══ AJOUT 5.10.c ═══
         ]:
             for e in etapes:
                 try:
@@ -403,10 +432,11 @@ class WorkflowService:
                 except ValueError as err:
                     # Étape déjà existante → ignorer
                     logger.debug(f"Étape {type_wf}/{e['ordre']} déjà existante : {err}")
+        # ═══ FIN MODIF 5.10.c ═══
 
         logger.info(f"Workflow par défaut créé pour organisation #{organisation_id}")
         return workflows_crees
-
+    
     def compter_etapes(self, type_workflow: str, organisation_id: int) -> int:
         """Compte les étapes actives d'un workflow."""
         return len(self.obtenir_etapes(type_workflow, organisation_id))

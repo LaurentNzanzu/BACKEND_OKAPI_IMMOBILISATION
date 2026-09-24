@@ -13,11 +13,11 @@ from .panne import Panne, PrioritePanne, StatutPanne, TypePanne
 from .piece_rechange import PieceRechange
 from .besoin import Besoin, StatutBesoin
 from .ligne_besoin import LigneBesoin
-from .validation import Validation, OrdreValidation, DecisionValidation, TypeValidation  # MODIFIÉ
-from .maintenance import Maintenance, TypeMaintenance, StatutMaintenance, TypeOrigineMaintenance  # MODIFIÉ
+from .validation import Validation, OrdreValidation, DecisionValidation, TypeValidation
+from .maintenance import Maintenance, TypeMaintenance, StatutMaintenance, TypeOrigineMaintenance
 from .fourniture_piece import FourniturePiece, StatutFourniture
 from .amortissement import Amortissement, MethodeAmortissement, StatutAmortissement
-from .ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture  # MODIFIÉ
+from .ecriture_comptable import EcritureComptable, TypeOperationEnum, StatutEcriture
 from .plan_comptable import PlanComptable
 from .regles_amortissement import RegleAmortissement, RegleHistorique
 from .mouvement_bien import MouvementBien, TypeMouvementEnum
@@ -25,11 +25,12 @@ from .notification import Notification
 from .audit_log import AuditLog
 from .decision_ia import DecisionIA, TypeDecisionEnum
 from .fournisseur import Fournisseur
-from .budget import Budget  # NOUVEAU
+from .budget import Budget
 from .caisse import Caisse
 from .centre_cout import CentreCout
 
-# === NOUVEAUX IMPORTATIONS TÂCHE 3 ===
+
+# === TÂCHE 3 ===
 from .journal_evenements_immobilisation import JournalEvenementImmobilisation, TypeEvenementImmobilisation
 from .alerte_vnc import AlerteVNC, StatutAlerteVNC
 from .projection_investissement import ProjectionInvestissement, StatutProjection
@@ -38,28 +39,42 @@ from .piece_justificative import PieceJustificative
 from .mouvement_caisse import MouvementCaisse
 from .historique_statut_ecriture import HistoriqueStatutEcriture
 from .cession import Cession
-from .workflow_amortissement import WorkflowValidationAmortissement, EtapeWorkflowAmortissement, StatutWorkflowAmortissement
-from .discussion_concertation import DiscussionConcertation, MessageConcertation, ValidationConcertation, TypeValidationEnum, DecisionValidationConcertation
-from .type_bien import TypeBien  
-# === NOUVEAUX IMPORTATIONS TÂCHE 4 ===
-from .session import SessionUtilisateur
-from .config_inventaire import ConfigInventaire  # NOUVEAU
-from .organisation import Organisation  # NOUVEAU
-from .abonnement_facturation import AbonnementFacturation  # NOUVEAU
-from .projet import Projet  # NOUVEAU
-from .workflow_etape import WorkflowEtape  # NOUVEAU
+from .workflow_amortissement import (
+    WorkflowValidationAmortissement,
+    EtapeWorkflowAmortissement,
+    StatutWorkflowAmortissement,
+)
+from .discussion_concertation import (
+    DiscussionConcertation,
+    MessageConcertation,
+    ValidationConcertation,
+    TypeValidationEnum,
+    DecisionValidationConcertation,
+)
+from .type_bien import TypeBien
 
+# === TÂCHE 4 (Sprint 0) ===
+from .session import SessionUtilisateur
+from .config_inventaire import ConfigInventaire
+from .organisation import Organisation, PlanAbonnement, StatutOrganisation
+from .abonnement_facturation import AbonnementFacturation, StatutPaiement
+from .projet import Projet
+from .workflow_etape import WorkflowEtape, TypeWorkflow
+
+# ✅ PHASE 3 — Modèle override des permissions par ONG
+from .organisation_role_permission import OrganisationRolePermission
+from .taux_change import TauxChange
 
 
 __all__ = [
-    # Gestion des utilisateurs et permissions
+    # ===================== Utilisateurs et permissions =====================
     "Permission",
     "role_permissions",
     "Role",
     "Utilisateur",
     "JournalAudit",
-    
-    # Gestion des biens
+
+    # ===================== Biens =====================
     "Bien",
     "EtatBien",
     "Vehicule",
@@ -67,8 +82,9 @@ __all__ = [
     "Ordinateur",
     "Composant",
     "Localisation",
-    
-    # Gestion des pannes et maintenances
+    "TypeBien",
+
+    # ===================== Pannes et maintenances =====================
     "Panne",
     "PrioritePanne",
     "StatutPanne",
@@ -80,71 +96,80 @@ __all__ = [
     "Validation",
     "OrdreValidation",
     "DecisionValidation",
-    "TypeValidation",  # NOUVEAU
+    "TypeValidation",
     "Maintenance",
     "TypeMaintenance",
     "StatutMaintenance",
-    "TypeOrigineMaintenance",  # NOUVEAU TÂCHE 3
+    "TypeOrigineMaintenance",
     "FourniturePiece",
     "StatutFourniture",
-    
-    # Amortissements et règles configurables
+
+    # ===================== Amortissements =====================
     "Amortissement",
     "MethodeAmortissement",
     "StatutAmortissement",
     "RegleAmortissement",
     "RegleHistorique",
-    
-    # Écritures comptables
+
+    # ===================== Écritures comptables =====================
     "EcritureComptable",
     "TypeOperationEnum",
     "StatutEcriture",
     "PlanComptable",
     "MouvementBien",
     "TypeMouvementEnum",
-    
-    # Notifications et audit
+    "HistoriqueStatutEcriture",
+    "MouvementCaisse",
+    "PieceJustificative",
+
+    # ===================== Notifications et audit =====================
     "Notification",
     "AuditLog",
-    
-    # Décision IA
+
+    # ===================== IA =====================
     "DecisionIA",
     "TypeDecisionEnum",
-    
-    # Fournisseur
+
+    # ===================== Fournisseur, Budget, Caisse =====================
     "Fournisseur",
-    
-    # Budget (NOUVEAU)
     "Budget",
-    
-    # === NOUVEAUX MODÈLES TÂCHE 3 ===
-    # Journal des événements d'immobilisation
+    "Caisse",
+    "CentreCout",
+
+    # ===================== TÂCHE 3 =====================
     "JournalEvenementImmobilisation",
     "TypeEvenementImmobilisation",
-    
-    # Alertes VNC (Valeur Nette Comptable)
     "AlerteVNC",
     "StatutAlerteVNC",
-    
-    # Projections d'investissement
     "ProjectionInvestissement",
     "StatutProjection",
-    
-    # Ordres de remplacement
     "OrdreRemplacement",
     "StatutOrdreRemplacement",
+    "Cession",
+    "WorkflowValidationAmortissement",
+    "EtapeWorkflowAmortissement",
+    "StatutWorkflowAmortissement",
     "DiscussionConcertation",
     "MessageConcertation",
-    "ValidationConcertation"
+    "ValidationConcertation",
+    "TypeValidationEnum",
+    "DecisionValidationConcertation",
 
-    #session utilisateur
-    "SessionUtilisateur"
-    #=== NOUVEAUX MODÈLES TÂCHE 4 ===
-    "TypeBien",
-    "ConfigInventaire"
-    #organisation
-    "Organisation"
-    "AbonnementFacturation"
-    "Projet"
-    "WorkflowEtape"
+    # ===================== Sessions =====================
+    "SessionUtilisateur",
+
+    # ===================== TÂCHE 4 — Sprint 0 =====================
+    "ConfigInventaire",
+    "Organisation",
+    "PlanAbonnement",
+    "StatutOrganisation",
+    "AbonnementFacturation",
+    "StatutPaiement",
+    "Projet",
+    "WorkflowEtape",
+    "TypeWorkflow",
+
+    # ===================== PHASE 3 — Override permissions =====================
+    "OrganisationRolePermission",
+    "TauxChange"
 ]

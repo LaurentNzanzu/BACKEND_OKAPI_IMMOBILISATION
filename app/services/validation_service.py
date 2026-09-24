@@ -22,6 +22,7 @@ from ..models.ecriture_comptable import EcritureComptable, TypeOperationEnum, St
 from ..services.notification_service import NotificationService, TypeNotificationEnum
 from ..services.budget_service import BudgetService
 from ..services.audit_service import AuditService
+from ..services.workflow_service import WorkflowService
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +33,25 @@ class ValidationService:
         self.notification_service = NotificationService(db)
         self.budget_service = BudgetService(db)
         self.audit_service = AuditService(db)
+        self.workflow_service = WorkflowService(db)
 
-    def _get_utilisateurs_par_roles(self, *roles: str) -> List[Utilisateur]:
-        """Récupère les utilisateurs ayant un des rôles donnés."""
+    # ═══ MODIF 5.12.c — Filtre ONG sur les destinataires ═══
+    def _get_utilisateurs_par_roles(self, *roles: str, organisation_id: Optional[int] = None) -> List[Utilisateur]:
+        """
+        Récupère les utilisateurs ayant un des rôles donnés.
+
+        Si `organisation_id` est fourni → filtre sur cette ONG uniquement.
+        Sinon → comportement legacy (tous les utilisateurs, tous ONG).
+        """
         roles_upper = [role.upper() for role in roles]
-        return (
+        query = (
             self.db.query(Utilisateur)
             .join(Role)
             .filter(func.upper(Role.nom).in_(roles_upper))
-            .all()
         )
+        if organisation_id is not None:
+            query = query.filter(Utilisateur.organisation_id == organisation_id)
+        return query.all()
 
     def _get_prochain_validateur(self, etape_actuelle: OrdreValidation) -> OrdreValidation:
         """Détermine le prochain validateur dans le workflow."""
@@ -95,6 +105,111 @@ class ValidationService:
         
         return bien.id_bien
 
+    # ═══ AJOUT 5.10.d — Helper organisation_id depuis Besoin ═══
+    def _get_organisation_id_besoin(self, besoin: Besoin) -> Optional[int]:
+        """
+        Remonte l'organisation_id d'un besoin via la chaîne :
+            Besoin → Panne → Bien → organisation_id
+
+        Retourne None si introuvable (fallback legacy).
+        """
+        try:
+            if not getattr(besoin, "id_panne", None):
+                return None
+
+            panne = (
+                self.db.query(Panne)
+                .filter(Panne.id_panne == besoin.id_panne)
+                .first()
+            )
+            if not panne or not getattr(panne, "id_bien", None):
+                return None
+
+            bien = (
+                self.db.query(Bien)
+                .filter(Bien.id_bien == panne.id_bien)
+                .first()
+            )
+            if not bien:
+                return None
+
+            return getattr(bien, "organisation_id", None)
+        except Exception as e:
+            logger.warning(
+                f"Impossible de déterminer l'organisation du besoin "
+                f"#{getattr(besoin, 'id_besoin', '?')} : {e}"
+            )
+            return None
+    # ═══ FIN AJOUT 5.10.d ═══
+
+    # ═══ AJOUT 5.12.a — Helpers publics organisation_id (multi-tenant) ═══
+    def get_organisation_id_validation(self, validation: Validation) -> Optional[int]:
+        """
+        Retourne l'organisation_id d'une Validation :
+        - via id_besoin → Besoin → Panne → Bien
+        - ou via id_bien → Bien
+        """
+        try:
+            if getattr(validation, "id_besoin", None):
+                besoin = (
+                    self.db.query(Besoin)
+                    .filter(Besoin.id_besoin == validation.id_besoin)
+                    .first()
+                )
+                if besoin:
+                    return self._get_organisation_id_besoin(besoin)
+            if getattr(validation, "id_bien", None):
+                bien = (
+                    self.db.query(Bien)
+                    .filter(Bien.id_bien == validation.id_bien)
+                    .first()
+                )
+                if bien:
+                    return getattr(bien, "organisation_id", None)
+        except Exception as e:
+            logger.warning(
+                f"Impossible de déterminer l'organisation de la validation "
+                f"#{getattr(validation, 'id_validation', '?')} : {e}"
+            )
+        return None
+
+    def get_organisation_id_cession(self, cession: Cession) -> Optional[int]:
+        """Retourne l'organisation_id d'une Cession via Cession → Bien."""
+        try:
+            if not getattr(cession, "id_bien", None):
+                return None
+            bien = (
+                self.db.query(Bien)
+                .filter(Bien.id_bien == cession.id_bien)
+                .first()
+            )
+            return getattr(bien, "organisation_id", None) if bien else None
+        except Exception as e:
+            logger.warning(
+                f"Impossible de déterminer l'organisation de la cession "
+                f"#{getattr(cession, 'id_cession', '?')} : {e}"
+            )
+            return None
+
+    def get_organisation_id_amortissement(self, amortissement: Amortissement) -> Optional[int]:
+        """Retourne l'organisation_id d'un Amortissement via Amortissement → Bien."""
+        try:
+            if not getattr(amortissement, "id_bien", None):
+                return None
+            bien = (
+                self.db.query(Bien)
+                .filter(Bien.id_bien == amortissement.id_bien)
+                .first()
+            )
+            return getattr(bien, "organisation_id", None) if bien else None
+        except Exception as e:
+            logger.warning(
+                f"Impossible de déterminer l'organisation de l'amortissement "
+                f"#{getattr(amortissement, 'id_amortissement', '?')} : {e}"
+            )
+            return None
+    # ═══ FIN AJOUT 5.12.a ═══
+
     # ============================================================
     # WORKFLOW BESOIN – AVEC TRANSACTION ACID
     # ============================================================
@@ -111,16 +226,12 @@ class ValidationService:
         """
         Valide ou rejette un besoin dans le workflow séquentiel.
         Workflow: COMPTABLE → CAISSE → DG
-        
-        ✅ TRANSACTION ACID avec with self.db.begin()
-        ✅ Verrous pessimistes sur les lignes
         """
         ordre_enum = self._get_ordre_enum(ordre_validateur)
         decision_enum = self._get_decision_enum(decision)
 
         try:
             with self.db.begin_nested():
-                # 1. Récupérer le besoin avec verrou pessimiste
                 besoin = self.db.query(Besoin).filter(
                     Besoin.id_besoin == besoin_id
                 ).with_for_update().first()
@@ -128,11 +239,25 @@ class ValidationService:
                 if not besoin:
                     raise ValueError("Besoin non trouvé")
 
-                # 2. Vérifier que le besoin est en attente de ce validateur
+                # ═══ AJOUT 5.10.d — Calcul dynamique APRÈS chargement du besoin ═══
+                organisation_id = self._get_organisation_id_besoin(besoin)
+
+                prochain = self._get_prochain_validateur_dynamique(
+                    type_workflow="BESOIN",
+                    ordre_actuel=ordre_validateur,
+                    organisation_id=organisation_id,
+                    contexte={"montant_total": float(besoin.montant_total or 0)},
+                )
+                logger.debug(
+                    f"[workflow] Besoin #{besoin_id} — étape={ordre_validateur} "
+                    f"→ prochain={prochain} (organisation_id={organisation_id})"
+                )
+                # ═══ FIN AJOUT 5.10.d ═══
+
                 if not self._est_en_attente_de(besoin, ordre_validateur):
                     raise ValueError(f"Ce besoin n'est pas en attente de validation par {ordre_validateur}")
 
-                # 3. Créer la validation
+                # ═══ MODIF 5.12.c — organisation_id renseigné sur la Validation ═══
                 validation = Validation(
                     id_besoin=besoin_id,
                     id_validateur=id_validateur,
@@ -141,17 +266,16 @@ class ValidationService:
                     decision=decision_enum,
                     commentaire=commentaire,
                     piece_justificative_url=piece_justificative_url,
-                    date_validation=datetime.utcnow()
+                    date_validation=datetime.utcnow(),
+                    organisation_id=organisation_id,  # ═══ AJOUT 5.12.c ═══
                 )
                 self.db.add(validation)
 
-                # 4. Traiter la décision
                 if decision_enum == DecisionValidation.REJETE:
                     result = self._traiter_rejet_besoin(besoin, validation, id_validateur, ordre_validateur, commentaire)
                 else:
                     result = self._traiter_approbation_besoin(besoin, validation, id_validateur, ordre_validateur)
 
-                # 5. Mettre à jour le besoin
                 self.db.add(besoin)
 
             self.db.refresh(besoin)
@@ -161,7 +285,6 @@ class ValidationService:
         except ValueError as e:
             raise
 
-        # Journaliser (hors transaction)
         self.audit_service.log_action(
             user_id=id_validateur,
             table_name="besoins",
@@ -173,10 +296,6 @@ class ValidationService:
         return result
 
     def _est_en_attente_de(self, besoin: Besoin, ordre: str) -> bool:
-        """
-        Vérifie si le besoin est en attente d'un ordre donné.
-        Workflow: COMPTABLE → CAISSE → DG
-        """
         mapping = {
             "COMPTABLE": [StatutBesoin.BROUILLON, StatutBesoin.EN_VALIDATION],
             "CAISSE": [StatutBesoin.COMPTABLE_VALIDE],
@@ -187,10 +306,8 @@ class ValidationService:
 
     def _traiter_rejet_besoin(self, besoin: Besoin, validation: Validation,
                               id_validateur: int, ordre: str, motif: str):
-        """Traite le rejet d'un besoin."""
         besoin.statut = StatutBesoin.REJETE
 
-        # Si budget déjà engagé, le libérer dans la même transaction
         if besoin.id_budget and besoin.montant_total and besoin.montant_total > 0:
             try:
                 self.budget_service.liberer_montant(
@@ -201,7 +318,6 @@ class ValidationService:
             except Exception as e:
                 logger.warning(f"Libération budget échouée: {e}")
 
-        # Notifier le technicien
         panne = self.db.query(Panne).filter(Panne.id_panne == besoin.id_panne).first() if besoin.id_panne else None
         id_technicien = panne.id_technicien if panne else None
 
@@ -225,21 +341,15 @@ class ValidationService:
 
     def _traiter_approbation_besoin(self, besoin: Besoin, validation: Validation,
                                     id_validateur: int, ordre: str):
-        """
-        Traite l'approbation d'un besoin.
-        Workflow: COMPTABLE (Budget) → CAISSE (Trésorerie) → DG (Décaissement & Approbation finale)
-        """
         ordre_enum = self._get_ordre_enum(ordre)
+        organisation_id = self._get_organisation_id_besoin(besoin)  # ═══ 5.12.c ═══
 
         if ordre_enum == OrdreValidation.COMPTABLE:
-            # ÉTAPE 1 : COMPTABLE (Vérification du budget disponible)
             centre_cout = self._get_centre_cout_besoin(besoin)
             annee = datetime.utcnow().year
 
             verification = self.budget_service.verifier_disponibilite(
-                centre_cout,
-                annee,
-                besoin.montant_total
+                centre_cout, annee, besoin.montant_total
             )
 
             if not verification.est_disponible:
@@ -253,7 +363,6 @@ class ValidationService:
                     "motif": validation.motif_rejet
                 }
 
-            # Engagement du budget DANS LA TRANSACTION (si budget OK)
             engagement = self.budget_service.engager_montant(
                 centre_cout=centre_cout,
                 exercice=annee,
@@ -266,7 +375,6 @@ class ValidationService:
             besoin.statut = StatutBesoin.COMPTABLE_VALIDE
 
         elif ordre_enum == OrdreValidation.CAISSE:
-            # ÉTAPE 2 : CAISSE (Vérification de la trésorerie physique disponible)
             from ..services.caisse_service import CaisseService
             caisse_service = CaisseService(self.db)
             tresorerie = caisse_service.verifier_tresorerie(besoin.montant_total)
@@ -285,13 +393,10 @@ class ValidationService:
             besoin.statut = StatutBesoin.CAISSE_VALIDE
 
         elif ordre_enum == OrdreValidation.DG:
-            # ÉTAPE 3 : DG (Validation finale stratégique)
             besoin.statut = StatutBesoin.APPROUVEE
 
-            # Générer le bon de décaissement (numérique)
             bon_decaissement = self._generer_bon_decaissement(besoin, id_validateur)
 
-            # Ordonner le mouvement de caisse réel (sortie)
             from ..services.caisse_service import CaisseService
             caisse_service = CaisseService(self.db)
             try:
@@ -306,8 +411,8 @@ class ValidationService:
                 logger.error(f"Échec de l'ordonnancement du mouvement de caisse pour le besoin {besoin.id_besoin}: {e}")
                 raise ValueError(f"Erreur de caisse lors de l'ordonnancement du mouvement : {str(e)}")
 
-            # Notifier le caissier pour le paiement effectif
-            caissiers = self._get_utilisateurs_par_roles("CAISSE")
+            # ═══ MODIF 5.12.c — filtre ONG sur les destinataires ═══
+            caissiers = self._get_utilisateurs_par_roles("CAISSE", organisation_id=organisation_id)
             for caissier in caissiers:
                 self.notification_service.envoyer_notification(
                     ids_destinataires=caissier.id,
@@ -318,7 +423,6 @@ class ValidationService:
                     commit=False
                 )
 
-        # Notifier le prochain validateur
         self._notifier_prochain_validateur(besoin, ordre, is_rejet=False)
 
         return {
@@ -329,7 +433,6 @@ class ValidationService:
         }
 
     def _get_centre_cout_besoin(self, besoin: Besoin) -> str:
-        """Récupère le centre de coût d'un besoin depuis le besoin ou la panne/bien."""
         if besoin.centre_cout and besoin.centre_cout.strip():
             return besoin.centre_cout.strip()
         if besoin.id_panne:
@@ -339,10 +442,6 @@ class ValidationService:
         return "SERVICE_GENERAL"
 
     def _generer_bon_decaissement(self, besoin: Besoin, validateur_id: int) -> dict:
-        """
-        Génère un bon de décaissement numérique.
-        """
-        # Récupérer le bien associé au besoin
         bien_id = None
         
         if besoin.id_panne:
@@ -351,7 +450,6 @@ class ValidationService:
                 bien_id = panne.id_bien
                 logger.info(f"Bien trouvé via la panne: {bien_id}")
         
-        # Si pas de bien trouvé, utiliser un bien générique
         if bien_id is None:
             logger.warning(f"Aucun bien associé au besoin {besoin.id_besoin}, utilisation du bien générique")
             bien_id = self._get_default_bien()
@@ -381,7 +479,6 @@ class ValidationService:
         }
 
     def _notifier_prochain_validateur(self, besoin: Besoin, ordre_actuel: str, is_rejet: bool = False):
-        """Notifie le prochain validateur."""
         if is_rejet:
             return
 
@@ -391,7 +488,9 @@ class ValidationService:
         if not prochain:
             return
 
-        validateurs = self._get_utilisateurs_par_roles(prochain.value)
+        # ═══ MODIF 5.12.c — filtre ONG sur les destinataires ═══
+        organisation_id = self._get_organisation_id_besoin(besoin)
+        validateurs = self._get_utilisateurs_par_roles(prochain.value, organisation_id=organisation_id)
 
         if prochain == OrdreValidation.DG:
             titre = f"📋 Besoin à valider - {besoin.numero_demande}"
@@ -416,7 +515,7 @@ class ValidationService:
             )
 
     # ============================================================
-    # WORKFLOW CESSION – AVEC TRANSACTION ACID ET CEDE DIFFÉRÉ
+    # WORKFLOW CESSION
     # ============================================================
 
     def valider_cession(
@@ -428,18 +527,11 @@ class ValidationService:
         commentaire: str = None,
         piece_justificative_url: str = None
     ) -> dict:
-        """
-        Valide ou rejette une cession dans le workflow séquentiel.
-        
-        🔴 CRITIQUE : Le statut CEDE n'est appliqué qu'après validation de l'encaissement
-        Workflow: Demande → Comptable → Caissier → DG
-        """
         ordre_enum = self._get_ordre_enum(ordre_validateur)
         decision_enum = self._get_decision_enum(decision)
 
         try:
             with self.db.begin_nested():
-                # 1. Récupérer la cession avec verrou
                 cession = self.db.query(Cession).filter(
                     Cession.id_cession == cession_id
                 ).with_for_update().first()
@@ -447,7 +539,6 @@ class ValidationService:
                 if not cession:
                     raise ValueError("Cession non trouvée")
 
-                # 2. Récupérer le bien avec verrou
                 bien = self.db.query(Bien).filter(
                     Bien.id_bien == cession.id_bien
                 ).with_for_update().first()
@@ -455,11 +546,10 @@ class ValidationService:
                 if not bien:
                     raise ValueError(f"Bien associé à la cession non trouvé")
 
-                # 3. Vérifier que la cession est dans le bon statut
                 if not self._est_en_attente_de_cession(cession, ordre_validateur):
                     raise ValueError(f"Cette cession n'est pas en attente de validation par {ordre_validateur}")
 
-                # 4. Créer la validation
+                # ═══ MODIF 5.12.c — organisation_id renseigné sur la Validation ═══
                 validation = Validation(
                     id_bien=cession.id_bien,
                     id_validateur=id_validateur,
@@ -468,11 +558,11 @@ class ValidationService:
                     decision=decision_enum,
                     commentaire=commentaire,
                     piece_justificative_url=piece_justificative_url,
-                    date_validation=datetime.utcnow()
+                    date_validation=datetime.utcnow(),
+                    organisation_id=getattr(bien, "organisation_id", None),  # ═══ AJOUT 5.12.c ═══
                 )
                 self.db.add(validation)
 
-                # 5. Traiter la décision
                 if decision_enum == DecisionValidation.REJETE:
                     result = self._traiter_rejet_cession(cession, validation, id_validateur, ordre_validateur, commentaire)
                 else:
@@ -499,7 +589,6 @@ class ValidationService:
         return result
 
     def _est_en_attente_de_cession(self, cession: Cession, ordre: str) -> bool:
-        """Vérifie si la cession est en attente d'un ordre donné."""
         mapping = {
             "COMPTABLE": StatutCession.EN_ATTENTE_VALIDATION,
             "CAISSE": StatutCession.EN_COURS,
@@ -509,7 +598,6 @@ class ValidationService:
 
     def _traiter_rejet_cession(self, cession: Cession, validation: Validation,
                                id_validateur: int, ordre: str, motif: str):
-        """Traite le rejet d'une cession."""
         cession.statut = StatutCession.REJETEE
         cession.motif = motif
 
@@ -531,7 +619,6 @@ class ValidationService:
 
     def _traiter_approbation_cession(self, cession: Cession, bien: Bien,
                                      validation: Validation, id_validateur: int, ordre: str):
-        """Traite l'approbation d'une cession."""
         ordre_enum = self._get_ordre_enum(ordre)
 
         if ordre_enum == OrdreValidation.COMPTABLE:
@@ -540,16 +627,13 @@ class ValidationService:
             cession.id_validateur_comptable = id_validateur
 
         elif ordre_enum == OrdreValidation.CAISSE:
-            # 🔴 MOMENT CRITIQUE : Le caissier valide l'encaissement
             cession.statut = StatutCession.EN_COURS
             cession.date_validation_caissier = datetime.utcnow()
             cession.id_validateur_caissier = id_validateur
 
-            # ✅ À CE MOMENT PRÉCIS, le bien passe à CEDE
             bien.statut_comptable = "CEDE"
             bien.date_sortie = datetime.utcnow()
 
-            # Ordonner le mouvement de caisse réel (entrée)
             from .caisse_service import CaisseService
             caisse_service = CaisseService(self.db)
             caisse_service.ordonner_mouvement_caisse(
@@ -561,7 +645,6 @@ class ValidationService:
                 beneficiaire=cession.acheteur or "Acheteur externe"
             )
 
-            # Journaliser l'événement
             self.audit_service.log_action(
                 user_id=id_validateur,
                 table_name="biens",
@@ -575,13 +658,11 @@ class ValidationService:
             )
 
         elif ordre_enum == OrdreValidation.DG:
-            # Dernière validation
             cession.statut = StatutCession.ACCORDEE
             cession.date_validation_dg = datetime.utcnow()
             cession.date_validation_finale = datetime.utcnow()
             cession.id_validateur_dg = id_validateur
 
-        # Notifier le prochain validateur
         self._notifier_prochain_validateur_cession(cession, ordre)
 
         return {
@@ -591,14 +672,15 @@ class ValidationService:
         }
 
     def _notifier_prochain_validateur_cession(self, cession: Cession, ordre_actuel: str):
-        """Notifie le prochain validateur pour une cession."""
         ordre_enum = self._get_ordre_enum(ordre_actuel)
         prochain = self._get_prochain_validateur(ordre_enum)
 
         if not prochain:
             return
 
-        validateurs = self._get_utilisateurs_par_roles(prochain.value)
+        # ═══ MODIF 5.12.c — filtre ONG sur les destinataires ═══
+        organisation_id = self.get_organisation_id_cession(cession)
+        validateurs = self._get_utilisateurs_par_roles(prochain.value, organisation_id=organisation_id)
 
         for validateur in validateurs:
             self.notification_service.envoyer_notification(
@@ -611,7 +693,7 @@ class ValidationService:
             )
 
     # ============================================================
-    # WORKFLOW AMORTISSEMENT – AVEC TRANSACTION ACID
+    # WORKFLOW AMORTISSEMENT
     # ============================================================
 
     def valider_amortissement(
@@ -622,9 +704,6 @@ class ValidationService:
         commentaire: str = None,
         piece_justificative_url: str = None
     ) -> dict:
-        """
-        Valide ou rejette un amortissement après vérification de trésorerie.
-        """
         decision_enum = self._get_decision_enum(decision)
 
         try:
@@ -649,8 +728,37 @@ class ValidationService:
 
         return result
 
+    def _get_prochain_validateur_dynamique(
+        self,
+        type_workflow: str,
+        ordre_actuel: int,
+        organisation_id: Optional[int],
+        contexte: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        if organisation_id:
+            try:
+                etape = self.workflow_service.prochaine_etape(
+                    type_workflow=type_workflow,
+                    ordre_actuel=ordre_actuel,
+                    organisation_id=organisation_id,
+                    contexte=contexte or {},
+                )
+                if etape:
+                    return etape.role_requis or etape.permission_requise
+            except Exception as e:
+                logger.warning(f"Erreur workflow dynamique (fallback legacy) : {e}")
+
+        ordre_etapes = [
+            OrdreValidation.COMPTABLE,
+            OrdreValidation.CAISSE,
+            OrdreValidation.DG,
+        ]
+        for i, o in enumerate(ordre_etapes):
+            if o.value == ordre_actuel and i < len(ordre_etapes) - 1:
+                return ordre_etapes[i + 1].value
+        return None
+
     def _traiter_rejet_amortissement(self, amortissement: Amortissement, id_validateur: int, motif: str):
-        """Traite le rejet d'un amortissement."""
         amortissement.statut = StatutAmortissement.SUSPENDU
 
         self.notification_service.envoyer_notification(
@@ -670,7 +778,6 @@ class ValidationService:
 
     def _traiter_approbation_amortissement(self, amortissement: Amortissement, id_validateur: int,
                                            commentaire: str, piece_justificative_url: str):
-        """Traite l'approbation d'un amortissement."""
         tresorerie = self.budget_service.verifier_tresorerie(
             Decimal(str(amortissement.annuite_comptable))
         )
@@ -678,7 +785,9 @@ class ValidationService:
         if not tresorerie["est_suffisante"]:
             amortissement.statut = StatutAmortissement.SUSPENDU
 
-            dg_users = self._get_utilisateurs_par_roles("DG")
+            # ═══ MODIF 5.12.c — filtre ONG sur les destinataires ═══
+            organisation_id = self.get_organisation_id_amortissement(amortissement)
+            dg_users = self._get_utilisateurs_par_roles("DG", organisation_id=organisation_id)
             for dg in dg_users:
                 self.notification_service.envoyer_notification(
                     ids_destinataires=dg.id,
@@ -723,37 +832,44 @@ class ValidationService:
         }
 
     # ============================================================
-    # MÉTHODES UTILITAIRES AVEC LES BONNES VALEURS DE StatutBesoin
+    # MÉTHODES UTILITAIRES – LECTURE FILTRÉE (5.12.b)
     # ============================================================
 
-    def get_besoins_en_attente(self, role: str) -> List[dict]:
-        """Récupère les besoins en attente de validation par un rôle."""
-        besoins = []
+    def get_besoins_en_attente(self, role: str, organisation_id: Optional[int] = None, is_platform_admin: bool = False) -> List[dict]:
+        """
+        Récupère les besoins en attente de validation par un rôle.
+
+        ═══ MODIF 5.12.b — Filtre multi-tenant via join Panne → Bien ═══
+        """
+        query = self.db.query(Besoin)
+
+        if not is_platform_admin:
+            if organisation_id is None:
+                return []  # Sécurité : pas d'ONG → pas de données
+            query = (
+                query
+                .join(Panne, Panne.id_panne == Besoin.id_panne)
+                .join(Bien, Bien.id_bien == Panne.id_bien)
+                .filter(Bien.organisation_id == organisation_id)
+            )
 
         if role.upper() == "COMPTABLE":
-            besoins = self.db.query(Besoin).filter(
-                Besoin.statut.in_([StatutBesoin.BROUILLON, StatutBesoin.EN_VALIDATION])
-            ).all()
+            query = query.filter(Besoin.statut.in_([StatutBesoin.BROUILLON, StatutBesoin.EN_VALIDATION]))
         elif role.upper() == "CAISSE":
-            besoins = self.db.query(Besoin).filter(
-                Besoin.statut == StatutBesoin.COMPTABLE_VALIDE
-            ).all()
+            query = query.filter(Besoin.statut == StatutBesoin.COMPTABLE_VALIDE)
         elif role.upper() == "DG":
-            besoins = self.db.query(Besoin).filter(
-                Besoin.statut == StatutBesoin.CAISSE_VALIDE
-            ).all()
+            query = query.filter(Besoin.statut == StatutBesoin.CAISSE_VALIDE)
         else:
-            besoins = self.db.query(Besoin).filter(
-                Besoin.statut.in_([StatutBesoin.BROUILLON,
-                                  StatutBesoin.EN_VALIDATION,
-                                  StatutBesoin.COMPTABLE_VALIDE,
-                                  StatutBesoin.CAISSE_VALIDE])
-            ).all()
+            query = query.filter(Besoin.statut.in_([
+                StatutBesoin.BROUILLON,
+                StatutBesoin.EN_VALIDATION,
+                StatutBesoin.COMPTABLE_VALIDE,
+                StatutBesoin.CAISSE_VALIDE,
+            ]))
 
-        return self._format_besoins_response(besoins)
+        return self._format_besoins_response(query.all())
 
     def _format_besoins_response(self, besoins: List[Besoin]) -> List[dict]:
-        """Formate la réponse des besoins."""
         result = []
         for besoin in besoins:
             panne = self.db.query(Panne).filter(Panne.id_panne == besoin.id_panne).first() if besoin.id_panne else None
@@ -781,7 +897,6 @@ class ValidationService:
         return result
 
     def get_workflow_details(self, besoin_id: int) -> dict:
-        """Récupère les détails du workflow d'un besoin."""
         besoin = self.db.query(Besoin).filter(Besoin.id_besoin == besoin_id).first()
         if not besoin:
             raise ValueError("Besoin non trouvé")
@@ -793,10 +908,6 @@ class ValidationService:
         return self._build_workflow_response(besoin, validations)
 
     def _build_workflow_response(self, besoin: Besoin, validations: List[Validation]) -> dict:
-        """
-        Construit la réponse du workflow conforme au schéma ValidationWorkflowStatus.
-        """
-        # Créer les étapes avec leurs statuts
         etapes = []
         for ordre in [OrdreValidation.COMPTABLE, OrdreValidation.CAISSE, OrdreValidation.DG]:
             validation_existante = next((v for v in validations if v.ordre_validateur == ordre), None)
@@ -842,7 +953,6 @@ class ValidationService:
         
         etapes_suivantes = self._get_etapes_suivantes(besoin, validations)
         
-        # 🟢 Vérifications budget et trésorerie pour FicheValidation / WorkflowValidation
         from ..services.caisse_service import CaisseService
         caisse_service = CaisseService(self.db)
         tresorerie_info = caisse_service.verifier_tresorerie(float(besoin.montant_total or 0))
@@ -880,7 +990,6 @@ class ValidationService:
         }
 
     def _get_etape_statut(self, besoin: Besoin, ordre: OrdreValidation) -> str:
-        """Détermine le statut d'une étape en fonction du statut du besoin."""
         validations_existantes = self.db.query(Validation).filter(
             Validation.id_besoin == besoin.id_besoin
         ).all()
@@ -895,7 +1004,6 @@ class ValidationService:
         if statut_actuel == StatutBesoin.REJETE:
             return "rejete"
         
-        # Ordre du workflow : COMPTABLE -> CAISSE -> DG
         if statut_actuel in [StatutBesoin.BROUILLON, StatutBesoin.EN_VALIDATION]:
             return "en_attente" if ordre == OrdreValidation.COMPTABLE else "bloque"
         
@@ -916,7 +1024,6 @@ class ValidationService:
         return "en_attente"
 
     def _get_etape_actuelle(self, besoin: Besoin) -> Optional[str]:
-        """Détermine l'étape actuelle du workflow (COMPTABLE -> CAISSE -> DG)."""
         statut_actuel = besoin.statut
         if statut_actuel == StatutBesoin.APPROUVEE:
             return "TERMINE"
@@ -933,35 +1040,27 @@ class ValidationService:
         return "TERMINE"
 
     def _calculer_progression(self, validations: List[Validation]) -> float:
-        """Calcule la progression en pourcentage."""
         if not validations:
             return 0.0
-        
-        total_etapes = 3  # COMPTABLE, CAISSE, DG
+        total_etapes = 3
         etapes_validees = sum(1 for v in validations if v.decision == DecisionValidation.APPROUVE)
-        
         if any(v.decision == DecisionValidation.REJETE for v in validations):
             return 0.0
-        
         return round((etapes_validees / total_etapes) * 100, 2)
 
     def _get_etapes_suivantes(self, besoin: Besoin, validations: List[Validation]) -> List[str]:
-        """Détermine les prochaines étapes disponibles."""
         statut_actuel = besoin.statut
         if statut_actuel in [StatutBesoin.APPROUVEE, StatutBesoin.REJETE]:
             return []
-        
         if statut_actuel in [StatutBesoin.BROUILLON, StatutBesoin.EN_VALIDATION]:
             return ["COMPTABLE"]
         elif statut_actuel == StatutBesoin.COMPTABLE_VALIDE:
             return ["CAISSE"]
         elif statut_actuel in [StatutBesoin.CAISSE_VALIDE, StatutBesoin.ATTENTE_STOCK]:
             return ["DG"]
-        
         return []
 
     def get_historique_validations(self, besoin_id: int) -> List[dict]:
-        """Récupère l'historique des validations d'un besoin."""
         validations = self.db.query(Validation).filter(
             Validation.id_besoin == besoin_id
         ).order_by(Validation.date_validation.desc()).all()
@@ -979,28 +1078,37 @@ class ValidationService:
             for v in validations
         ]
 
-    # ============================================================
-    # MÉTHODES DE COMPATIBILITÉ (legacy)
-    # ============================================================
-
     def valider(self, *args, **kwargs):
         """Méthode legacy de validation."""
         pass
 
     # ============================================================
-    # MÉTHODES POUR AMORTISSEMENTS ET CESSIONS EN ATTENTE
+    # AMORTISSEMENTS / CESSIONS EN ATTENTE — FILTRÉS (5.12.b)
     # ============================================================
 
-    def get_amortissements_en_attente(self) -> List[dict]:
+    def get_amortissements_en_attente(self, organisation_id: Optional[int] = None, is_platform_admin: bool = False) -> List[dict]:
         """
         Récupère les amortissements en attente de validation.
+
+        ═══ MODIF 5.12.b — Filtre multi-tenant via join Bien ═══
         """
         from ..models.amortissement import Amortissement, StatutAmortissement
-        
-        amortissements = self.db.query(Amortissement).filter(
+
+        query = self.db.query(Amortissement).filter(
             Amortissement.statut == StatutAmortissement.EN_ATTENTE
-        ).all()
-        
+        )
+
+        if not is_platform_admin:
+            if organisation_id is None:
+                return []
+            query = (
+                query
+                .join(Bien, Bien.id_bien == Amortissement.id_bien)
+                .filter(Bien.organisation_id == organisation_id)
+            )
+
+        amortissements = query.all()
+
         result = []
         for a in amortissements:
             bien = None
@@ -1027,16 +1135,29 @@ class ValidationService:
         
         return result
 
-    def get_cessions_en_attente(self) -> List[dict]:
+    def get_cessions_en_attente(self, organisation_id: Optional[int] = None, is_platform_admin: bool = False) -> List[dict]:
         """
         Récupère les cessions en attente de validation.
+
+        ═══ MODIF 5.12.b — Filtre multi-tenant via join Bien ═══
         """
         from ..models.cession import Cession, StatutCession
-        
-        cessions = self.db.query(Cession).filter(
+
+        query = self.db.query(Cession).filter(
             Cession.statut.in_([StatutCession.EN_ATTENTE_VALIDATION, StatutCession.EN_COURS])
-        ).all()
-        
+        )
+
+        if not is_platform_admin:
+            if organisation_id is None:
+                return []
+            query = (
+                query
+                .join(Bien, Bien.id_bien == Cession.id_bien)
+                .filter(Bien.organisation_id == organisation_id)
+            )
+
+        cessions = query.all()
+
         result = []
         for c in cessions:
             bien = None
@@ -1049,7 +1170,6 @@ class ValidationService:
                 if not designation:
                     designation = f"Bien #{bien.id_bien}"
             
-            # Déterminer l'étape actuelle
             etape = "DEMANDE"
             if c.date_validation_finale:
                 etape = "TERMINE"
@@ -1071,32 +1191,27 @@ class ValidationService:
         
         return result
 
-
     def _get_validations_for_bien(self, bien_id: int, type_validation: TypeValidation) -> dict:
-        """
-        Récupère les validations pour un bien et un type donné.
-        Retourne un dictionnaire {OrdreValidation: Validation}
-        """
         validations = self.db.query(Validation).filter(
             Validation.id_bien == bien_id,
             Validation.type_validation == type_validation
         ).all()
         return {v.ordre_validateur: v for v in validations}
 
-    # app/services/validation_service.py
+    # ============================================================
+    # ÉLIGIBILITÉ CESSION / REBUT (inchangé)
+    # ============================================================
 
     def verifier_eligibilite_cession(self, bien_id: int) -> dict:
         from ..models.discussion_concertation import ValidationConcertation, DiscussionConcertation
         from ..models.discussion_concertation import TypeValidationEnum
 
-        # ✅ RECHERCHER UNIQUEMENT UNE DISCUSSION CESSION CLÔTURÉE
         discussion = self.db.query(DiscussionConcertation).filter(
             DiscussionConcertation.id_bien == bien_id,
             DiscussionConcertation.type_validation == TypeValidationEnum.CESSION,
             DiscussionConcertation.est_active == False
         ).order_by(DiscussionConcertation.date_creation.desc()).first()
 
-        # ✅ SI AUCUNE DISCUSSION CESSION, RETOURNER DIRECTEMENT FALSE
         if not discussion:
             return {
                 "eligible": False,
@@ -1105,7 +1220,6 @@ class ValidationService:
                 "validation_dg": False
             }
 
-        # ✅ RÉCUPÉRER LES VALIDATIONS DE CETTE DISCUSSION UNIQUEMENT
         validations = self.db.query(ValidationConcertation).filter(
             ValidationConcertation.id_discussion == discussion.id
         ).all()
@@ -1137,18 +1251,12 @@ class ValidationService:
             "validation_dg": validation_dg,
             "raison": raison
         }
-    # ============================================================
-    # ✅ MÉTHODE MODIFIÉE : verifier_eligibilite_rebut()
-    # AVEC DÉTECTION INTELLIGENTE DES ERREURS D'ORTHOGRAPHE
-    # ============================================================
 
     def _distance_levenshtein(self, s1: str, s2: str) -> int:
-        """Calcule la distance de Levenshtein entre deux chaînes."""
         if len(s1) < len(s2):
             return self._distance_levenshtein(s2, s1)
         if len(s2) == 0:
             return len(s1)
-        
         previous_row = range(len(s2) + 1)
         for i, c1 in enumerate(s1):
             current_row = [i + 1]
@@ -1158,51 +1266,28 @@ class ValidationService:
                 substitutions = previous_row[j] + (c1 != c2)
                 current_row.append(min(insertions, deletions, substitutions))
             previous_row = current_row
-        
         return previous_row[-1]
 
     def _contient_mot_approchant(self, texte: str, mots_cles: List[str], seuil: int = 2) -> bool:
-        """
-        Vérifie si le texte contient un mot proche (approximatif) des mots-clés.
-        
-        Args:
-            texte: Le texte à analyser
-            mots_cles: Liste des mots-clés à rechercher
-            seuil: Distance de Levenshtein maximale autorisée (défaut: 2)
-        
-        Returns:
-            True si un mot approchant est trouvé
-        """
         if not texte:
             return False
-        
         texte = texte.lower()
-        
-        # D'abord, vérifier les correspondances exactes partielles
         for mot_cle in mots_cles:
             if mot_cle.lower() in texte:
                 return True
-        
-        # Ensuite, vérifier mot par mot avec distance de Levenshtein
         mots = re.findall(r"[a-zéèêëàâîôûç]+(?:[-\'][a-zéèêëàâîôûç]+)?", texte)
-        
         for mot in mots:
             if len(mot) < 3:
                 continue
-            
             for mot_cle in mots_cles:
                 mot_cle_propre = re.sub(r"[^a-zéèêëàâîôûç]", "", mot_cle.lower())
                 if len(mot_cle_propre) < 3:
                     continue
-                
-                # Si le mot-clé est beaucoup plus long que le mot, ajuster le seuil
                 if len(mot_cle_propre) > len(mot) + 2:
                     continue
-                
                 distance = self._distance_levenshtein(mot, mot_cle_propre)
                 if distance <= seuil:
                     return True
-        
         return False
 
     def verifier_eligibilite_rebut(self, bien_id: int) -> dict:
@@ -1211,7 +1296,6 @@ class ValidationService:
         from ..models.panne import Panne
         from ..models.maintenance import Maintenance
 
-        # 1. Récupérer la discussion de concertation
         discussion = self.db.query(DiscussionConcertation).filter(
             DiscussionConcertation.id_bien == bien_id,
             DiscussionConcertation.type_validation == TypeValidationEnum.REBUT,
@@ -1227,7 +1311,6 @@ class ValidationService:
                 "diagnostic_irrecuperable": False
             }
 
-        # 2. Récupérer les validations
         validations = self.db.query(ValidationConcertation).filter(
             ValidationConcertation.id_discussion == discussion.id
         ).all()
@@ -1242,19 +1325,13 @@ class ValidationService:
             elif validateur and validateur.role and validateur.role.nom.upper() == "COMPTABLE":
                 validation_comptable = v.decision == "APPROUVE"
 
-        # 3. Liste étendue des mots-clés (avec erreurs d'orthographe possibles)
         MOTS_IRRECUP = [
-            # Mot principal et ses variantes
             "irrécupérable", "irrecuperable", "recuperable", "recupere",
             "non recuperable", "plus recuperable", "n'est plus recuperable",
             "non récupérable", "plus récupérable", "n'est plus récupérable",
-            
-            # Variantes avec fautes courantes
             "irrecuperable", "irrecuperable", "irrécuperable", "irreccuperable",
             "irecuperable", "irrecupere", "recuperable", "recuperable",
             "recuperable", "recuperable", "recuper",
-            
-            # Autres expressions
             "hors d'usage", "hors usage", "hors service",
             "irrecoverable", "incident grave", "accident grave",
             "sinistre", "détruit", "detruit", "HS", "h.s", "h.s.",
@@ -1263,18 +1340,12 @@ class ValidationService:
             "usure totale", "usé", "usée", "casse", "cassé", "brisé", "bris",
             "moteur hs", "moteur cassé", "châssis endommagé",
             "endommagement", "endommagé",
-            
-            # Mots supplémentaires pour couvrir plus de cas
             "fini", "termine", "mort", "hors service", "epuise",
             "out of service", "broken", "destroyed", "damaged",
             "irremediable", "irremediable", "incurable", "perdu",
         ]
 
-        # 4. Vérification des pannes avec approche intelligente
-        pannes = self.db.query(Panne).filter(
-            Panne.id_bien == bien_id
-        ).all()
-
+        pannes = self.db.query(Panne).filter(Panne.id_bien == bien_id).all()
         panne_irrecup = False
         for panne in pannes:
             texte_complet = f"{panne.diagnostic or ''} {panne.description or ''}"
@@ -1282,11 +1353,7 @@ class ValidationService:
                 panne_irrecup = True
                 break
 
-        # 5. Vérification des maintenances
-        maintenances = self.db.query(Maintenance).filter(
-            Maintenance.id_bien == bien_id
-        ).all()
-
+        maintenances = self.db.query(Maintenance).filter(Maintenance.id_bien == bien_id).all()
         maintenance_irrecup = False
         for maintenance in maintenances:
             texte_complet = f"{maintenance.rapport or ''} {maintenance.observation or ''} {maintenance.description or ''}"

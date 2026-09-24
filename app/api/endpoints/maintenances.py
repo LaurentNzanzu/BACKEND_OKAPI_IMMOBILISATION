@@ -5,6 +5,9 @@ from sqlalchemy import and_, func, or_
 from typing import List, Optional
 from datetime import datetime
 from ...core.database import get_db
+# ═══ AJOUT 5.15 — Dépendance module ═══
+from ...core.dependencies_modules import require_module
+# ═══ FIN AJOUT 5.15 ═══
 from ...schemas.maintenance import (
     MaintenanceCreate, MaintenanceUpdate, MaintenanceResponse,
     MaintenanceListResponse, MaintenanceReporter, MaintenanceTerminer,
@@ -19,7 +22,14 @@ from ...models.bien import Bien
 from ...models.maintenance import Maintenance, TypeMaintenance, StatutMaintenance, TypeOrigineMaintenance
 from ...models.notification import TypeNotificationEnum
 
-router = APIRouter(prefix="/maintenances", tags=["Maintenances"])
+# ═══ MODIF 5.15 — require_module sur le router ═══
+router = APIRouter(
+    prefix="/maintenances",
+    tags=["Maintenances"],
+    dependencies=[Depends(require_module("MAINTENANCE"))],
+)
+# ═══ FIN MODIF 5.15 ═══
+
 
 def check_maintenance_permission(user: Utilisateur, action: str) -> bool:
     if not user:
@@ -34,6 +44,46 @@ def check_maintenance_permission(user: Utilisateur, action: str) -> bool:
     return action == "view"
 
 
+# ═══ AJOUT 5.15 — Helpers d'isolation multi-tenant ═══
+def _is_platform_admin(user: Utilisateur) -> bool:
+    return bool(getattr(user, "is_platform_admin", False))
+
+
+def _check_acces_bien_id(db: Session, current_user: Utilisateur, bien_id: int, label: str = "bien") -> None:
+    if _is_platform_admin(current_user):
+        return
+    if bien_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Accès refusé : {label} sans identifiant.",
+        )
+    bien = db.query(Bien).filter(Bien.id_bien == bien_id).first()
+    org_id = getattr(bien, "organisation_id", None) if bien else None
+    if org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Accès refusé : {label} #{bien_id} sans organisation (donnée historique).",
+        )
+    if org_id != current_user.organisation_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Accès refusé : {label} #{bien_id} appartient à une autre organisation.",
+        )
+
+
+def _check_acces_maintenance(db: Session, current_user: Utilisateur, maintenance) -> None:
+    _check_acces_bien_id(db, current_user, getattr(maintenance, "id_bien", None), "maintenance")
+
+
+def _filtre_maintenances_ong(db: Session, maintenances: list, current_user: Utilisateur) -> list:
+    if _is_platform_admin(current_user):
+        return maintenances
+    org_id = current_user.organisation_id
+    bien_ids_ok = {b.id_bien for b in db.query(Bien.id_bien).filter(Bien.organisation_id == org_id).all()}
+    return [m for m in maintenances if m.id_bien in bien_ids_ok]
+# ═══ FIN AJOUT 5.15 ═══
+
+
 @router.post("/", response_model=MaintenanceResponse, status_code=status.HTTP_201_CREATED)
 async def planifier_maintenance(
     data: MaintenanceCreate,
@@ -43,14 +93,17 @@ async def planifier_maintenance(
 ):
     if not check_maintenance_permission(current_user, "create"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    
+
+    # ═══ MODIF 5.15 — Vérification d'accès sur le bien ciblé ═══
+    _check_acces_bien_id(db, current_user, data.id_bien, "bien")
+    # ═══ FIN MODIF 5.15 ═══
+
     service = MaintenanceService(db)
     audit_service = AuditService(db)
     
     try:
         maintenance = service.planifier_maintenance(data, current_user.id)
         
-        # Enregistrer l'audit
         audit_service.log_create(
             user_id=current_user.id,
             table_name="maintenances",
@@ -79,6 +132,11 @@ async def get_maintenances_by_bien(
 ):
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+
+    # ═══ MODIF 5.15 — Vérification d'accès sur le bien ═══
+    _check_acces_bien_id(db, current_user, bien_id, "bien")
+    # ═══ FIN MODIF 5.15 ═══
+
     service = MaintenanceService(db)
     return service.get_maintenances_by_bien(bien_id, skip, limit)
 
@@ -104,7 +162,10 @@ async def get_mes_maintenances(
     if current_user.role.nom.upper() != "TECHNICIEN":
         raise HTTPException(status_code=403, detail="Seul un technicien peut voir ses maintenances")
     service = MaintenanceService(db)
-    return service.get_maintenances_by_technicien(current_user.id, statut)
+    m = service.get_maintenances_by_technicien(current_user.id, statut)
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    return _filtre_maintenances_ong(db, m, current_user)
+    # ═══ FIN MODIF 5.15 ═══
 
 
 @router.get("/a-venir", response_model=List[MaintenanceResponse])
@@ -116,7 +177,10 @@ async def get_maintenances_a_venir(
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = MaintenanceService(db)
-    return service.get_maintenances_a_venir(jours)
+    m = service.get_maintenances_a_venir(jours)
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    return _filtre_maintenances_ong(db, m, current_user)
+    # ═══ FIN MODIF 5.15 ═══
 
 
 @router.get("/en-retard", response_model=List[MaintenanceResponse])
@@ -127,7 +191,10 @@ async def get_maintenances_en_retard(
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = MaintenanceService(db)
-    return service.get_maintenances_en_retard()
+    m = service.get_maintenances_en_retard()
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    return _filtre_maintenances_ong(db, m, current_user)
+    # ═══ FIN MODIF 5.15 ═══
 
 
 @router.get("/{maintenance_id}", response_model=MaintenanceResponse)
@@ -142,6 +209,11 @@ async def get_maintenance(
     maintenance = service.get_maintenance(maintenance_id)
     if not maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, maintenance)
+    # ═══ FIN MODIF 5.15 ═══
+
     return maintenance
 
 
@@ -159,16 +231,18 @@ async def update_maintenance(
     service = MaintenanceService(db)
     audit_service = AuditService(db)
     
-    # Récupérer l'ancienne maintenance
     old_maintenance = service.get_maintenance(maintenance_id)
     if not old_maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, old_maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     maintenance = service.update_maintenance(maintenance_id, data)
     if not maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
     
-    # Enregistrer l'audit
     audit_service.log_update(
         user_id=current_user.id,
         table_name="maintenances",
@@ -200,17 +274,19 @@ async def demarrer_maintenance(
     service = MaintenanceService(db)
     audit_service = AuditService(db)
     
-    # Récupérer l'ancien statut
     old_maintenance = service.get_maintenance(maintenance_id)
     if not old_maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, old_maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     try:
         maintenance = service.demarrer_maintenance(maintenance_id)
         if not maintenance:
             raise HTTPException(status_code=404, detail="Maintenance non trouvée")
         
-        # Enregistrer l'audit
         audit_service.log_update(
             user_id=current_user.id,
             table_name="maintenances",
@@ -239,22 +315,21 @@ async def terminer_maintenance(
     service = MaintenanceService(db)
     audit_service = AuditService(db)
     
-    # Récupérer l'ancienne maintenance
     old_maintenance = service.get_maintenance(maintenance_id)
     if not old_maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, old_maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     try:
         maintenance = service.terminer_maintenance(
-            maintenance_id,
-            data.rapport,
-            data.cout,
-            data.pieces_remplacees
+            maintenance_id, data.rapport, data.cout, data.pieces_remplacees
         )
         if not maintenance:
             raise HTTPException(status_code=404, detail="Maintenance non trouvée")
         
-        # Enregistrer l'audit
         audit_service.log_update(
             user_id=current_user.id,
             table_name="maintenances",
@@ -290,17 +365,19 @@ async def reporter_maintenance(
     service = MaintenanceService(db)
     audit_service = AuditService(db)
     
-    # Récupérer l'ancienne maintenance
     old_maintenance = service.get_maintenance(maintenance_id)
     if not old_maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, old_maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     try:
         maintenance = service.reporter_maintenance(maintenance_id, data.nouvelle_date, data.motif)
         if not maintenance:
             raise HTTPException(status_code=404, detail="Maintenance non trouvée")
         
-        # Enregistrer l'audit
         audit_service.log_update(
             user_id=current_user.id,
             table_name="maintenances",
@@ -328,17 +405,19 @@ async def annuler_maintenance(
     service = MaintenanceService(db)
     audit_service = AuditService(db)
     
-    # Récupérer l'ancien statut
     old_maintenance = service.get_maintenance(maintenance_id)
     if not old_maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, old_maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     try:
         maintenance = service.annuler_maintenance(maintenance_id)
         if not maintenance:
             raise HTTPException(status_code=404, detail="Maintenance non trouvée")
         
-        # Enregistrer l'audit
         audit_service.log_update(
             user_id=current_user.id,
             table_name="maintenances",
@@ -382,6 +461,11 @@ async def get_bien_duree_vie(
 ):
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_bien_id(db, current_user, bien_id, "bien")
+    # ═══ FIN MODIF 5.15 ═══
+
     service = MaintenanceService(db)
     result = service.calculer_duree_vie_bien(bien_id)
     if not result:
@@ -390,7 +474,7 @@ async def get_bien_duree_vie(
 
 
 # ============================================================
-# NOUVEAUX ENDPOINTS TÂCHE 3 - ALERTES MAINTENANCE
+# ALERTES MAINTENANCE
 # ============================================================
 
 @router.get("/alertes")
@@ -398,27 +482,24 @@ async def get_alertes_maintenance(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """
-    Récupère toutes les alertes de maintenance
-    - Biens critiques sous surveillance (tri par SF croissant)
-    - Maintenances préventives auto-générées
-    """
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    
-    # 1. Biens critiques avec leur score
-    biens_critiques = db.query(Bien).filter(
-        Bien.est_critique == True,
-        Bien.statut_comptable == 'ACTIF'
-    ).order_by(Bien.score_fiabilite.asc()).all()
-    
-    # 2. Maintenances préventives auto-générées en attente
-    maintenances_auto = db.query(Maintenance).filter(
+
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    q_b = db.query(Bien).filter(Bien.est_critique == True, Bien.statut_comptable == 'ACTIF')
+    q_m = db.query(Maintenance).filter(
         Maintenance.origine == TypeOrigineMaintenance.AUTO,
-        Maintenance.statut == StatutMaintenance.PLANIFIEE
-    ).order_by(Maintenance.date_planifiee.asc()).all()
+        Maintenance.statut == StatutMaintenance.PLANIFIEE,
+    )
+    if not _is_platform_admin(current_user):
+        q_b = q_b.filter(Bien.organisation_id == current_user.organisation_id)
+        q_m = q_m.join(Bien, Bien.id_bien == Maintenance.id_bien).filter(
+            Bien.organisation_id == current_user.organisation_id
+        )
+    biens_critiques = q_b.order_by(Bien.score_fiabilite.asc()).all()
+    maintenances_auto = q_m.order_by(Maintenance.date_planifiee.asc()).all()
+    # ═══ FIN MODIF 5.15 ═══
     
-    # 3. Enrichir avec les couleurs
     resultat = {
         "biens_critiques": [
             {
@@ -445,11 +526,7 @@ async def get_alertes_maintenance(
         ],
         "total_biens_critiques": len(biens_critiques),
         "total_maintenances_auto": len(maintenances_auto),
-        "seuils": {
-            "critique": 30,
-            "moyen": 60,
-            "bon": 100
-        }
+        "seuils": {"critique": 30, "moyen": 60, "bon": 100}
     }
     
     return resultat
@@ -461,7 +538,6 @@ async def executer_maintenance(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """Marque une maintenance comme exécutée"""
     if not check_maintenance_permission(current_user, "complete"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
@@ -471,6 +547,10 @@ async def executer_maintenance(
     
     if not maintenance:
         raise HTTPException(status_code=404, detail="Maintenance non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     if maintenance.statut != StatutMaintenance.PLANIFIEE:
         raise HTTPException(
@@ -478,7 +558,6 @@ async def executer_maintenance(
             detail=f"Impossible d'exécuter une maintenance en statut {maintenance.statut.value}"
         )
     
-    # Marquer comme exécutée
     maintenance.statut = StatutMaintenance.TERMINEE
     maintenance.date_debut_reelle = datetime.utcnow()
     maintenance.date_fin_reelle = datetime.utcnow()
@@ -486,7 +565,6 @@ async def executer_maintenance(
     db.commit()
     db.refresh(maintenance)
     
-    # Journaliser l'audit
     audit_service = AuditService(db)
     audit_service.log_update(
         user_id=current_user.id,
@@ -496,13 +574,13 @@ async def executer_maintenance(
         new_values={"statut": "TERMINEE"}
     )
     
-    # Envoyer une notification
     notification_service = NotificationService(db)
     bien = db.query(Bien).filter(Bien.id_bien == maintenance.id_bien).first()
     designation = bien.description if bien else f"Bien #{maintenance.id_bien}"
     
-    notification_service.envoyer_notification_par_role(
+    notification_service.envoyer_notification_par_role_avec_ong(
         role_nom="DG",
+        organisation_id=getattr(bien, "organisation_id", None) if bien else None,
         type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
         titre=f"✅ Maintenance exécutée - {designation}",
         contenu=f"La maintenance préventive sur le bien {designation} a été marquée comme exécutée.",
@@ -518,15 +596,19 @@ async def get_maintenances_auto_generees(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """
-    Récupère toutes les maintenances auto-générées
-    """
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     query = db.query(Maintenance).filter(
         Maintenance.origine == TypeOrigineMaintenance.AUTO
     )
+
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    if not _is_platform_admin(current_user):
+        query = query.join(Bien, Bien.id_bien == Maintenance.id_bien).filter(
+            Bien.organisation_id == current_user.organisation_id
+        )
+    # ═══ FIN MODIF 5.15 ═══
     
     if statut:
         try:
@@ -559,38 +641,30 @@ async def get_statistiques_auto_generees(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """
-    Statistiques sur les maintenances auto-générées
-    """
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-    
-    # Total auto-générées
-    total_auto = db.query(Maintenance).filter(
-        Maintenance.origine == TypeOrigineMaintenance.AUTO
-    ).count()
-    
-    # Par statut
+
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    base_query = db.query(Maintenance).filter(Maintenance.origine == TypeOrigineMaintenance.AUTO)
+    if not _is_platform_admin(current_user):
+        base_query = base_query.join(Bien, Bien.id_bien == Maintenance.id_bien).filter(
+            Bien.organisation_id == current_user.organisation_id
+        )
+    total_auto = base_query.count()
+
     par_statut = {}
     for statut in StatutMaintenance:
-        count = db.query(Maintenance).filter(
-            Maintenance.origine == TypeOrigineMaintenance.AUTO,
-            Maintenance.statut == statut
-        ).count()
+        q = base_query.filter(Maintenance.statut == statut)
+        count = q.count()
         if count > 0:
             par_statut[statut.value] = count
-    
-    # Score moyen de départ
-    avg_score = db.query(func.avg(Maintenance.score_fiabilite_depart)).filter(
-        Maintenance.origine == TypeOrigineMaintenance.AUTO,
-        Maintenance.score_fiabilite_depart.isnot(None)
+
+    avg_score = base_query.filter(Maintenance.score_fiabilite_depart.isnot(None)).with_entities(
+        func.avg(Maintenance.score_fiabilite_depart)
     ).scalar() or 0
-    
-    # Taux de réalisation
-    terminees = db.query(Maintenance).filter(
-        Maintenance.origine == TypeOrigineMaintenance.AUTO,
-        Maintenance.statut == StatutMaintenance.TERMINEE
-    ).count()
+
+    terminees = base_query.filter(Maintenance.statut == StatutMaintenance.TERMINEE).count()
+    # ═══ FIN MODIF 5.15 ═══
     
     taux_realisation = round((terminees / total_auto * 100), 1) if total_auto > 0 else 0
     
@@ -612,9 +686,6 @@ async def executer_maintenance_auto(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """
-    Exécute une maintenance auto-générée
-    """
     if not check_maintenance_permission(current_user, "complete"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
@@ -625,6 +696,10 @@ async def executer_maintenance_auto(
     
     if not maintenance:
         raise HTTPException(status_code=404, detail="Maintenance auto-générée non trouvée")
+
+    # ═══ MODIF 5.15 — Vérification d'accès ONG ═══
+    _check_acces_maintenance(db, current_user, maintenance)
+    # ═══ FIN MODIF 5.15 ═══
     
     if maintenance.statut != StatutMaintenance.PLANIFIEE:
         raise HTTPException(
@@ -632,7 +707,6 @@ async def executer_maintenance_auto(
             detail=f"Impossible d'exécuter une maintenance en statut {maintenance.statut.value}"
         )
     
-    # Marquer comme exécutée
     maintenance.statut = StatutMaintenance.TERMINEE
     maintenance.date_debut_reelle = datetime.utcnow()
     maintenance.date_fin_reelle = datetime.utcnow()
@@ -642,7 +716,6 @@ async def executer_maintenance_auto(
     db.commit()
     db.refresh(maintenance)
     
-    # Journaliser l'audit
     audit_service = AuditService(db)
     audit_service.log_update(
         user_id=current_user.id,
@@ -652,13 +725,13 @@ async def executer_maintenance_auto(
         new_values={"statut": "TERMINEE", "origine": "AUTO"}
     )
     
-    # Envoyer une notification au DG
     notification_service = NotificationService(db)
     bien = db.query(Bien).filter(Bien.id_bien == maintenance.id_bien).first()
     designation = bien.description if bien else f"Bien #{maintenance.id_bien}"
     
-    notification_service.envoyer_notification_par_role(
+    notification_service.envoyer_notification_par_role_avec_ong(
         role_nom="DG",
+        organisation_id=getattr(bien, "organisation_id", None) if bien else None,
         type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
         titre=f"✅ Maintenance auto exécutée - {designation}",
         contenu=f"La maintenance préventive auto-générée sur le bien {designation} a été exécutée.",
@@ -680,15 +753,19 @@ async def get_ordres_remplacement(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(get_current_user)
 ):
-    """
-    Récupère les ordres de remplacement générés par les alertes VNC
-    """
     if not check_maintenance_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     from ...models.ordre_remplacement import OrdreRemplacement, StatutOrdreRemplacement, PrioriteOrdre
     
     query = db.query(OrdreRemplacement)
+
+    # ═══ MODIF 5.15 — Filtre ONG ═══
+    if not _is_platform_admin(current_user):
+        query = query.join(Bien, Bien.id_bien == OrdreRemplacement.bien_id).filter(
+            Bien.organisation_id == current_user.organisation_id
+        )
+    # ═══ FIN MODIF 5.15 ═══
     
     if statut:
         try:

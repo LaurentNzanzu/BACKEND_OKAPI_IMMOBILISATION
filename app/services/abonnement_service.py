@@ -260,8 +260,9 @@ class AbonnementService:
                 bientot += 1
                 try:
                     # Notifier l'ADMIN de l'organisation
-                    self.notification_service.envoyer_notification_par_role(
+                    self.notification_service.envoyer_notification_par_role_avec_ong(
                         role_nom="ADMIN",
+                        organisation_id=org.id,
                         type_notif=self._type_notif_expiration(),
                         titre=f"⏰ Abonnement expire dans {jours_restants} jours",
                         contenu=(

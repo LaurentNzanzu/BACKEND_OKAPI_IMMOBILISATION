@@ -122,6 +122,10 @@ def creer_abonnement(
     summary="Vérifier l'abonnement actif d'une organisation",
     description="Retourne le statut d'abonnement et les informations associées.",
 )
+@router.get(
+    "/{organisation_id}/",
+    include_in_schema=False,
+)
 def verifier_abonnement(
     organisation_id: int,
     db: Session = Depends(get_db),
@@ -166,6 +170,10 @@ def verifier_abonnement(
     summary="Résumé des quotas d'une organisation",
     description="Retourne l'utilisation et les quotas de véhicules, chauffeurs et missions.",
 )
+@router.get(
+    "/{organisation_id}/quotas/",
+    include_in_schema=False,
+)
 def quotas_organisation(
     organisation_id: int,
     db: Session = Depends(get_db),
@@ -190,6 +198,11 @@ def quotas_organisation(
     response_model=AbonnementFacturationResponse,
     summary="Renouveler un abonnement",
     description="Génère une facture de renouvellement pour une durée donnée.",
+)
+@router.post(
+    "/{organisation_id}/renouveler/",
+    response_model=AbonnementFacturationResponse,
+    include_in_schema=False,
 )
 def renouveler_abonnement(
     organisation_id: int,

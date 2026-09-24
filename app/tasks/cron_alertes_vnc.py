@@ -106,7 +106,7 @@ def verifier_alertes_vnc():
         # ✅ Notification si taux d'échec élevé
         taux_echec = (echecs / total * 100) if total > 0 else 0
         if taux_echec > 20:
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="ADMIN",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre="⚠️ CRON VNC - Taux d'échec élevé",
@@ -116,7 +116,7 @@ def verifier_alertes_vnc():
 
         # ✅ Si des alertes ont été générées, envoyer des notifications
         if alertes_generees > 0:
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="DG",
                 type_notif=TypeNotificationEnum.ALERTE_VNC_ZERO,
                 titre=f"🚨 {alertes_generees} alerte(s) VNC détectée(s)",
@@ -124,7 +124,7 @@ def verifier_alertes_vnc():
                 lien="/alertes-vnc"
             )
 
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="COMPTABLE",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre=f"💰 {alertes_generees} alerte(s) VNC - Action requise",
@@ -148,7 +148,7 @@ def verifier_alertes_vnc():
 
         try:
             notification_service = NotificationService(db)
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="ADMIN",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre="🚨 ERREUR - Vérification des seuils VNC",

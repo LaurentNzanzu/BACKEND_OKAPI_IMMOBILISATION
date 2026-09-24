@@ -122,7 +122,7 @@ def calculer_scores_fiabilite():
         # ✅ Notification si taux d'échec élevé
         taux_echec = (echecs / total * 100) if total > 0 else 0
         if taux_echec > 20:
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="ADMIN",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre="⚠️ CRON Scores - Taux d'échec élevé",
@@ -132,7 +132,7 @@ def calculer_scores_fiabilite():
 
         # ✅ Notification de synthèse
         if maintenances_planifiees > 0 or alertes_vnc_generees > 0:
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="DG",
                 type_notif=TypeNotificationEnum.MAINTENANCE_ALERTE,
                 titre="📊 Rapport quotidien - Scores de fiabilité",
@@ -147,7 +147,7 @@ def calculer_scores_fiabilite():
             )
 
         if maintenances_planifiees > 0:
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="TECHNICIEN",
                 type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
                 titre=f"🔧 {maintenances_planifiees} maintenance(s) préventive(s) auto-générée(s)",
@@ -163,7 +163,7 @@ def calculer_scores_fiabilite():
 
         try:
             notification_service = NotificationService(db)
-            notification_service.envoyer_notification_par_role(
+            notification_service.envoyer_notification_par_role_avec_ong(
                 role_nom="ADMIN",
                 type_notif=TypeNotificationEnum.ALERTE_STOCK,
                 titre="🚨 ERREUR - Calcul des scores de fiabilité",

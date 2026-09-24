@@ -40,6 +40,9 @@ from .abonnements import router as abonnements_router
 from .facturation import router as facturation_router
 from .import_csv import router as import_csv_router
 from .organisations import router as organisations_router
+from .modules import router as modules_router
+from .permissions_organisation import router as permissions_organisation_router
+from .organisations import router as organisations_router
 
 
 
@@ -83,7 +86,11 @@ AVAILABLE_ROUTERS: list[str] = [
     "abonnements",
     "facturation",
     "import_csv",
+    "organisations",
+    "modules",
+    "permissions_organisation",
     "organisations"
+    
 ]
 
 
@@ -133,6 +140,9 @@ def get_router(name: str):
         "abonnements": abonnements_router,
         "facturation": facturation_router,
         "import_csv": import_csv_router,
+        "organisations": organisations_router,
+        "modules": modules_router,
+        "permissions_organisation": permissions_organisation_router,
         "organisations": organisations_router
     }
     return routers.get(name)
@@ -206,5 +216,8 @@ __all__ = [
     "abonnements_router",
     "facturation_router",
     "import_csv_router",
+    "organisations_router",
+    "modules_router",
+    "permissions_organisation_router",
     "organisations_router"
 ]

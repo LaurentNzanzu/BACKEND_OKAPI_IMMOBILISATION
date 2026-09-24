@@ -99,6 +99,12 @@ def lister_factures(
     summary="Générer une facture",
     description="Génère manuellement une facture pour une organisation.",
 )
+@router.post(
+    "/generer/",
+    response_model=AbonnementFacturationResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
 def generer_facture(
     payload: dict = Body(
         ...,
@@ -169,6 +175,11 @@ def generer_facture(
     summary="Enregistrer un paiement",
     description="Marque une facture comme payée.",
 )
+@router.post(
+    "/{facture_id}/paiement/",
+    response_model=AbonnementFacturationResponse,
+    include_in_schema=False,
+)
 def enregistrer_paiement(
     facture_id: int,
     payload: dict = Body(default={}, example={"date_paiement": None, "montant": None}),
@@ -233,6 +244,10 @@ def enregistrer_paiement(
     "/{facture_id}/pdf",
     summary="Exporter une facture en PDF",
     description="Retourne les données structurées d'une facture. Le PDF réel sera implémenté au Sprint 5+.",
+)
+@router.get(
+    "/{facture_id}/pdf/",
+    include_in_schema=False,
 )
 def exporter_facture_pdf(
     facture_id: int,

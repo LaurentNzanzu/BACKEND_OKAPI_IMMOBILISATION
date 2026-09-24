@@ -120,6 +120,43 @@ class NotificationService:
 
         logger.info("Notification '%s' envoyée à %s destinataire(s)", titre, len(ids_destinataires))
         return notif
+    def envoyer_notification_par_role_avec_ong(
+        self,
+        role_nom: str,
+        organisation_id: Optional[int],
+        type_notif,
+        titre: str,
+        contenu: str,
+        lien: Optional[str] = None,
+        priorite: Optional[str] = None,
+    ):
+        """
+        Envoie une notification ciblée par rôle ET par ONG.
+        Si organisation_id est None → envoie à tous les users du rôle (comportement legacy).
+        Sinon, filtre les destinataires par organisation_id.
+        """
+        query = self.db.query(Utilisateur).join(Role).filter(
+            func.upper(Role.nom) == role_nom.upper()
+        )
+        if organisation_id is not None:
+            query = query.filter(Utilisateur.organisation_id == organisation_id)
+
+        users = query.all()
+        if not users:
+            logger.warning(
+                f"Aucun utilisateur rôle={role_nom} organisation={organisation_id}"
+            )
+            return None
+
+        ids_destinataires = [u.id for u in users]
+        return self.envoyer_notification(
+            ids_destinataires=ids_destinataires,
+            type_notif=type_notif,
+            titre=titre,
+            contenu=contenu,
+            lien=lien,
+            priorite=priorite,
+        )
 
     def envoyer_notification_par_role(
         self,
@@ -150,22 +187,29 @@ class NotificationService:
         titre = f"🔔 Proposition de {type_validation} - {designation}"
         contenu = f"Le système a détecté que le bien {designation} est éligible à la {type_validation}.\nMotif : {motif}\nPrix d'acquisition : {prix_acquisition:.2f} USD\nVNC : {vnc:.2f} USD"
         lien = f"/biens/{bien_id}"
-        
-        self.envoyer_notification_par_role(
+
+        from ..models.bien import Bien
+        bien_obj = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        organisation_id = getattr(bien_obj, "organisation_id", None) if bien_obj else None
+
+        self.envoyer_notification_par_role_avec_ong(
             role_nom="DG",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.MAINTENANCE_PLANIFIEE,
             titre=titre,
             contenu=contenu,
             lien=lien
         )
         
-        self.envoyer_notification_par_role(
+        self.envoyer_notification_par_role_avec_ong(
             role_nom="COMPTABLE",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
             titre=titre,
             contenu=contenu,
             lien=lien
         )
+
 
     def _envoyer_email(self, id_destinataire: int, titre: str, contenu: str, lien: Optional[str]):
         if not all([settings.SMTP_USER, settings.SMTP_PASSWORD, settings.MAIL_FROM]):
@@ -386,8 +430,9 @@ class NotificationService:
         else:
             contenu = f"La validation de {objet_type} a été rejetée par {validateur_nom} (étape: {etape}). Motif: {motif or 'Non spécifié'}"
         
-        self.envoyer_notification_par_role(
+        self.envoyer_notification_par_role_avec_ong(
             role_nom="ADMIN",
+            organisation_id=None,
             type_notif=TypeNotificationEnum.BESOIN_VALIDE if decision == 'APPROUVE' else TypeNotificationEnum.BESOIN_REJETE,
             titre=titre,
             contenu=contenu,
@@ -408,8 +453,9 @@ class NotificationService:
         else:
             type_notif = TypeNotificationEnum.BESOIN_CREE
         
-        self.envoyer_notification_par_role(
+        self.envoyer_notification_par_role_avec_ong(
             role_nom=prochain_validateur,
+            organisation_id=None,
             type_notif=type_notif,
             titre=titre,
             contenu=contenu,
@@ -431,24 +477,29 @@ class NotificationService:
             else:
                 designation = f"Bien #{bien_id}"
         
-        self.envoyer_notification_par_role(
+        organisation_id = getattr(bien, "organisation_id", None) if bien else None
+
+        self.envoyer_notification_par_role_avec_ong(
             role_nom="DG",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_VNC_ZERO,
             titre=f"🔔 Bien éligible à la cession - {designation}",
             contenu=f"Le bien '{designation}' est éligible à la cession. {eligibilite.get('recommandation', '')}",
             lien=f"/biens/{bien_id}/cession"
         )
         
-        self.envoyer_notification_par_role(
+        self.envoyer_notification_par_role_avec_ong(
             role_nom="COMPTABLE",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
             titre=f"💰 Bien éligible à la cession - {designation}",
             contenu=f"Le bien '{designation}' est éligible à la cession. Veuillez préparer les écritures comptables.",
             lien=f"/biens/{bien_id}/cession"
         )
         
-        self.envoyer_notification_par_role(
+        self.envoyer_notification_par_role_avec_ong(
             role_nom="ADMIN",
+            organisation_id=organisation_id,
             type_notif=TypeNotificationEnum.ALERTE_STOCK,
             titre=f"📋 Bien éligible à la cession - {designation}",
             contenu=f"Le bien '{designation}' est éligible à la cession. Une action est requise.",
