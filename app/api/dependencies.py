@@ -151,3 +151,23 @@ def is_caisse(current_user: Utilisateur = Depends(get_current_user)) -> Utilisat
             detail="Accès réservé au service caisse"
         )
     return current_user
+
+def require_platform_admin(
+    current_user: Utilisateur = Depends(get_current_user),
+) -> Utilisateur:
+   
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentification requise",
+        )
+    if getattr(current_user, "organisation_id", None) is not None:
+        logger.warning(
+            f"Accès refusé (plateforme) : user #{current_user.id} "
+            f"appartient à l'ONG #{current_user.organisation_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès réservé à l'administrateur plateforme",
+        )
+    return current_user
