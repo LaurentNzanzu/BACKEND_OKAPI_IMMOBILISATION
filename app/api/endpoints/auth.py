@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import uuid
 import logging
+
 import re  # ═══════════════ AJOUT 5.7 — import re pour validation mdp ═══════════════
 
 from ...core.database import get_db
@@ -44,10 +45,46 @@ from ...core.text_normalization import (
 )
 # ═══ AJOUT 5.21 — Import AuditService ═══
 from ...services.audit_service import AuditService
+from ...models.organisation import Organisation
 # ═══ FIN AJOUT 5.21 ═══
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+# ════════════════════════════════════════════════════════════════
+# ═══ AJOUT 5.23 — Résolution des champs SaaS (multi-tenant)   ═══
+# ════════════════════════════════════════════════════════════════
+def _resolve_saas_fields(db: Session, user: Utilisateur) -> dict:
+    """
+    Résout les 5 champs SaaS de UserAuthResponse :
+    - organisation_id, is_platform_admin, is_org_admin
+    - modules_actifs (depuis organisation.parametres_json)
+    - doit_changer_mot_de_passe
+
+    Retourne un dict prêt à passer à UserAuthResponse(**).
+    """
+    org_id = getattr(user, "organisation_id", None)
+    is_platform = bool(getattr(user, "is_platform_admin", False)) or (org_id is None)
+
+    # Résolution des modules actifs
+    modules = []
+    if org_id:
+        org = db.query(Organisation).filter(Organisation.id == org_id).first()
+        if org:
+            parametres = getattr(org, "parametres_json", None) or {}
+            if isinstance(parametres, dict):
+                raw = parametres.get("modules_actifs", [])
+                if isinstance(raw, list):
+                    modules = [str(m) for m in raw if m]
+
+    return {
+        "organisation_id": org_id,
+        "is_platform_admin": is_platform,
+        "is_org_admin": bool(getattr(user, "is_org_admin", False)),
+        "modules_actifs": modules,
+        "doit_changer_mot_de_passe": bool(getattr(user, "doit_changer_mot_de_passe", False)),
+    }
+# ═══ FIN AJOUT 5.23 ═══
 
 
 # === COOKIE CONFIGURATION ===
@@ -230,6 +267,7 @@ async def login(
 
     # === 8. COOKIE REFRESH ===
     set_refresh_token_cookie(response, refresh_token)
+    saas_fields = _resolve_saas_fields(db, user)
 
     # === 9. RÉPONSE ===
     user_response = UserAuthResponse(
@@ -242,6 +280,7 @@ async def login(
         roles=[user.role.nom] if user.role else [],
         est_actif=user.est_actif,
         last_login=user.last_login,
+        **saas_fields,
     )
 
     # ═══ AJOUT 5.21 — Log LOGIN_SUCCESS ═══
@@ -542,7 +581,8 @@ async def get_me(
         active_sessions = SessionService.get_user_active_sessions(db, current_user.id, limit=1)
         if active_sessions:
             session_uuid = active_sessions[0].session_uuid
-    
+
+    saas_fields = _resolve_saas_fields(db, current_user)
     return {
         **UserAuthResponse(
             id=current_user.id,
@@ -553,7 +593,8 @@ async def get_me(
             telephone=current_user.telephone,
             roles=[current_user.role.nom] if current_user.role else [],
             est_actif=current_user.est_actif,
-            last_login=current_user.last_login
+            last_login=current_user.last_login,
+            **saas_fields, 
         ).model_dump(),
         "session_uuid": str(session_uuid) if session_uuid else None
     }

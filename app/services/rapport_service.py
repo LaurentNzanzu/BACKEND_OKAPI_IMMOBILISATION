@@ -97,12 +97,126 @@ class RapportService:
 
     def get_rapport_technique(self, date_debut: date, date_fin: date, organisation_id: Optional[int] = None) -> dict:
         """Retourne le rapport technique et de fiabilité des équipements."""
+        date_debut_dt = self._date_to_datetime(date_debut)
+        date_fin_dt = datetime.combine(date_fin, datetime.max.time())
+
+        # 1. Total biens & états
+        q_biens = self.db.query(Bien)
+        if organisation_id is not None:
+            q_biens = q_biens.filter(Bien.organisation_id == organisation_id)
+        all_biens = q_biens.all()
+        total_biens = len(all_biens)
+
+        biens_actifs = sum(
+            1 for b in all_biens
+            if (b.statut_comptable == StatutComptable.ACTIF.value or (hasattr(b.etat, "value") and b.etat.value != "REFORME") or b.etat != "REFORME")
+        )
+        biens_reformes = sum(
+            1 for b in all_biens
+            if (b.statut_comptable == StatutComptable.MIS_AU_REBUT.value or (hasattr(b.etat, "value") and b.etat.value == "REFORME") or b.etat == "REFORME")
+        )
+        taux_occupation = round((biens_actifs / total_biens * 100), 1) if total_biens > 0 else 0.0
+
+        repartition_etats = {}
+        for b in all_biens:
+            etat_val = b.etat.value if hasattr(b.etat, 'value') else (str(b.etat) if b.etat else "INCONNU")
+            repartition_etats[etat_val] = repartition_etats.get(etat_val, 0) + 1
+
+        # 2. Pannes sur la période
+        q_pannes = self.db.query(Panne).filter(
+            Panne.date_declaration >= date_debut_dt,
+            Panne.date_declaration <= date_fin_dt
+        )
+        if organisation_id is not None:
+            q_pannes = q_pannes.filter(Panne.organisation_id == organisation_id)
+        pannes = q_pannes.all()
+        total_pannes = len(pannes)
+
+        pannes_par_type = {}
+        details_pannes = []
+        for p in pannes:
+            t_val = p.type_panne.value if hasattr(p.type_panne, 'value') else (str(p.type_panne) if p.type_panne else "AUTRE")
+            pannes_par_type[t_val] = pannes_par_type.get(t_val, 0) + 1
+            details_pannes.append({
+                "id": p.id_panne,
+                "bien_id": p.id_bien,
+                "date_declaration": p.date_declaration.strftime("%d/%m/%Y") if p.date_declaration else "",
+                "type": t_val,
+                "priorite": p.priorite.value if hasattr(p.priorite, 'value') else str(p.priorite or ""),
+                "statut": p.statut.value if hasattr(p.statut, 'value') else str(p.statut or ""),
+                "duree_resolution": p.calculer_duree() if hasattr(p, 'calculer_duree') else 0,
+                "cout": self._round_value(p.cout_total_reparation or 0)
+            })
+
+        # 3. Top 5 biens en panne sur la période
+        q_top = self.db.query(
+            Panne.id_bien,
+            Bien.qr_code,
+            func.count(Panne.id_panne).label('nb_pannes')
+        ).join(Bien, Panne.id_bien == Bien.id_bien).filter(
+            Panne.date_declaration >= date_debut_dt,
+            Panne.date_declaration <= date_fin_dt
+        )
+        if organisation_id is not None:
+            q_top = q_top.filter(Panne.organisation_id == organisation_id)
+        top_biens_raw = q_top.group_by(Panne.id_bien, Bien.qr_code).order_by(
+            func.count(Panne.id_panne).desc()
+        ).limit(5).all()
+
+        top_biens_pannes = [
+            {
+                "bien_id": r.id_bien,
+                "qr_code": r.qr_code or f"BIEN-{r.id_bien}",
+                "nb_pannes": r.nb_pannes
+            }
+            for r in top_biens_raw
+        ]
+
+        # 4. Maintenances sur la période
+        q_maint = self.db.query(Maintenance).filter(
+            or_(
+                and_(Maintenance.date_debut_reelle.isnot(None), Maintenance.date_debut_reelle >= date_debut_dt, Maintenance.date_debut_reelle <= date_fin_dt),
+                and_(Maintenance.date_debut_reelle.is_(None), Maintenance.date_planifiee >= date_debut_dt, Maintenance.date_planifiee <= date_fin_dt)
+            )
+        )
+        if organisation_id is not None:
+            q_maint = q_maint.filter(Maintenance.organisation_id == organisation_id)
+        maintenances_list = q_maint.all()
+        total_maintenances = len(maintenances_list)
+
+        nb_preventives = sum(1 for m in maintenances_list if (hasattr(m.type_maintenance, 'value') and m.type_maintenance.value == "PREVENTIVE") or str(m.type_maintenance) == "PREVENTIVE")
+        nb_correctives = total_maintenances - nb_preventives
+        nb_terminees = sum(1 for m in maintenances_list if (hasattr(m.statut, 'value') and m.statut.value == "TERMINEE") or str(m.statut) == "TERMINEE")
+        taux_resolution = round((nb_terminees / total_maintenances * 100), 1) if total_maintenances > 0 else 0.0
+
+        # Données de fiabilité existantes
         fiabilite = self.get_rapport_fiabilite(organisation_id=organisation_id)
-        maintenances = self.get_rapport_maintenances_preventives(organisation_id=organisation_id)
+        maintenances_preventives = self.get_rapport_maintenances_preventives(organisation_id=organisation_id)
+
         return {
-            "periode": {"date_debut": str(date_debut), "date_fin": str(date_fin)},
+            "periode": {
+                "date_debut": str(date_debut),
+                "date_fin": str(date_fin)
+            },
+            "synthese": {
+                "total_biens": total_biens,
+                "biens_actifs": biens_actifs,
+                "biens_reformes": biens_reformes,
+                "taux_occupation": taux_occupation,
+                "total_pannes": total_pannes,
+                "total_maintenances": total_maintenances,
+                "taux_resolution_maintenances": taux_resolution
+            },
+            "repartition_etats": repartition_etats,
+            "pannes_par_type": pannes_par_type,
+            "top_biens_pannes": top_biens_pannes,
+            "details_pannes": details_pannes,
+            "maintenances": {
+                "preventives": nb_preventives,
+                "correctives": nb_correctives
+            },
             "fiabilite": fiabilite,
-            "maintenances": maintenances
+            "maintenances_preventives": maintenances_preventives
         }
 
     # ============================================================
@@ -613,6 +727,75 @@ class RapportService:
             q = q.filter(Amortissement.organisation_id == organisation_id)
         # ═══ FIN 5.22 ═══
         amortissements = q.all()
+
+        details = []
+        total_valeur_origine = 0
+        total_annuite = 0
+        total_cumul = 0
+        total_vnc = 0
+
+        for a in amortissements:
+            valeur_origine = self._round_value(a.valeur_origine)
+            annuite = self._round_value(a.annuite_comptable)
+            cumul = self._round_value(a.cumul_comptable)
+            vnc = self._round_value(a.valeur_nette_comptable)
+
+            total_valeur_origine += valeur_origine
+            total_annuite += annuite
+            total_cumul += cumul
+            total_vnc += vnc
+
+            details.append({
+                "id_bien": a.id_bien,
+                "qr_code": a.qr_code,
+                "designation": f"{a.type_bien or ''} - {a.localisation or ''}".strip() or f"Bien #{a.id_bien}",
+                "type_bien": a.type_bien or "",
+                "date_acquisition": a.date_acquisition.strftime("%d/%m/%Y") if a.date_acquisition else "",
+                "methode": a.methode.value if hasattr(a.methode, "value") else (a.methode or "LINEAIRE"),
+                "duree_vie": a.duree_vie_comptable_ans or 0,
+                "taux": self._round_value(a.taux_comptable),
+                "valeur_origine": valeur_origine,
+                "valeur_residuelle": self._round_value(a.valeur_residuelle),
+                "annuite_exercice": annuite,
+                "cumul_amortissements": cumul,
+                "valeur_nette_comptable": vnc
+            })
+
+        # Regroupement par catégorie pour le résumé
+        regroupement = {}
+        for d in details:
+            cat = d["type_bien"] or "autre"
+            if cat not in regroupement:
+                regroupement[cat] = {
+                    "count": 0,
+                    "valeur_origine": 0,
+                    "annuite": 0,
+                    "cumul": 0,
+                    "vnc": 0
+                }
+            regroupement[cat]["count"] += 1
+            regroupement[cat]["valeur_origine"] += d["valeur_origine"]
+            regroupement[cat]["annuite"] += d["annuite_exercice"]
+            regroupement[cat]["cumul"] += d["cumul_amortissements"]
+            regroupement[cat]["vnc"] += d["valeur_nette_comptable"]
+
+        # Arrondir les regroupements
+        for cat in regroupement:
+            regroupement[cat]["valeur_origine"] = self._round_value(regroupement[cat]["valeur_origine"])
+            regroupement[cat]["annuite"] = self._round_value(regroupement[cat]["annuite"])
+            regroupement[cat]["cumul"] = self._round_value(regroupement[cat]["cumul"])
+            regroupement[cat]["vnc"] = self._round_value(regroupement[cat]["vnc"])
+
+        return {
+            "exercice": exercice,
+            "total_biens": len(details),
+            "total_valeur_origine": self._round_value(total_valeur_origine),
+            "total_annuite_exercice": self._round_value(total_annuite),
+            "total_cumul_amortissements": self._round_value(total_cumul),
+            "total_valeur_nette_comptable": self._round_value(total_vnc),
+            "regroupement_par_categorie": regroupement,
+            "details": details
+        }
     # ============================================================
     # F. NOTES ANNEXES SYSCOHADA
     # ============================================================
@@ -817,27 +1000,6 @@ class RapportService:
         
         ecart = abs(float(total_dotations_tableau or 0) - float(total_dotations_livre or 0))
         coherent = ecart < 0.01
-        return coherent, ecart
-    def _verifier_equilibrage_tableau8(self, annee: int, total_dotations_tableau: float) -> tuple:
-        """
-        Vérifie que le Tableau 8 est cohérent avec le Grand Livre
-        """
-        # ✅ CORRECTION : Utiliser date() au lieu de datetime()
-        debut_annee = date(annee, 1, 1)
-        fin_annee = date(annee, 12, 31)
-        
-        total_dotations_livre = self.db.query(
-            func.sum(EcritureComptable.montant)
-        ).filter(
-            EcritureComptable.compte_debit == "6812",
-            EcritureComptable.date_ecriture >= debut_annee,
-            EcritureComptable.date_ecriture <= fin_annee,
-            EcritureComptable.statut == StatutEcriture.VALIDEE
-        ).scalar() or 0
-        
-        ecart = abs(float(total_dotations_tableau or 0) - float(total_dotations_livre or 0))
-        coherent = ecart < 0.01
-        
         return coherent, ecart
 
     # ============================================================
