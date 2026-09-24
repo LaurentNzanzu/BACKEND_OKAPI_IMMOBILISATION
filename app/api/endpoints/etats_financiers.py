@@ -17,7 +17,7 @@ async def get_fiche_stock(
 ):
     """Génère la fiche de stock."""
     service = EtatService(db)
-    return service.get_fiche_stock()
+    return service.get_fiche_stock(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/etat-parc")
@@ -27,7 +27,7 @@ async def get_etat_parc(
 ):
     """Génère l'état du parc (santé des biens)."""
     service = EtatService(db)
-    return service.get_etat_parc()
+    return service.get_etat_parc(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/etat-financier")
@@ -38,7 +38,7 @@ async def get_etat_financier(
 ):
     """Génère l'état financier."""
     service = EtatService(db)
-    return service.get_etat_financier(exercice)
+    return service.get_etat_financier(exercice, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/etat-sortie")
@@ -49,4 +49,4 @@ async def get_etat_sortie(
 ):
     """Génère l'état de sortie (dépenses par maintenance)."""
     service = EtatService(db)
-    return service.get_etat_sortie(exercice)
+    return service.get_etat_sortie(exercice, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
