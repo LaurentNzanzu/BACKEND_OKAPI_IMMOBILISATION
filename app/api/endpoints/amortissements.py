@@ -37,16 +37,23 @@ from ...models.ecriture_comptable import EcritureComptable, StatutEcriture
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/amortissements", tags=["Amortissements"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/amortissements",
+    tags=["Amortissements"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 # ============================================================
 # FONCTION ASYNCHRONE POUR LA CLÔTURE AVANCÉE (BACKGROUND TASK)
 # ============================================================
 
-def _cloture_avancee_async(exercice: int, categorie: Optional[str] = None, 
+def _cloture_avancee_async(exercice: int, categorie: Optional[str] = None,
                            methode_forcee: Optional[str] = None,
-                           biens_ids: Optional[List[int]] = None):
+                           biens_ids: Optional[List[int]] = None,
+                           organisation_id: Optional[int] = None):   # ═══ 5.22 ═══
     """
     Exécute la clôture avancée en arrière-plan.
     Crée sa propre session pour isolation.
@@ -61,7 +68,8 @@ def _cloture_avancee_async(exercice: int, categorie: Optional[str] = None,
             exercice=exercice,
             categorie=categorie,
             methode_forcee=methode_forcee,
-            biens_ids=biens_ids
+            biens_ids=biens_ids,
+            organisation_id=organisation_id,   # ═══ 5.22 ═══
         )
         logger.info(
             f"✅ Clôture avancée {exercice} terminée: "
@@ -140,7 +148,6 @@ async def calculer_et_enregistrer_amortissement(
         amort = service.creer_amortissement(data, bien.type_bien)
         compt_service.generer_ecriture_dotation(amort, bien.type_bien)
         
-        # Initialisation automatique du workflow séquentiel en 4 étapes
         try:
             wf_service = AmortissementWorkflowService(db)
             wf_service.initialiser_workflow(amort.id_amortissement, current_user.id)
@@ -190,6 +197,11 @@ async def get_all_amortissements(
         joinedload(Amortissement.bien)
     ).order_by(Amortissement.date_creation.desc())
     
+    # ═══ 5.22 — Filtre ONG ═══
+    if current_user.organisation_id is not None:
+        query = query.filter(Amortissement.organisation_id == current_user.organisation_id)
+    # ═══ FIN 5.22 ═══
+    
     if categorie:
         query = query.join(Bien).filter(Bien.type_bien == categorie)
     if exercice:
@@ -209,7 +221,7 @@ async def get_historique_amortissements(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = AmortissementService(db)
-    return service.get_historique_par_bien(bien_id)
+    return service.get_historique_par_bien(bien_id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/bien/{bien_id}/depreciations")
@@ -223,7 +235,7 @@ async def get_historique_depreciations(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = AmortissementService(db)
     try:
-        return service.get_historique_depreciations(bien_id)
+        return service.get_historique_depreciations(bien_id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -238,7 +250,7 @@ async def get_plan_amortissement(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = AmortissementService(db)
-    return service.get_plan_amortissement(bien_id)
+    return service.get_plan_amortissement(bien_id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/statistiques", response_model=StatistiquesAmortissements)
@@ -251,7 +263,7 @@ async def get_statistiques_amortissements(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = AmortissementService(db)
-    return service.get_statistiques(annee)
+    return service.get_statistiques(annee, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/ecarts-fiscaux")
@@ -264,7 +276,7 @@ async def get_ecarts_fiscaux(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = AmortissementService(db)
-    return service.get_ecarts_fiscaux(annee)
+    return service.get_ecarts_fiscaux(annee, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/composants/{bien_id}")
@@ -291,7 +303,7 @@ async def get_regles_amortissement(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = AmortissementService(db)
-    return service.get_regles_configuration()
+    return service.get_regles_configuration(organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 # ============================================================
@@ -318,7 +330,8 @@ async def appliquer_depreciation(
             bien_id,
             data["nouvelle_valeur"],
             data.get("motif", ""),
-            datetime.fromisoformat(data["date_depreciation"])
+            datetime.fromisoformat(data["date_depreciation"]),
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
 
         compt_service = ComptabiliteService(db, cree_par_id=current_user.id)
@@ -379,7 +392,12 @@ async def update_ecriture_comptable(
     
     from ...models.ecriture_comptable import EcritureComptable, StatutEcriture
     
-    ecriture = db.query(EcritureComptable).filter(EcritureComptable.id_ecriture == id_ecriture).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_ecr = db.query(EcritureComptable).filter(EcritureComptable.id_ecriture == id_ecriture)
+    if current_user.organisation_id is not None:
+        q_ecr = q_ecr.filter(EcritureComptable.organisation_id == current_user.organisation_id)
+    ecriture = q_ecr.first()
+    # ═══ FIN 5.22 ═══
     if not ecriture:
         raise HTTPException(status_code=404, detail="Écriture non trouvée")
     
@@ -431,12 +449,17 @@ async def get_journal_quotidien(
     
     from ...models.ecriture_comptable import EcritureComptable
     
-    ecritures = db.query(EcritureComptable).filter(
+    # ═══ 5.22 — Filtre ONG ═══
+    q_ecr = db.query(EcritureComptable).filter(
         EcritureComptable.type_operation == "AMORTISSEMENT",
         EcritureComptable.date_creation >= date_obj,
         EcritureComptable.date_creation < date_obj.replace(day=date_obj.day+1) if date_obj.day < 28 else None,
         EcritureComptable.statut == "VALIDEE"
-    ).order_by(EcritureComptable.numero_piece).all()
+    )
+    if current_user.organisation_id is not None:
+        q_ecr = q_ecr.filter(EcritureComptable.organisation_id == current_user.organisation_id)
+    ecritures = q_ecr.order_by(EcritureComptable.numero_piece).all()
+    # ═══ FIN 5.22 ═══
     
     return [
         {
@@ -471,7 +494,7 @@ async def cloturer_exercice(
 
     service = AmortissementService(db)
     compt_service = ComptabiliteService(db, cree_par_id=current_user.id)
-    result = service.generer_amortissements_massifs(exercice)
+    result = service.generer_amortissements_massifs(exercice, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
     ecritures_generees = []
     for item in result.get("amortissements_crees", []):
@@ -510,13 +533,13 @@ async def cloturer_exercice_avance(
     if not check_amortissement_permission(current_user, "create"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
 
-    # 🔴 CRITIQUE : Déporter le calcul lourd en arrière-plan
     background_tasks.add_task(
         _cloture_avancee_async,
         exercice=payload.exercice,
         categorie=payload.categorie,
         methode_forcee=payload.methode_forcee.value if payload.methode_forcee else None,
-        biens_ids=payload.biens_selectionnes
+        biens_ids=payload.biens_selectionnes,
+        organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
     )
     
     return {
@@ -550,7 +573,8 @@ async def previsualisation_cloture(
         resultat = service.previsualiser_cloture(
             exercice=exercice,
             categorie=categorie,
-            methode_forcee=methode_forcee
+            methode_forcee=methode_forcee,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
         return resultat
         
@@ -575,7 +599,7 @@ async def get_dashboard_amortissement(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = AmortissementService(db)
-    return service.get_dashboard_data()
+    return service.get_dashboard_data(organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("/comptes")
@@ -678,9 +702,12 @@ async def valider_amortissement(
     service = AmortissementService(db)
     audit_service = AuditService(db)
     
-    amortissement = db.query(Amortissement).filter(
-        Amortissement.id_amortissement == id_amortissement
-    ).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_amort = db.query(Amortissement).filter(Amortissement.id_amortissement == id_amortissement)
+    if current_user.organisation_id is not None:
+        q_amort = q_amort.filter(Amortissement.organisation_id == current_user.organisation_id)
+    amortissement = q_amort.first()
+    # ═══ FIN 5.22 ═══
     
     if not amortissement:
         raise HTTPException(status_code=404, detail="Amortissement non trouvé")
@@ -713,8 +740,7 @@ async def valider_amortissement(
                 "motif": data.motif
             }
         
-        # Validation avec vérification de trésorerie
-        resultat = service.traiter_amortissement_apres_cloture(id_amortissement, current_user.id)
+        resultat = service.traiter_amortissement_apres_cloture(id_amortissement, current_user.id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
         
         audit_service.log_action(
             user_id=current_user.id,
@@ -745,9 +771,12 @@ async def get_verrouillage_amortissement(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    amortissement = db.query(Amortissement).filter(
-        Amortissement.id_amortissement == id_amortissement
-    ).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_amort = db.query(Amortissement).filter(Amortissement.id_amortissement == id_amortissement)
+    if current_user.organisation_id is not None:
+        q_amort = q_amort.filter(Amortissement.organisation_id == current_user.organisation_id)
+    amortissement = q_amort.first()
+    # ═══ FIN 5.22 ═══
     
     if not amortissement:
         raise HTTPException(status_code=404, detail="Amortissement non trouvé")
@@ -784,6 +813,11 @@ async def get_amortissements_verrouilles(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     query = db.query(Amortissement).filter(Amortissement.est_verrouille == True)
+    
+    # ═══ 5.22 — Filtre ONG ═══
+    if current_user.organisation_id is not None:
+        query = query.filter(Amortissement.organisation_id == current_user.organisation_id)
+    # ═══ FIN 5.22 ═══
     
     if exercice:
         query = query.filter(Amortissement.exercice == exercice)
@@ -825,9 +859,12 @@ async def get_validation_status_amortissement(
     if not check_amortissement_permission(current_user, "view"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
-    amortissement = db.query(Amortissement).filter(
-        Amortissement.id_amortissement == id_amortissement
-    ).first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_amort = db.query(Amortissement).filter(Amortissement.id_amortissement == id_amortissement)
+    if current_user.organisation_id is not None:
+        q_amort = q_amort.filter(Amortissement.organisation_id == current_user.organisation_id)
+    amortissement = q_amort.first()
+    # ═══ FIN 5.22 ═══
     
     if not amortissement:
         raise HTTPException(status_code=404, detail="Amortissement non trouvé")
@@ -842,7 +879,7 @@ async def get_validation_status_amortissement(
     ).all()
     
     service = AmortissementService(db)
-    tresorerie = service.calculer_et_verifier_tresorerie(id_amortissement)
+    tresorerie = service.calculer_et_verifier_tresorerie(id_amortissement, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     
     return AmortissementValidationStatus(
         id_amortissement=id_amortissement,
@@ -886,7 +923,7 @@ async def check_tresorerie_amortissement(
     service = AmortissementService(db)
     
     try:
-        resultat = service.calculer_et_verifier_tresorerie(id_amortissement)
+        resultat = service.calculer_et_verifier_tresorerie(id_amortissement, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
         return resultat
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -915,7 +952,8 @@ async def previsualisation_cloture_detaille(
             exercice=exercice,
             categorie=payload.get("categorie"),
             methode_forcee=payload.get("methode_forcee"),
-            biens_ids=payload.get("biens_ids")
+            biens_ids=payload.get("biens_ids"),
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
         return resultat
     except ValueError as e:
@@ -944,7 +982,8 @@ async def verrouiller_amortissement_endpoint(
         amortissement = service.verrouiller_amortissement(
             id_amortissement=amortissement_id,
             verrouille_par=current_user.id,
-            raison=data.raison
+            raison=data.raison,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
         
         nom_user = current_user.nom if hasattr(current_user, 'nom') else str(current_user.id)
@@ -979,7 +1018,7 @@ async def get_workflow_status(
 ):
     """Récupère le statut détaillé et l'historique du workflow de validation pour un amortissement."""
     service = AmortissementWorkflowService(db)
-    return service.get_workflow_status(id_amortissement)
+    return service.get_workflow_status(id_amortissement, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.post("/{id_amortissement}/verifier-tresorerie")
@@ -1056,19 +1095,19 @@ async def valider_ecriture_comptable(
 @router.get("/{id_amortissement}/bon-decaissement-pdf")
 async def telecharger_bon_decaissement_pdf(
     id_amortissement: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Utilisateur = Depends(get_current_user)   # ═══ 5.22 ═══
 ):
     """Téléchargement direct du Bon de Décaissement PDF pour l'amortissement donné."""
     import os
     service = AmortissementWorkflowService(db)
-    status_data = service.get_workflow_status(id_amortissement)
+    status_data = service.get_workflow_status(id_amortissement, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     dg_step = next((h for h in status_data.get("historique_validations", []) if h.get("etape") == "DG"), None)
     
     pdf_rel_path = dg_step.get("bon_decaissement_pdf") if dg_step else None
     if not pdf_rel_path:
         raise HTTPException(status_code=404, detail="Bon de décaissement non encore généré pour cet amortissement.")
     
-    # Supprimer les slashs initiaux pour obtenir le chemin fichier local
     clean_path = pdf_rel_path.lstrip('/')
     if not os.path.exists(clean_path):
         raise HTTPException(status_code=404, detail="Fichier PDF non trouvé sur le serveur.")
@@ -1078,4 +1117,3 @@ async def telecharger_bon_decaissement_pdf(
         media_type="application/pdf", 
         filename=f"bon_decaissement_amortissement_{id_amortissement}.pdf"
     )
-

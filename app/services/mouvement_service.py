@@ -22,18 +22,26 @@ class MouvementService:
     def __init__(self, db: Session):
         self.db = db
     
-    def creer_mouvement(self, data: MouvementCreate, id_utilisateur: int) -> MouvementBien:
+    # ═══ MODIF 5.22 — Injection organisation_id + suppression appel déprécié ═══
+    def creer_mouvement(self, data: MouvementCreate, id_utilisateur: int, organisation_id: Optional[int] = None) -> MouvementBien:
         """
         Crée un nouveau mouvement avec validation des règles métier.
         
         Règle 1: Blocage d'état - Un bien EN_PANNE ou EN_MAINTENANCE ne peut pas être cédé/sorti
         Règle 2: Changement d'état auto - CESSION/SORTIE → REFORME, RETOUR → BON
         Règle 3: Traçabilité - id_utilisateur vient du token, pas du frontend
+
+        ═══ 5.22 ═══ : injection de organisation_id (depuis le Bien) + suppression
+        de l'appel déprécié à comptabilite_service.enregistrer_cession()
         """
         # 1. Vérifier que le bien existe
         bien = self.db.query(Bien).filter(Bien.id_bien == data.id_bien).first()
         if not bien:
             raise ValueError(f"Bien {data.id_bien} non trouvé")
+        
+        # ═══ 5.22 — Résolution org_id depuis le bien ═══
+        org_id = organisation_id if organisation_id is not None else getattr(bien, "organisation_id", None)
+        # ═══ FIN 5.22 ═══
         
         # 2. Règle 1: Blocage d'état pour CESSION/SORTIE
         if data.type_mouvement in [TypeMouvementEnum.CESSION, TypeMouvementEnum.SORTIE]:
@@ -57,7 +65,8 @@ class MouvementService:
             localisation_destination=data.localisation_destination,
             responsable_sortie=data.responsable_sortie,
             raison=data.raison,
-            piece_justificative=data.piece_justificative
+            piece_justificative=data.piece_justificative,
+            organisation_id=org_id,   # ═══ 5.22 — AJOUT ═══
         )
         
         self.db.add(mouvement)
@@ -75,25 +84,15 @@ class MouvementService:
         self.db.commit()
         self.db.refresh(mouvement)
 
-        if data.type_mouvement == TypeMouvementEnum.CESSION:
-            from ..services.comptabilite_service import ComptabiliteService
-            from ..schemas.cession import CessionCreate
-
-            if not data.prix_vente:
-                raise ValueError("Le prix de vente est obligatoire pour une cession")
-
-            date_cession = (data.date_mouvement or datetime.utcnow()).date()
-            compt_service = ComptabiliteService(self.db, cree_par_id=data.id_utilisateur)
-            cession_data = CessionCreate(
-                id_bien=data.id_bien,
-                date_cession=date_cession,
-                prix_vente=data.prix_vente,
-                acheteur=data.acheteur or data.responsable_sortie,
-                mode_reglement=data.mode_reglement or "credit",
-                type_cession=data.type_cession or "courante",
-                motif=data.raison,
-            )
-            compt_service.enregistrer_cession(cession_data)
+        # ═══ 5.22 — SUPPRESSION de l'appel déprécié à enregistrer_cession() ═══
+        # Ancienne logique :
+        #     compt_service = ComptabiliteService(self.db, cree_par_id=data.id_utilisateur)
+        #     cession_data = CessionCreate(...)
+        #     compt_service.enregistrer_cession(cession_data)
+        #
+        # Raison de la suppression : méthode dépréciée qui lève RuntimeError.
+        # Le workflow de cession est maintenant géré par ValidationService.valider_cession().
+        # ═══ FIN 5.22 ═══
 
         # Notifications pour CESSION/SORTIE
         if data.type_mouvement in [TypeMouvementEnum.CESSION, TypeMouvementEnum.SORTIE]:
@@ -101,12 +100,17 @@ class MouvementService:
             trigger_service.notifier_mouvement(mouvement)
         
         return mouvement
+    # ═══ FIN MODIF 5.22 ═══
     
-    def get_mouvements_by_bien(self, id_bien: int, skip: int = 0, limit: int = 100) -> List[MouvementBien]:
+    # ═══ MODIF 5.22 — Filtre organisation_id ═══
+    def get_mouvements_by_bien(self, id_bien: int, skip: int = 0, limit: int = 100, organisation_id: Optional[int] = None) -> List[MouvementBien]:
         """Récupère l'historique complet des mouvements d'un bien"""
-        return self.db.query(MouvementBien).filter(
+        query = self.db.query(MouvementBien).filter(
             MouvementBien.id_bien == id_bien
-        ).order_by(
+        )
+        if organisation_id is not None:
+            query = query.filter(MouvementBien.organisation_id == organisation_id)
+        return query.order_by(
             desc(MouvementBien.date_mouvement)
         ).offset(skip).limit(limit).all()
     
@@ -116,9 +120,13 @@ class MouvementService:
                           type_mouvement: Optional[str] = None,
                           date_debut: Optional[datetime] = None,
                           date_fin: Optional[datetime] = None,
-                          id_bien: Optional[int] = None) -> List[MouvementBien]:
+                          id_bien: Optional[int] = None,
+                          organisation_id: Optional[int] = None) -> List[MouvementBien]:
         """Liste tous les mouvements avec filtres optionnels"""
         query = self.db.query(MouvementBien)
+        
+        if organisation_id is not None:
+            query = query.filter(MouvementBien.organisation_id == organisation_id)
         
         if type_mouvement:
             query = query.filter(MouvementBien.type_mouvement == type_mouvement)
@@ -133,15 +141,18 @@ class MouvementService:
             desc(MouvementBien.date_mouvement)
         ).offset(skip).limit(limit).all()
     
-    def get_mouvement(self, id_mouvement: int) -> Optional[MouvementBien]:
+    def get_mouvement(self, id_mouvement: int, organisation_id: Optional[int] = None) -> Optional[MouvementBien]:
         """Récupère un mouvement par son ID"""
-        return self.db.query(MouvementBien).filter(
+        query = self.db.query(MouvementBien).filter(
             MouvementBien.id_mouvement == id_mouvement
-        ).first()
+        )
+        if organisation_id is not None:
+            query = query.filter(MouvementBien.organisation_id == organisation_id)
+        return query.first()
     
-    def update_mouvement(self, id_mouvement: int, data: MouvementUpdate) -> Optional[MouvementBien]:
+    def update_mouvement(self, id_mouvement: int, data: MouvementUpdate, organisation_id: Optional[int] = None) -> Optional[MouvementBien]:
         """Met à jour un mouvement (seuls certains champs sont modifiables)"""
-        mouvement = self.get_mouvement(id_mouvement)
+        mouvement = self.get_mouvement(id_mouvement, organisation_id=organisation_id)
         if not mouvement:
             return None
         
@@ -154,9 +165,11 @@ class MouvementService:
         self.db.refresh(mouvement)
         return mouvement
     
-    def get_statistiques_mouvements(self, annee: Optional[int] = None) -> Dict:
+    def get_statistiques_mouvements(self, annee: Optional[int] = None, organisation_id: Optional[int] = None) -> Dict:
         """Statistiques agrégées des mouvements"""
         query = self.db.query(MouvementBien)
+        if organisation_id is not None:
+            query = query.filter(MouvementBien.organisation_id == organisation_id)
         if annee:
             query = query.filter(MouvementBien.date_mouvement.year == annee)
         
@@ -170,3 +183,4 @@ class MouvementService:
                 MouvementBien.type_mouvement == TypeMouvementEnum.CESSION
             ).count() if annee else None
         }
+    # ═══ FIN MODIF 5.22 ═══

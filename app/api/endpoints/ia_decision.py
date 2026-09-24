@@ -11,7 +11,13 @@ from ...schemas.decision_ia import AssistantRequest, AssistantResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ia", tags=["IA Decision"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/ia",
+    tags=["IA Decision"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 def check_ia_permission(user: Utilisateur) -> bool:
     """Vérifie si l'utilisateur a le droit d'accéder aux fonctionnalités IA"""
@@ -39,7 +45,7 @@ async def get_health_score(
 
     service = IADecisionService(db)
     try:
-        result = service.calculer_health_score(bien_id, current_user.id)
+        result = service.calculer_health_score(bien_id, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         return result
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -69,7 +75,7 @@ async def get_recommandations_parc(
 
     service = IADecisionService(db)
     try:
-        result = service.generer_recommandations_parc(current_user.id)
+        result = service.generer_recommandations_parc(current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         return result
     except Exception as e:
         logger.error(f"Erreur lors de la génération des recommandations: {e}")
@@ -100,7 +106,7 @@ async def get_decision_strategique(
     service = IADecisionService(db)
     
     try:
-        result = service.generer_decision_strategique(bien_id, current_user.id)
+        result = service.generer_decision_strategique(bien_id, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         return result
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -130,7 +136,7 @@ async def get_alertes_achat_pieces(
     service = IADecisionService(db)
     
     try:
-        result = service.generer_alertes_achat_pieces(current_user.id)
+        result = service.generer_alertes_achat_pieces(current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         return result
     except Exception as e:
         logger.error(f"Erreur lors de la génération des alertes d'achat: {e}")
@@ -170,7 +176,7 @@ async def assistant_conversationnel(
     service = IADecisionService(db)
     
     try:
-        result = service.assister_conversationnel(request.question, current_user.id)
+        result = service.assister_conversationnel(request.question, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         return result
     except Exception as e:
         logger.error(f"Erreur lors de l'analyse de la question: {e}")

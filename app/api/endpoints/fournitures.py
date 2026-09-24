@@ -14,7 +14,13 @@ from ...schemas.fourniture import (
 from ...services.fourniture_service import FournitureService
 from ...services.audit_service import AuditService
 
-router = APIRouter(prefix="/fournitures", tags=["Fournitures"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/fournitures",
+    tags=["Fournitures"],
+    dependencies=[Depends(require_module("MAINTENANCE"))],
+)
 
 
 def check_fourniture_permission(user: Utilisateur, action: str) -> bool:
@@ -44,7 +50,10 @@ async def get_fournitures_en_attente(
     service = FournitureService(db)
     role = current_user.role.nom.upper() if current_user.role else ""
     id_mag = current_user.id if role == "MAGASINIER" else None
-    return service.get_fournitures_en_attente(id_magasinier=id_mag)
+    return service.get_fournitures_en_attente(
+        id_magasinier=id_mag,
+        organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+    )
 
 
 @router.get("/besoin/{besoin_id}", response_model=List[FournitureResponse])
@@ -56,7 +65,10 @@ async def get_fournitures_by_besoin(
     if not check_fourniture_permission(current_user, "view_besoin"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = FournitureService(db)
-    return service.get_fournitures_by_besoin(besoin_id)
+    return service.get_fournitures_by_besoin(
+        besoin_id,
+        organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+    )
 
 
 @router.post("/{id_fourniture}/valider", response_model=FournitureResponse)
@@ -77,6 +89,7 @@ async def valider_fourniture(
             id_magasinier=current_user.id,
             commentaire=data.commentaire,
             user_id_audit=current_user.id,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -98,6 +111,7 @@ async def refuser_fourniture(
             id_magasinier=current_user.id,
             commentaire=data.commentaire,
             user_id_audit=current_user.id,
+            organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -111,4 +125,4 @@ async def get_fournitures_statistiques(
     if not check_fourniture_permission(current_user, "stats"):
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = FournitureService(db)
-    return service.get_statistiques()
+    return service.get_statistiques(organisation_id=current_user.organisation_id)   

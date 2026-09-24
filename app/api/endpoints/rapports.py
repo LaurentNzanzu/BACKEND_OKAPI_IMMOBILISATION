@@ -19,7 +19,13 @@ from ...utils.excel_export import generer_excel_rapport, generer_csv_rapport, ge
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/rapports", tags=["Rapports"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/rapports",
+    tags=["Rapports"],
+    dependencies=[Depends(require_module("REPORTING_AVANCE"))],
+)
 
 
 # ============================================================
@@ -30,7 +36,8 @@ def _generer_rapport_async(
     exercice: int,
     format_export: str,
     user_email: str,
-    user_nom: str
+    user_nom: str,
+    organisation_id: Optional[int] = None,  # ═══ 5.22 ═══
 ):
     """
     Génère un rapport en arrière-plan et notifie l'utilisateur par email.
@@ -45,12 +52,12 @@ def _generer_rapport_async(
         
         if format_export == "pdf":
             # Génération du PDF
-            resultat = service.generer_tableau8_ohada(exercice)
+            resultat = service.generer_tableau8_ohada(exercice, organisation_id=organisation_id)  # ═══ 5.22 ═══
             chemin_fichier = f"/tmp/tableau8_{exercice}.pdf"
             # ... génération du fichier ...
             
         elif format_export == "excel":
-            resultat = service.generer_tableau8_ohada(exercice)
+            resultat = service.generer_tableau8_ohada(exercice, organisation_id=organisation_id)  # ═══ 5.22 ═══
             chemin_fichier = f"/tmp/tableau8_{exercice}.xlsx"
             # ... génération du fichier ...
         else:
@@ -136,7 +143,7 @@ async def get_rapport_financier(
         )
     
     service = RapportService(db)
-    result = service.get_rapport_financier(date_debut, date_fin)
+    result = service.get_rapport_financier(date_debut, date_fin, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return result
 
 
@@ -161,7 +168,7 @@ async def get_rapport_technique(
         )
     
     service = RapportService(db)
-    result = service.get_rapport_technique(date_debut, date_fin)
+    result = service.get_rapport_technique(date_debut, date_fin, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return result
 
 
@@ -179,7 +186,7 @@ async def get_rapport_amortissements(
         )
     
     service = RapportService(db)
-    result = service.get_rapport_amortissements(annee)
+    result = service.get_rapport_amortissements(annee, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return result
 
 
@@ -221,7 +228,7 @@ async def exporter_rapport(
                 detail="La date de début doit être antérieure à la date de fin"
             )
         
-        data = service.get_rapport_financier(date_debut, date_fin)
+        data = service.get_rapport_financier(date_debut, date_fin, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         titre = f"Rapport Financier - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
         
         synthese_data = [
@@ -286,7 +293,7 @@ async def exporter_rapport(
                 detail="La date de début doit être antérieure à la date de fin"
             )
         
-        data = service.get_rapport_technique(date_debut, date_fin)
+        data = service.get_rapport_technique(date_debut, date_fin, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         titre = f"Rapport Technique - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
         
         synthese_data = [
@@ -344,7 +351,7 @@ async def exporter_rapport(
                 detail="annee requis pour le rapport des amortissements"
             )
         
-        data = service.get_rapport_amortissements(annee)
+        data = service.get_rapport_amortissements(annee, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         titre = f"Rapport des Amortissements - Année {annee}"
         
         amortissements_data = [
@@ -442,7 +449,7 @@ async def get_rapport_financier_ohada(
         exercice = date_fin.year
     
     service = RapportService(db)
-    result = service.get_rapport_financier_ohada(date_debut, date_fin, exercice)
+    result = service.get_rapport_financier_ohada(date_debut, date_fin, exercice, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return result
 
 
@@ -472,7 +479,7 @@ async def exporter_rapport_ohada(
         exercice = date_fin.year
     
     service = RapportService(db)
-    data = service.get_rapport_financier_ohada(date_debut, date_fin, exercice)
+    data = service.get_rapport_financier_ohada(date_debut, date_fin, exercice, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     titre = f"Rapport Financier SYSCOHADA - {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}"
@@ -524,7 +531,7 @@ async def get_tableau8_ohada(
     
     # Format JSON : synchrone (lecture rapide)
     if format_export == "json":
-        resultat = service.generer_tableau8_ohada(annee)
+        resultat = service.generer_tableau8_ohada(annee, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         return resultat
     
     # Format PDF/Excel : asynchrone avec BackgroundTasks
@@ -542,7 +549,8 @@ async def get_tableau8_ohada(
             exercice=annee,
             format_export=format_export,
             user_email=current_user.email,
-            user_nom=current_user.nom or "Utilisateur"
+            user_nom=current_user.nom or "Utilisateur",
+            organisation_id=current_user.organisation_id,  # ═══ 5.22 ═══
         )
         
         return {
@@ -575,7 +583,7 @@ async def export_tableau8_pdf(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = RapportService(db)
-    data = service.generer_tableau8_ohada(annee)
+    data = service.generer_tableau8_ohada(annee, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     
     # ✅ CORRECTION : Utiliser generer_pdf_rapport_avec_sections
     from ...utils.pdf_generator import generer_pdf_rapport_avec_sections
@@ -645,7 +653,7 @@ async def get_projections_pluriannuelles(
     service = RapportService(db)
     
     # ✅ UTILISER LES DONNÉES PRÉ-CALCULÉES
-    return service.get_projections_pluriannuelles()
+    return service.get_projections_pluriannuelles(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.get("/projections/bien/{bien_id}")
@@ -668,7 +676,7 @@ async def get_projections_bien(
     service = RapportService(db)
     
     # ✅ UTILISER LES DONNÉES PRÉ-CALCULÉES
-    return service.get_projections_synthese(bien_id)
+    return service.get_projections_synthese(bien_id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 # ============================================================

@@ -10,7 +10,13 @@ from ...models.utilisateur import Utilisateur
 from ...schemas.piece_justificative import PieceJustificativeResponse
 from ...services.piece_justificative_service import PieceJustificativeService
 
-router = APIRouter(prefix="/pieces-justificatives", tags=["Pièces Justificatives"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/pieces-justificatives",
+    tags=["Pièces Justificatives"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 @router.get("/{id_piece}/download")
@@ -20,7 +26,7 @@ def telecharger_piece(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = PieceJustificativeService(db)
-    pdf_url = service.get_pdf_url(id_piece)
+    pdf_url = service.get_pdf_url(id_piece, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not pdf_url:
         raise HTTPException(status_code=404, detail="Pièce non trouvée")
     
@@ -42,7 +48,7 @@ def signature_caissier(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = PieceJustificativeService(db)
     try:
-        return service.signer_caissier(id_piece)
+        return service.signer_caissier(id_piece, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -58,6 +64,6 @@ def signature_dg(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = PieceJustificativeService(db)
     try:
-        return service.signer_dg(id_piece)
+        return service.signer_dg(id_piece, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

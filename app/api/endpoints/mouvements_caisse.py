@@ -20,7 +20,13 @@ from ...services.taux_change_service import TauxChangeService
 from ...schemas.taux_change import ConversionResponse
 # ═══════════════ AJOUT 5.9 — IMPORTS TAUX CHANGE (FIN) ═══════════════
 
-router = APIRouter(prefix="/caisse", tags=["Mouvements Caisse"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/caisse",
+    tags=["Mouvements Caisse"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 @router.post("/mouvements", response_model=MouvementCaisseResponse)
@@ -34,7 +40,7 @@ def creer_mouvement(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     service = MouvementCaisseService(db)
     try:
-        mvt = service.creer_mouvement(data)
+        mvt = service.creer_mouvement(data, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         db.commit()
         db.refresh(mvt)
         return mvt
@@ -166,7 +172,7 @@ def creer_mouvement_multi_devise(
 
     service = MouvementCaisseService(db)
     try:
-        mvt = service.creer_mouvement(data_convertie)
+        mvt = service.creer_mouvement(data_convertie, organisation_id=target_org)  # ═══ 5.22 ═══
         db.commit()
         db.refresh(mvt)
     except ValueError as e:
@@ -205,7 +211,7 @@ def lister_mouvements(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = MouvementCaisseService(db)
-    res = service.lister_mouvements(type_mouvement, page, limit)
+    res = service.lister_mouvements(type_mouvement, page, limit, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return res
 
 
@@ -216,7 +222,7 @@ def obtenir_mouvement(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = MouvementCaisseService(db)
-    mouvement = service.obtenir_mouvement(id_mouvement)
+    mouvement = service.obtenir_mouvement(id_mouvement, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not mouvement:
         raise HTTPException(status_code=404, detail="Mouvement non trouvé")
     return mouvement
@@ -229,7 +235,7 @@ def telecharger_pdf_mouvement(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = MouvementCaisseService(db)
-    mouvement = service.obtenir_mouvement(id_mouvement)
+    mouvement = service.obtenir_mouvement(id_mouvement, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     if not mouvement or not mouvement.piece_jointe_url:
         raise HTTPException(status_code=404, detail="PDF non trouvé pour ce mouvement")
     
@@ -251,7 +257,7 @@ def valider_mouvement(
         raise HTTPException(status_code=403, detail="Seul le caissier ou l'administrateur peut valider le mouvement de caisse")
     service = MouvementCaisseService(db)
     try:
-        mvt = service.valider_mouvement(id_mouvement, current_user.id)
+        mvt = service.valider_mouvement(id_mouvement, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         db.commit()
         db.refresh(mvt)
         return mvt
@@ -272,7 +278,7 @@ def signature_dg(
         raise HTTPException(status_code=403, detail="Seul le DG ou l'administrateur peut signer l'approbation de décaissement")
     service = MouvementCaisseService(db)
     try:
-        mvt = service.signer_dg(id_mouvement, data.approuve, data.motif)
+        mvt = service.signer_dg(id_mouvement, data.approuve, data.motif, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         db.commit()
         db.refresh(mvt)
         return mvt
@@ -287,7 +293,7 @@ def obtenir_solde(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = MouvementCaisseService(db)
-    return service.get_solde_caisse()
+    return service.get_solde_caisse(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 
 @router.post("/approvisionner", response_model=MouvementCaisseResponse)
@@ -302,9 +308,22 @@ def approvisionner_caisse(
     
     # Récupérer la caisse principale active
     from ...models.caisse import Caisse
-    caisse = db.query(Caisse).filter(Caisse.statut == "ACTIF").first()
+    # ═══ 5.22 — Filtre ONG ═══
+    q_caisse = db.query(Caisse).filter(Caisse.statut == "ACTIF")
+    if current_user.organisation_id is not None:
+        q_caisse = q_caisse.filter(Caisse.organisation_id == current_user.organisation_id)
+    caisse = q_caisse.first()
+    # ═══ FIN 5.22 ═══
     if not caisse:
-        caisse = Caisse(solde_physique=0.0, solde_theorique=0.0, devise="USD", statut="ACTIF")
+        # ═══ 5.22 — Injection organisation_id ═══
+        caisse = Caisse(
+            solde_physique=0.0,
+            solde_theorique=0.0,
+            devise="USD",
+            statut="ACTIF",
+            organisation_id=current_user.organisation_id,
+        )
+        # ═══ FIN 5.22 ═══
         db.add(caisse)
         db.commit()
         db.refresh(caisse)
@@ -321,8 +340,8 @@ def approvisionner_caisse(
         beneficiaire="Caisse Principale"
     )
     try:
-        mvt = service.creer_mouvement(mvt_create)
-        mvt_valide = service.valider_mouvement(mvt.id_mouvement, current_user.id)
+        mvt = service.creer_mouvement(mvt_create, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
+        mvt_valide = service.valider_mouvement(mvt.id_mouvement, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         db.commit()
         db.refresh(mvt_valide)
         return mvt_valide

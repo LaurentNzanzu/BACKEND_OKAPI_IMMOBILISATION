@@ -10,7 +10,13 @@ from ...services.audit_service import AuditService
 from ...core.security import get_current_user
 from ...models.utilisateur import Utilisateur
 
-router = APIRouter(prefix="/mouvements", tags=["Mouvements"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/mouvements",
+    tags=["Mouvements"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 # ✅ LOGIQUE DE PERMISSIONS SELON LE TABLEAU
 # TRANSFERT    → COMPTABLE + TECHNICIEN
@@ -80,7 +86,7 @@ async def creer_mouvement(
     audit_service = AuditService(db)
 
     try:
-        mouvement = service.creer_mouvement(data, current_user.id)
+        mouvement = service.creer_mouvement(data, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
         
         # Enregistrer l'audit
         audit_service.log_create(
@@ -114,7 +120,7 @@ async def get_mouvements_by_bien(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = MouvementService(db)
-    mouvements = service.get_mouvements_by_bien(id_bien, skip, limit)
+    mouvements = service.get_mouvements_by_bien(id_bien, skip, limit, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
     for mvt in mouvements:
         if mvt.bien:
@@ -148,14 +154,16 @@ async def get_all_mouvements(
         type_mouvement=type_mouvement,
         date_debut=date_debut_dt,
         date_fin=date_fin_dt,
-        id_bien=id_bien
+        id_bien=id_bien,
+        organisation_id=current_user.organisation_id   # ═══ 5.22 ═══
     )
 
     total_query = service.get_all_mouvements(
         type_mouvement=type_mouvement,
         date_debut=date_debut_dt,
         date_fin=date_fin_dt,
-        id_bien=id_bien
+        id_bien=id_bien,
+        organisation_id=current_user.organisation_id   # ═══ 5.22 ═══
     )
     total = len(total_query)
 
@@ -182,7 +190,7 @@ async def get_mouvement(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = MouvementService(db)
-    mouvement = service.get_mouvement(id_mouvement)
+    mouvement = service.get_mouvement(id_mouvement, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
     if not mouvement:
         raise HTTPException(status_code=404, detail="Mouvement non trouvé")
@@ -208,11 +216,11 @@ async def update_mouvement(
     service = MouvementService(db)
     audit_service = AuditService(db)
 
-    old_mouvement = service.get_mouvement(id_mouvement)
+    old_mouvement = service.get_mouvement(id_mouvement, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not old_mouvement:
         raise HTTPException(status_code=404, detail="Mouvement non trouvé")
 
-    mouvement = service.update_mouvement(id_mouvement, data)
+    mouvement = service.update_mouvement(id_mouvement, data, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not mouvement:
         raise HTTPException(status_code=404, detail="Mouvement non trouvé")
 
@@ -237,7 +245,7 @@ async def get_statistiques(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = MouvementService(db)
-    return service.get_statistiques_mouvements(annee)
+    return service.get_statistiques_mouvements(annee, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 # ✅ NOUVEL ENDPOINT : Retourne les types autorisés pour le frontend
 @router.get("/types-autorises")

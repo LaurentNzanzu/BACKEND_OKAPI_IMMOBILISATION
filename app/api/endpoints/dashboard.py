@@ -7,7 +7,13 @@ from ...models.utilisateur import Utilisateur
 from ...services.dashboard_service import DashboardService
 from ...schemas.dashboard import WidgetCreate, WidgetUpdate, WidgetResponse, DashboardSummaryResponse
 
-router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["Dashboard"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
 def get_dashboard_summary(
@@ -15,7 +21,7 @@ def get_dashboard_summary(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = DashboardService(db)
-    return service.get_global_summary()
+    return service.get_global_summary(organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
 
 @router.get("/widgets", response_model=List[WidgetResponse])
 def get_user_widgets(
@@ -66,5 +72,5 @@ def get_widget_data(
     current_user: Utilisateur = Depends(get_current_user)
 ):
     service = DashboardService(db)
-    data = service.get_widget_data(type_widget, current_user.id)
+    data = service.get_widget_data(type_widget, current_user.id, organisation_id=current_user.organisation_id)  # ═══ 5.22 ═══
     return {"type": type_widget, "data": data}

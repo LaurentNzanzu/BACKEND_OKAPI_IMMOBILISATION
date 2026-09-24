@@ -8,7 +8,13 @@ from ...models.utilisateur import Utilisateur
 from ...schemas.fournisseur import FournisseurCreate, FournisseurUpdate, FournisseurResponse
 from ...services.fournisseur_service import FournisseurService
 
-router = APIRouter(prefix="/fournisseurs", tags=["Fournisseurs"])
+from ...core.dependencies_modules import require_module
+
+router = APIRouter(
+    prefix="/fournisseurs",
+    tags=["Fournisseurs"],
+    dependencies=[Depends(require_module("IMMOBILISATION"))],
+)
 
 
 def check_permission(user: Utilisateur) -> bool:
@@ -28,7 +34,7 @@ async def create_fournisseur(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = FournisseurService(db)
-    return service.create(data)
+    return service.create(data, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
 
 
 @router.get("", response_model=List[FournisseurResponse])
@@ -44,7 +50,12 @@ async def get_fournisseurs(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = FournisseurService(db)
-    return service.get_all(skip=skip, limit=limit, search=search)
+    return service.get_all(
+        skip=skip,
+        limit=limit,
+        search=search,
+        organisation_id=current_user.organisation_id,   # ═══ 5.22 ═══
+    )
 
 
 @router.get("/{fournisseur_id}", response_model=FournisseurResponse)
@@ -57,7 +68,7 @@ async def get_fournisseur(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = FournisseurService(db)
-    fournisseur = service.get_by_id(fournisseur_id)
+    fournisseur = service.get_by_id(fournisseur_id, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not fournisseur:
         raise HTTPException(status_code=404, detail="Fournisseur non trouvé")
     return fournisseur
@@ -74,7 +85,7 @@ async def update_fournisseur(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = FournisseurService(db)
-    fournisseur = service.update(fournisseur_id, data)
+    fournisseur = service.update(fournisseur_id, data, organisation_id=current_user.organisation_id)   # ═══ 5.22 ═══
     if not fournisseur:
         raise HTTPException(status_code=404, detail="Fournisseur non trouvé")
     return fournisseur
@@ -90,5 +101,5 @@ async def delete_fournisseur(
         raise HTTPException(status_code=403, detail="Permissions insuffisantes")
     
     service = FournisseurService(db)
-    if not service.delete(fournisseur_id):
+    if not service.delete(fournisseur_id, organisation_id=current_user.organisation_id):   # ═══ 5.22 ═══
         raise HTTPException(status_code=404, detail="Fournisseur non trouvé")
