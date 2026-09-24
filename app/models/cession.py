@@ -17,8 +17,8 @@ class StatutCession(enum.Enum):
     ELIGIBLE = "ELIGIBLE"
     EN_ATTENTE_VALIDATION = "EN_ATTENTE_VALIDATION"
     EN_COURS = "EN_COURS"
-    VALIDEE = "VALIDEE"          # NOUVEAU : Après validation comptable/caissier
-    ACCORDEE = "ACCORDEE"        # Après validation DG
+    VALIDEE = "VALIDEE"
+    ACCORDEE = "ACCORDEE"
     REJETEE = "REJETEE"
     TERMINEE = "TERMINEE"
 
@@ -34,6 +34,17 @@ class Cession(Base):
     __tablename__ = "cessions"
     
     id_cession = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_bien = Column(Integer, ForeignKey("biens.id_bien", ondelete="CASCADE"), nullable=False)
     date_cession = Column(Date, nullable=False)
     prix_vente = Column(Numeric(15, 2), nullable=False)
@@ -50,7 +61,6 @@ class Cession(Base):
     piece_justificative_url = Column(String(500), nullable=True)
     commentaire = Column(Text, nullable=True)
 
-    # NOUVEAU CHAMP PHASE 1.4
     date_paiement = Column(DateTime, nullable=True, comment="Date effective de l'encaissement")
 
     # Dates de validation par rôle
@@ -70,6 +80,7 @@ class Cession(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     bien = relationship("Bien", foreign_keys=[id_bien], back_populates="cessions")
     actif_remplacement = relationship("Bien", foreign_keys=[actif_remplacement_id])
     validateur_comptable = relationship("Utilisateur", foreign_keys=[id_validateur_comptable])
@@ -77,7 +88,6 @@ class Cession(Base):
     validateur_dg = relationship("Utilisateur", foreign_keys=[id_validateur_dg])
     createur = relationship("Utilisateur", foreign_keys=[cree_par])
 
-    # Relation avec les validations (workflow)
     validations = relationship(
         "Validation",
         foreign_keys="Validation.id_bien",
@@ -108,7 +118,6 @@ class Cession(Base):
         elif role == "CAISSIER":
             self.id_validateur_caissier = validateur_id
             self.date_validation_caissier = datetime.utcnow()
-            # Le caissier confirme l'encaissement
             self.date_paiement = datetime.utcnow() 
             self.statut = StatutCession.VALIDEE
         elif role == "DG":

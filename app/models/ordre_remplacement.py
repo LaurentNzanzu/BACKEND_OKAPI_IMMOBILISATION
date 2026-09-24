@@ -28,7 +28,17 @@ class OrdreRemplacement(Base):
     __tablename__ = "ordres_remplacement"
     
     id = Column(Integer, primary_key=True, index=True)
-    
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     # Références
     bien_id = Column(Integer, ForeignKey("biens.id_bien", ondelete="CASCADE"), nullable=False, index=True)
     alerte_vnc_id = Column(Integer, ForeignKey("alertes_vnc.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -68,6 +78,7 @@ class OrdreRemplacement(Base):
     metadonnees = Column(Text, nullable=True, comment="Métadonnées supplémentaires (JSON)")
     
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     bien = relationship("Bien", foreign_keys=[bien_id], backref="ordres_remplacement")
     bien_remplacement = relationship("Bien", foreign_keys=[bien_remplacement_id], backref="ordres_remplacement_remplacant")
     alerte_vnc = relationship("AlerteVNC", foreign_keys=[alerte_vnc_id], backref="ordres_remplacement")

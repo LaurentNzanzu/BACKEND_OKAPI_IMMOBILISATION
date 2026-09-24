@@ -15,6 +15,17 @@ class AlerteVNC(Base):
     __tablename__ = "alertes_vnc"
     
     id = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     bien_id = Column(Integer, ForeignKey("biens.id_bien", ondelete="CASCADE"), nullable=False, index=True)
     
     # Seuil atteint (20% ou 5%)
@@ -39,6 +50,7 @@ class AlerteVNC(Base):
     traite_par_id = Column(Integer, ForeignKey("utilisateurs.id", ondelete="SET NULL"), nullable=True)
     
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     bien = relationship("Bien", back_populates="alertes_vnc")
     maintenance = relationship("Maintenance", foreign_keys=[maintenance_id])
     traite_par = relationship("Utilisateur", foreign_keys=[traite_par_id])

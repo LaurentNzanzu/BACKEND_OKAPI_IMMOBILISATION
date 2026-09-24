@@ -39,6 +39,15 @@ class ComptabiliteService:
         """Arrondit une valeur à 2 décimales."""
         return float(Decimal(str(value)).quantize(Decimal('0.01')))
 
+    # ═══ AJOUT 5.20 — Helper organisation_id depuis Bien ═══
+    def _get_organisation_id_from_bien(self, id_bien: Optional[int]) -> Optional[int]:
+        """Récupère l'organisation_id d'un Bien (None si introuvable)."""
+        if not id_bien:
+            return None
+        bien = self.db.query(Bien).filter(Bien.id_bien == id_bien).first()
+        return getattr(bien, "organisation_id", None) if bien else None
+    # ═══ FIN AJOUT 5.20 ═══
+
     # ============================================================
     # 🔐 VÉRIFICATION DE L'ÉQUILIBRE COMPTABLE
     # ============================================================
@@ -186,6 +195,7 @@ class ComptabiliteService:
         
         designation = f"{marque} {modele}".strip()
         return designation if designation else f"Bien #{bien.id_bien}"
+
     # ============================================================
     # ÉCRITURE D'ACQUISITION
     # ============================================================
@@ -216,6 +226,10 @@ class ComptabiliteService:
 
         designation = self._get_bien_designation(bien)
 
+        # ═══ MODIF 5.20 — Injection organisation_id ═══
+        org_id = getattr(bien, "organisation_id", None)
+        # ═══ FIN MODIF 5.20 ═══
+
         ecriture = EcritureComptable(
             id_bien=bien.id_bien,
             date_ecriture=datetime.utcnow(),
@@ -228,6 +242,7 @@ class ComptabiliteService:
             montant=self._round(montant),
             montant_original=self._round(montant),
             validee=False,
+            organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
         )
 
         self._appliquer_tracabilite_creation(ecriture, reference_id=bien.id_bien)
@@ -261,6 +276,10 @@ class ComptabiliteService:
             "coefficient": amortissement.coefficient_deg
         }
 
+        # ═══ MODIF 5.20 — Injection organisation_id ═══
+        org_id = self._get_organisation_id_from_bien(amortissement.id_bien)
+        # ═══ FIN MODIF 5.20 ═══
+
         ecriture = EcritureComptable(
             id_bien=amortissement.id_bien,
             id_amortissement=amortissement.id_amortissement,
@@ -274,7 +293,8 @@ class ComptabiliteService:
             montant=self._round(amortissement.annuite_comptable),
             montant_original=self._round(amortissement.annuite_comptable),
             details_calcul=str(details_calcul),
-            validee=False
+            validee=False,
+            organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
         )
 
         self._appliquer_tracabilite_creation(ecriture, reference_id=amortissement.id_amortissement)
@@ -302,6 +322,10 @@ class ComptabiliteService:
             montant=Decimal(str(montant_depreciation))
         )
 
+        # ═══ MODIF 5.20 — Injection organisation_id ═══
+        org_id = self._get_organisation_id_from_bien(amortissement.id_bien)
+        # ═══ FIN MODIF 5.20 ═══
+
         ecriture = EcritureComptable(
             id_bien=amortissement.id_bien,
             id_amortissement=amortissement.id_amortissement,
@@ -314,7 +338,8 @@ class ComptabiliteService:
             compte_credit="2944",
             montant=self._round(montant_depreciation),
             montant_original=self._round(montant_depreciation),
-            validee=False
+            validee=False,
+            organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
         )
 
         self._appliquer_tracabilite_creation(ecriture, reference_id=amortissement.id_amortissement)
@@ -323,6 +348,164 @@ class ComptabiliteService:
         self.db.refresh(ecriture)
 
         return ecriture
+
+    # ============================================================
+    # ═══ AJOUT BUG F — ÉCRITURES DE REPRISE DE DÉPRÉCIATION ═══
+    # ============================================================
+
+    def generer_ecriture_reprise_depreciation(
+        self,
+        bien_id: int,
+        montant_reprise: float,
+        motif: str,
+        depreciation_id: Optional[int] = None,
+    ) -> EcritureComptable:
+        """
+        Génère l'écriture de reprise de dépréciation (OHADA/SYSCOHADA).
+
+        Écriture : Débit 2944 (Dépréciations) → Crédit 7914 (Reprises)
+
+        Args:
+            bien_id: ID du bien concerné
+            montant_reprise: Montant de la reprise (doit être > 0)
+            motif: Motif de la reprise
+            depreciation_id: ID de l'amortissement/dépréciation d'origine
+
+        Returns:
+            EcritureComptable: L'écriture de reprise générée
+
+        Raises:
+            ValueError: Si le bien n'existe pas, ou montant invalide
+        """
+        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        if not bien:
+            raise ValueError(f"Bien #{bien_id} non trouvé")
+
+        if montant_reprise <= 0:
+            raise ValueError("Le montant de la reprise doit être strictement positif")
+
+        # Vérification de l'équilibre
+        self._verifier_equilibre_simple(
+            compte_debit="2944",
+            compte_credit="7914",
+            montant=Decimal(str(montant_reprise))
+        )
+
+        designation = self._get_bien_designation(bien)
+
+        ecriture = EcritureComptable(
+            id_bien=bien_id,
+            id_amortissement=depreciation_id,
+            date_ecriture=datetime.utcnow(),
+            exercice=datetime.utcnow().year,
+            type_operation=TypeOperationEnum.REPRISE_DEPRECIATION,
+            statut=StatutEcriture.BROUILLON,
+            libelle=f"Reprise dépréciation - {motif} - {designation}",
+            compte_debit="2944",      # Dépréciations du matériel (annulation)
+            compte_credit="7914",     # Reprises sur dépréciations (produit)
+            montant=self._round(montant_reprise),
+            montant_original=self._round(montant_reprise),
+            validee=False,
+            organisation_id=getattr(bien, "organisation_id", None),   # ═══ AJOUT 5.20 ═══
+        )
+        ecriture.commentaire = motif
+
+        self._appliquer_tracabilite_creation(ecriture, reference_id=depreciation_id)
+        self.db.add(ecriture)
+        self.db.flush()
+
+        return ecriture
+
+    def reprendre_depreciation(
+        self,
+        bien_id: int,
+        montant_reprise: float,
+        motif: str,
+        depreciation_id: Optional[int] = None,
+    ) -> dict:
+        """
+        Reprend partiellement ou totalement une dépréciation.
+        
+        Logique métier:
+        1. Vérifier que le bien est bien en statut EN_DEPRECIATION
+        2. Vérifier que la reprise ne dépasse pas le cumul
+        3. Générer l'écriture 2944 → 7914
+        4. Mettre à jour le cumul_depreciation du bien
+        5. Ajuster le statut comptable:
+           - Si cumul devient 0 et amortissements existent → EN_AMORTISSEMENT
+           - Si cumul devient 0 et pas d'amortissement → ACTIF
+           - Sinon → reste EN_DEPRECIATION
+        
+        Args:
+            bien_id: ID du bien
+            montant_reprise: Montant à reprendre (partiel ou total)
+            motif: Motif de la reprise
+            depreciation_id: ID de la dépréciation d'origine (optionnel)
+            
+        Returns:
+            dict: Résultat avec l'écriture et le nouveau statut
+        """
+        bien = self.db.query(Bien).filter(Bien.id_bien == bien_id).first()
+        if not bien:
+            raise ValueError(f"Bien #{bien_id} non trouvé")
+
+        # Vérifier le statut du bien
+        if bien.statut_comptable != "EN_DEPRECIATION":
+            raise ValueError(
+                f"La reprise n'est autorisée que pour les biens en dépréciation. "
+                f"Statut actuel: {bien.statut_comptable}"
+            )
+
+        cumul_actuel = float(bien.cumul_depreciation or 0)
+        if cumul_actuel <= 0:
+            raise ValueError("Aucune dépréciation à reprendre sur ce bien")
+
+        if montant_reprise > cumul_actuel:
+            raise ValueError(
+                f"La reprise ({montant_reprise}) dépasse le cumul des dépréciations ({cumul_actuel})"
+            )
+
+        # Générer l'écriture de reprise
+        ecriture = self.generer_ecriture_reprise_depreciation(
+            bien_id=bien_id,
+            montant_reprise=montant_reprise,
+            motif=motif,
+            depreciation_id=depreciation_id,
+        )
+
+        # Mettre à jour le cumul de dépréciation
+        nouveau_cumul = round(cumul_actuel - montant_reprise, 2)
+        bien.cumul_depreciation = nouveau_cumul
+
+        # Mettre à jour le statut comptable
+        if nouveau_cumul == 0:
+            # Vérifier s'il existe des amortissements pour ce bien
+            has_amort = self.db.query(Amortissement).filter(
+                Amortissement.id_bien == bien_id,
+                Amortissement.statut == StatutAmortissement.EN_COURS
+            ).first()
+            
+            bien.statut_comptable = "EN_AMORTISSEMENT" if has_amort else "ACTIF"
+        # Sinon, reste EN_DEPRECIATION
+
+        self.db.commit()
+        self.db.refresh(ecriture)
+        self.db.refresh(bien)
+
+        logger.info(
+            "[REPRISE_DEPRECIATION] ✅ Reprise enregistrée | "
+            "bien_id=%s | montant=%s | nouveau_cumul=%s | statut=%s | ecriture_id=%s",
+            bien_id, montant_reprise, nouveau_cumul, 
+            bien.statut_comptable, ecriture.id_ecriture
+        )
+
+        return {
+            "ecriture": ecriture,
+            "nouveau_cumul_depreciation": nouveau_cumul,
+            "statut_comptable": bien.statut_comptable,
+            "montant_reprise": montant_reprise,
+        }
+    # ═══ FIN AJOUT BUG F ═══
 
     # ============================================================
     # ÉCRITURES DE CESSION (AVEC VÉRIFICATION GLOBALE)
@@ -366,6 +549,10 @@ class ComptabiliteService:
         cumul_amo = float(bien.cumul_amortissement or 0)
         brut = float(bien.prix_acquisition or 0)
 
+        # ═══ MODIF 5.20 — Injection organisation_id ═══
+        org_id = getattr(bien, "organisation_id", None)
+        # ═══ FIN MODIF 5.20 ═══
+
         # 1. Reprise des amortissements
         if cumul_amo > 0:
             ec_amo = EcritureComptable(
@@ -380,6 +567,7 @@ class ComptabiliteService:
                 montant=self._round(cumul_amo),
                 montant_original=self._round(cumul_amo),
                 validee=False,
+                organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
             )
             self._appliquer_tracabilite_creation(ec_amo, reference_id=cession.id_cession)
             ecritures.append(ec_amo)
@@ -399,6 +587,7 @@ class ComptabiliteService:
                 montant=vnc_courante,
                 montant_original=vnc_courante,
                 validee=False,
+                organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
             )
             self._appliquer_tracabilite_creation(ec_sortie, reference_id=cession.id_cession)
             ecritures.append(ec_sortie)
@@ -417,6 +606,7 @@ class ComptabiliteService:
                 montant=self._round(prix_vente),
                 montant_original=self._round(prix_vente),
                 validee=False,
+                organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
             )
             self._appliquer_tracabilite_creation(ec_vente, reference_id=cession.id_cession)
             ecritures.append(ec_vente)
@@ -436,6 +626,7 @@ class ComptabiliteService:
                 montant=self._round(resultat),
                 montant_original=self._round(resultat),
                 validee=False,
+                organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
             )
             self._appliquer_tracabilite_creation(ec_res, reference_id=cession.id_cession)
             ecritures.append(ec_res)
@@ -452,6 +643,7 @@ class ComptabiliteService:
                 montant=self._round(abs(resultat)),
                 montant_original=self._round(abs(resultat)),
                 validee=False,
+                organisation_id=org_id,   # ═══ AJOUT 5.20 ═══
             )
             self._appliquer_tracabilite_creation(ec_res, reference_id=cession.id_cession)
             ecritures.append(ec_res)
@@ -528,6 +720,7 @@ class ComptabiliteService:
             montant=self._round(vnc),
             montant_original=self._round(vnc),
             validee=False,
+            organisation_id=getattr(bien, "organisation_id", None),   # ═══ AJOUT 5.20 ═══
         )
         ecriture.commentaire = data.motif
 
@@ -661,14 +854,18 @@ class ComptabiliteService:
 
         return ecriture
 
-    def get_ecritures_en_attente(self) -> List[EcritureComptable]:
+    # ═══ MODIF 5.20 — Filtre organisation_id ═══
+    def get_ecritures_en_attente(self, organisation_id: Optional[int] = None) -> List[EcritureComptable]:
         """Récupère les écritures en attente de validation."""
-        return self.db.query(EcritureComptable).filter(
+        query = self.db.query(EcritureComptable).filter(
             EcritureComptable.validee == False,
             EcritureComptable.statut == StatutEcriture.BROUILLON
-        ).order_by(EcritureComptable.date_ecriture.asc()).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(EcritureComptable.organisation_id == organisation_id)
+        return query.order_by(EcritureComptable.date_ecriture.asc()).all()
 
-    def get_ecritures_du_jour(self, date_jour: datetime = None) -> List[EcritureComptable]:
+    def get_ecritures_du_jour(self, date_jour: datetime = None, organisation_id: Optional[int] = None) -> List[EcritureComptable]:
         """Récupère les écritures validées du jour."""
         if not date_jour:
             date_jour = datetime.utcnow()
@@ -676,7 +873,10 @@ class ComptabiliteService:
         debut_jour = datetime(date_jour.year, date_jour.month, date_jour.day)
         fin_jour = datetime(date_jour.year, date_jour.month, date_jour.day, 23, 59, 59)
 
-        return self.db.query(EcritureComptable).filter(
+        query = self.db.query(EcritureComptable).filter(
             EcritureComptable.date_ecriture.between(debut_jour, fin_jour),
             EcritureComptable.validee == True
-        ).order_by(EcritureComptable.date_ecriture.asc()).all()
+        )
+        if organisation_id is not None:
+            query = query.filter(EcritureComptable.organisation_id == organisation_id)
+        return query.order_by(EcritureComptable.date_ecriture.asc()).all()

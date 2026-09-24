@@ -1,5 +1,5 @@
 # backend/app/models/besoin.py
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum as SQLEnum, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum as SQLEnum, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
@@ -21,8 +21,19 @@ class Besoin(Base):
     __tablename__ = "besoins"
 
     id_besoin = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_panne = Column(Integer, ForeignKey("pannes.id_panne", ondelete="CASCADE"), nullable=False)
-    numero_demande = Column(String(50), unique=True, nullable=False)
+    numero_demande = Column(String(50), nullable=False)   # ═══ 5.22 — unique retiré, géré par contrainte composite ═══
     date_creation = Column(DateTime, default=datetime.utcnow)
     montant_total = Column(Float, default=0.0)
     statut = Column(SQLEnum(StatutBesoin), default=StatutBesoin.BROUILLON)
@@ -39,12 +50,19 @@ class Besoin(Base):
     )
 
     # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     panne = relationship("Panne", back_populates="besoins")
     projet = relationship("Projet")
     budget = relationship("Budget", foreign_keys=[id_budget])
     lignes = relationship("LigneBesoin", back_populates="besoin", cascade="all, delete-orphan")
     validations = relationship("Validation", back_populates="besoin", cascade="all, delete-orphan")
     fournitures = relationship("FourniturePiece", back_populates="besoin", cascade="all, delete-orphan")
+
+    # ═══ 5.22 — Contrainte UNIQUE scopée par ONG ═══
+    __table_args__ = (
+        UniqueConstraint('organisation_id', 'numero_demande', name='uq_besoin_org_numero_demande'),
+    )
+    # ═══ FIN 5.22 ═══
 
     def calculer_montant_total(self) -> float:
         """Recalcule le montant total à partir des lignes"""

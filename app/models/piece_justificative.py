@@ -9,8 +9,24 @@ class PieceJustificative(Base):
     __tablename__ = "pieces_justificatives"
 
     id_piece = Column(Integer, primary_key=True, index=True)
-    id_mouvement = Column(Integer, ForeignKey("mouvements_caisse.id_mouvement", ondelete="CASCADE"), nullable=False)
-    type_document = Column(String(10), nullable=False)  # 'BEC' ou 'BSC'
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
+    # ✅ FK vers mouvements_caisse (correction de mon erreur)
+    id_mouvement = Column(
+        Integer,
+        ForeignKey("mouvements_caisse.id_mouvement", ondelete="CASCADE"),
+        nullable=False
+    )
+    type_document = Column(String(10), nullable=False)      # 'BEC' ou 'BSC'
     numero_document = Column(String(50), nullable=False)
     url_fichier = Column(String(255), nullable=False)
     signature_caissier = Column(Boolean, default=False, nullable=False)
@@ -18,12 +34,14 @@ class PieceJustificative(Base):
     date_signature_caissier = Column(DateTime, nullable=True)
     date_signature_dg = Column(DateTime, nullable=True)
 
-    # Satisfaire les colonnes NOT NULL existantes de la table d'origine
+    # Colonnes NOT NULL existantes préservées
     type_piece = Column(String(20), nullable=False, default="FONDS")
     titre = Column(String(100), nullable=False, default="Pièce justificative de caisse")
     fichier_nom = Column(String(100), nullable=False, default="piece.pdf")
     fichier_url = Column(String(255), nullable=False, default="/")
 
+    # ✅ Relation vers MouvementCaisse (correction de mon erreur)
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     mouvement = relationship("MouvementCaisse", back_populates="piece_justificative")
 
     def __init__(self, **kwargs):

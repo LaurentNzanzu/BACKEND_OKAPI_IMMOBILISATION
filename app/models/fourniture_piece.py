@@ -1,3 +1,4 @@
+# backend/app/models/fourniture_piece.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -28,6 +29,17 @@ class FourniturePiece(Base):
     )
 
     id_fourniture = Column(Integer, primary_key=True, index=True)
+
+    # ═══ 5.22 — Multi-tenant ═══
+    organisation_id = Column(
+        Integer,
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Multi-tenant : ONG propriétaire"
+    )
+    # ═══ FIN 5.22 ═══
+
     id_besoin = Column(
         Integer,
         ForeignKey("besoins.id_besoin", ondelete="CASCADE"),
@@ -58,6 +70,8 @@ class FourniturePiece(Base):
     date_creation = Column(DateTime, default=datetime.utcnow)
     date_modification = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
 
+    # Relations
+    organisation = relationship("Organisation")   # ═══ 5.22 ═══
     besoin = relationship("Besoin", back_populates="fournitures")
     piece = relationship("PieceRechange", back_populates="fournitures")
     magasinier = relationship("Utilisateur", back_populates="fournitures_validees")
