@@ -3,7 +3,7 @@
 Endpoints CRUD pour la gestion des utilisateurs.
 Phase 5 — Isolation stricte par ONG.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional, Any
 from datetime import datetime
@@ -11,12 +11,14 @@ from datetime import datetime
 from ...core.database import get_db
 from ...schemas.utilisateur import (
     UtilisateurCreate,
+    UtilisateurCreatedResponse,
     UtilisateurUpdate,
     UtilisateurResponse,
     UtilisateurListResponse,
     UtilisateurProfilUpdate,
 )
 from ...services.auth_service import AuthService
+from ...services.organisation_service import _generer_mot_de_passe_temporaire
 from ...services.audit_service import AuditService
 from ...api.dependencies import get_current_user, is_admin
 from ...models.utilisateur import Utilisateur as UtilisateurModel
@@ -189,10 +191,11 @@ def get_utilisateur(
 # CREATE — Ajouter un utilisateur
 # =============================================================================
 
-@router.post("/", response_model=UtilisateurResponse, status_code=status.HTTP_201_CREATED)
-@router.post("", response_model=UtilisateurResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
+@router.post("/", response_model=UtilisateurCreatedResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=UtilisateurCreatedResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def create_utilisateur(
     utilisateur: UtilisateurCreate,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: UtilisateurModel = Depends(is_admin),
 ) -> Any:
@@ -232,7 +235,8 @@ def create_utilisateur(
         target_org_id = current_user.organisation_id
 
     next_id = UtilisateurModel.get_next_id(db)
-    hashed_password = get_password_hash(utilisateur.mot_de_passe)
+    temporary_password = _generer_mot_de_passe_temporaire()
+    hashed_password = get_password_hash(temporary_password)
 
     new_user = UtilisateurModel(
         id=next_id,
@@ -245,7 +249,7 @@ def create_utilisateur(
         est_actif=True,
         role_id=utilisateur.role_id,
         organisation_id=target_org_id,
-        doit_changer_mot_de_passe=False,
+        doit_changer_mot_de_passe=True,
     )
 
     db.add(new_user)
@@ -267,7 +271,12 @@ def create_utilisateur(
     )
 
     logger.info(f"Utilisateur créé : {new_user.email} par {current_user.email}")
-    return _serialize(new_user)
+    response.headers["Cache-Control"] = "no-store"
+    return UtilisateurCreatedResponse(
+        **_serialize(new_user).model_dump(),
+        mot_de_passe_temporaire=temporary_password,
+        doit_changer_mot_de_passe=new_user.doit_changer_mot_de_passe,
+    )
 
 
 # =============================================================================
@@ -316,6 +325,9 @@ def update_utilisateur(
     }
 
     update_data = utilisateur.model_dump(exclude_unset=True)
+    # Une modification sans nouveau mot de passe préserve le hash existant.
+    if not update_data.get("mot_de_passe"):
+        update_data.pop("mot_de_passe", None)
 
     # Un utilisateur normal ne peut pas changer son rôle/statut
     if not current_user.has_role("ADMIN"):
@@ -328,7 +340,7 @@ def update_utilisateur(
 
     # Appliquer
     for field, value in update_data.items():
-        if value is not None:
+        if value is not None or field == "telephone":
             setattr(db_user, field, value)
 
     db.commit()
