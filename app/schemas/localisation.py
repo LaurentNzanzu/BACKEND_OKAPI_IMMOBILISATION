@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List
 
 
@@ -7,7 +7,12 @@ class LocalisationBase(BaseModel):
 
 
 class LocalisationCreate(LocalisationBase):
-    pass
+    @field_validator("nom_localisation", mode="before")
+    @classmethod
+    def normalize_name(cls, value):
+        if isinstance(value, str):
+            return " ".join(value.split()).upper()
+        return value
 
 
 class LocalisationResponse(LocalisationBase):

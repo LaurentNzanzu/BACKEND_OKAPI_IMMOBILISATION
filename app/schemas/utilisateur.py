@@ -8,6 +8,14 @@ from datetime import datetime
 import re
 
 
+def _validate_international_phone(value: Optional[str]) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if not re.fullmatch(r"\+[1-9][0-9]{6,14}", value):
+        raise ValueError("Le téléphone doit contenir + suivi de 7 à 15 chiffres")
+    return value
+
+
 class UtilisateurBase(BaseModel):
     """Champs de base partagés pour création et mise à jour"""
     email: EmailStr
@@ -21,20 +29,12 @@ class UtilisateurBase(BaseModel):
 
 class UtilisateurCreate(UtilisateurBase):
     """Schéma pour la création d'un nouvel utilisateur"""
-    mot_de_passe: str
     role_id: int  # ID du rôle à assigner (FK vers roles.id_role)
-    
-    @field_validator('mot_de_passe')
+
+    @field_validator('telephone')
     @classmethod
-    def password_strength(cls, v: str) -> str:
-        """Validation de la complexité du mot de passe"""
-        if len(v) < 6:
-            raise ValueError("Le mot de passe doit contenir au moins 6 caractères")
-        if not re.search(r'[A-Za-z]', v):
-            raise ValueError("Le mot de passe doit contenir au moins une lettre")
-        if not re.search(r'\d', v):
-            raise ValueError("Le mot de passe doit contenir au moins un chiffre")
-        return v
+    def international_phone(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_international_phone(value)
 
 
 class UtilisateurUpdate(BaseModel):
@@ -48,6 +48,11 @@ class UtilisateurUpdate(BaseModel):
     est_actif: Optional[bool] = None
     role_id: Optional[int] = None
     
+    @field_validator('telephone')
+    @classmethod
+    def international_phone(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_international_phone(value)
+
     @field_validator('mot_de_passe')
     @classmethod
     def password_strength(cls, v: str) -> str:
@@ -68,6 +73,12 @@ class UtilisateurResponse(UtilisateurBase):
     last_login: Optional[datetime] = None
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class UtilisateurCreatedResponse(UtilisateurResponse):
+    """Identifiants temporaires exposés uniquement par la réponse de création."""
+    mot_de_passe_temporaire: str
+    doit_changer_mot_de_passe: bool
 
 
 class UtilisateurListResponse(BaseModel):
