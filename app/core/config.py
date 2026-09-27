@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     REFRESH_SECRET_KEY: str
+    # === Protection des connexions ===
+    LOGIN_MAX_ATTEMPTS: int = 3
+    LOGIN_LOCK_SECONDS: int = 300
     
     # === Redis Configuration ===
     REDIS_HOST: str = "localhost"

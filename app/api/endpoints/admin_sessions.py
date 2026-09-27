@@ -191,7 +191,7 @@ async def revoke_session(
     if request.revoke_all:
         user = db.query(Utilisateur).filter(Utilisateur.id == session.user_id).first()
         if user:
-            revoked_count = user.revoke_all_sessions(db)
+            revoked_count = SessionService.revoke_all_sessions(db, user.id)
             logger.info(
                 f"Admin {admin.id} a révoqué toutes les sessions de l'utilisateur {session.user_id} "
                 f"({revoked_count} sessions)"

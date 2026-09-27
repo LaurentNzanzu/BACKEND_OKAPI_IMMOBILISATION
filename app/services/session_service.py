@@ -5,12 +5,12 @@ from sqlalchemy import desc, and_, func
 import logging
 import uuid
 import hashlib
+import hmac
 import time
 
 from ..models.session import SessionUtilisateur
 from ..models.utilisateur import Utilisateur
 from ..core.config import settings
-from ..core.security import get_password_hash, verify_password
 from ..core.redis_client import redis_client
 from ..services.session_cache_service import SessionCacheService
 
@@ -31,12 +31,14 @@ class SessionService:
     @staticmethod
     def hash_refresh_token(refresh_token: str) -> str:
         """Hash le refresh token pour le stockage sécurisé en BDD."""
-        return get_password_hash(refresh_token)
+        return "sha256:" + hashlib.sha256(refresh_token.encode()).hexdigest()
 
     @staticmethod
     def verify_refresh_token(plain_token: str, hashed_token: str) -> bool:
         """Vérifie si un refresh token correspond à son hash stocké."""
-        return verify_password(plain_token, hashed_token)
+        # Legacy bcrypt hashes truncate JWTs at 72 bytes: require a new login.
+        return bool(hashed_token and hashed_token.startswith("sha256:") and
+                    hmac.compare_digest(SessionService.hash_refresh_token(plain_token), hashed_token))
 
     @staticmethod
     def generate_fingerprint(user_agent: str, ip_address: str, additional_data: str = "") -> str:
@@ -73,7 +75,7 @@ class SessionService:
                 )
                 # Révoquer la session la plus ancienne
                 oldest_session = active_sessions[-1]
-                SessionService.revoke_session(db, oldest_session.session_uuid, user_id)
+                SessionService.revoke_session(db, oldest_session.session_uuid, user_id, commit=False)
                 db.flush()
 
             # 2. Hasher le refresh token
@@ -125,12 +127,12 @@ class SessionService:
                 "last_activity": str(time.time()),
             }
             
-            cache_success = redis_client.set_session(
-                user_id=user_id,
-                session_uuid=session_uuid,
-                data=cache_data,
-                ttl=settings.REDIS_SESSION_TTL
-            )
+            try:
+                cache_success = redis_client.set_session(
+                    user_id=user_id, session_uuid=session_uuid,
+                    data=cache_data, ttl=settings.REDIS_SESSION_TTL)
+            except Exception:
+                cache_success = False
             
             if cache_success:
                 logger.debug(f"Session {session_uuid} mise en cache Redis")
@@ -155,57 +157,11 @@ class SessionService:
         session_uuid: str, 
         user_id: Optional[int] = None
     ) -> Optional[SessionUtilisateur]:
-        """
-        Récupère une session par son UUID.
-        🆕 Priorité: Redis → BDD + recachement.
-        """
-        # 1. Tenter de récupérer depuis Redis
-        if user_id:
-            cache_data = redis_client.get_session(user_id, session_uuid)
-            if cache_data:
-                # Recréer un objet SessionUtilisateur à partir du cache
-                # (pour compatibilité avec le code existant)
-                try:
-                    session = SessionUtilisateur()
-                    session.session_uuid = session_uuid
-                    session.user_id = int(cache_data.get("user_id", user_id))
-                    session.fingerprint = cache_data.get("fingerprint")
-                    session.user_agent = cache_data.get("user_agent")
-                    session.ip_address = cache_data.get("ip_address")
-                    session.est_revoquee = cache_data.get("revoked", False)
-                    session.session_data = cache_data.get("session_data", {})
-                    session.date_derniere_activite = datetime.fromtimestamp(
-                        float(cache_data.get("last_activity", time.time()))
-                    )
-                    logger.debug(f"Session {session_uuid} récupérée depuis Redis")
-                    return session
-                except Exception as e:
-                    logger.warning(f"Erreur reconstruction session depuis Redis: {e}")
-
-        # 2. Fallback BDD
-        query = db.query(SessionUtilisateur).filter(
-            SessionUtilisateur.session_uuid == session_uuid
-        )
+        """Read the authoritative persistent SQL row, never a Redis reconstruction."""
+        query = db.query(SessionUtilisateur).filter(SessionUtilisateur.session_uuid == session_uuid)
         if user_id is not None:
             query = query.filter(SessionUtilisateur.user_id == user_id)
-        
-        session = query.first()
-        
-        # 3. Recachement automatique si trouvé en BDD
-        if session and user_id:
-            try:
-                cache_data = SessionCacheService._session_to_cache_data(session)
-                redis_client.set_session(
-                    user_id=user_id,
-                    session_uuid=session_uuid,
-                    data=cache_data,
-                    ttl=settings.REDIS_SESSION_TTL
-                )
-                logger.debug(f"Session {session_uuid} recachée après fallback BDD")
-            except Exception as e:
-                logger.warning(f"Erreur recachement pour {session_uuid}: {e}")
-        
-        return session
+        return query.populate_existing().first()
 
     @staticmethod
     def get_session_by_refresh_token_hash(
@@ -231,7 +187,8 @@ class SessionService:
         db: Session, 
         session_uuid: str, 
         user_id: Optional[int] = None,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
+        commit: bool = True
     ) -> bool:
         """
         Révoque une session.
@@ -251,19 +208,16 @@ class SessionService:
         
         # Ajouter la raison dans les métadonnées
         if reason:
-            if not session.session_data:
-                session.session_data = {}
-            session.session_data["revocation_reason"] = reason
-            session.session_data["revoked_at"] = datetime.utcnow().isoformat()
-
-        db.commit()
-
-        # 🆕 Marquer comme révoquée en Redis
-        try:
-            redis_client.revoke_session(session.user_id, session_uuid)
-            logger.debug(f"Session {session_uuid} révoquée en Redis")
-        except Exception as e:
-            logger.warning(f"Erreur révocation Redis pour {session_uuid}: {e}")
+            session.session_data = {**(session.session_data or {}),
+                                    "revocation_reason": reason,
+                                    "revoked_at": datetime.utcnow().isoformat()}
+        if commit:
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            SessionService.invalidate_session_cache(session.user_id, session_uuid)
 
         logger.warning(
             f"Session {session_uuid} révoquée pour l'utilisateur {session.user_id}"
@@ -335,7 +289,9 @@ class SessionService:
 
         # Vérifier si la mise à jour est nécessaire (optimisation)
         if session.date_derniere_activite:
-            time_diff = (datetime.utcnow() - session.date_derniere_activite).total_seconds()
+            last_activity = session.date_derniere_activite
+            now = datetime.now(last_activity.tzinfo) if last_activity.tzinfo else datetime.utcnow()
+            time_diff = (now - last_activity).total_seconds()
             if time_diff < update_interval:
                 return True
 
@@ -430,29 +386,40 @@ class SessionService:
         return True
 
     @staticmethod
-    def revoke_all_sessions(db: Session, user_id: int, exclude_uuid: Optional[str] = None) -> int:
-        """Révoque toutes les sessions d'un utilisateur."""
-        sessions = SessionService.get_user_active_sessions(db, user_id)
-        revoked_count = 0
-        
-        for session in sessions:
-            if exclude_uuid and session.session_uuid == exclude_uuid:
-                continue
-            SessionService.revoke_session(
-                db, 
-                session.session_uuid, 
-                user_id,
-                reason="Révocation massive par administrateur"
-            )
-            revoked_count += 1
-        
-        # 🆕 Révoquer en Redis
+    def invalidate_session_cache(user_id: int, session_uuid: str):
         try:
-            redis_client.revoke_all_user_sessions(user_id)
-        except Exception as e:
-            logger.warning(f"Erreur révocation massive Redis: {e}")
-        
-        return revoked_count
+            if not redis_client.revoke_session(user_id, session_uuid):
+                logger.warning("SQL session revoked; Redis invalidation incomplete")
+        except Exception:
+            logger.warning("SQL session revoked; Redis invalidation unavailable")
+
+    @staticmethod
+    def revoke_sessions_in_transaction(db: Session, user_id: int, exclude_uuid: Optional[str] = None) -> int:
+        """No commit: password changes and session revocations share one transaction."""
+        query = db.query(SessionUtilisateur).filter(
+            SessionUtilisateur.user_id == user_id, SessionUtilisateur.est_revoquee == False)
+        if exclude_uuid:
+            query = query.filter(SessionUtilisateur.session_uuid != exclude_uuid)
+        return query.update({SessionUtilisateur.est_revoquee: True,
+                             SessionUtilisateur.date_fin: datetime.utcnow()}, synchronize_session="fetch")
+
+    @staticmethod
+    def revoke_all_sessions(db: Session, user_id: int, exclude_uuid: Optional[str] = None) -> int:
+        try:
+            db.query(Utilisateur).filter(Utilisateur.id == user_id).with_for_update().first()
+            query = db.query(SessionUtilisateur.session_uuid).filter(SessionUtilisateur.user_id == user_id)
+            if exclude_uuid:
+                query = query.filter(SessionUtilisateur.session_uuid != exclude_uuid)
+            session_ids = [row[0] for row in query.all()]
+            count = SessionService.revoke_sessions_in_transaction(db, user_id, exclude_uuid)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        # SQL is authoritative; never revoke the excluded session in Redis.
+        for session_uuid in session_ids:
+            SessionService.invalidate_session_cache(user_id, session_uuid)
+        return count
 
     @staticmethod
     def get_session_stats(db: Session) -> Dict[str, Any]:

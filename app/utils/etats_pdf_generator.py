@@ -1,3 +1,5 @@
+from .organisation_pdf import add_organisation_header
+from xml.sax.saxutils import escape
 import io
 from datetime import datetime
 from reportlab.lib import colors
@@ -93,37 +95,7 @@ def _get_styles():
         
     return _STYLES
 
-def _get_logo_path() -> str:
-    possible_paths = [
-        os.path.join(os.path.dirname(__file__), '..', '..', 'frontend', 'src', 'assets', 'Logo.jpeg'),
-        os.path.join(os.path.dirname(__file__), '..', '..', 'frontend', 'public', 'logo.png'),
-        os.path.join(os.path.dirname(__file__), '..', '..', 'frontend', 'public', 'okapi-logo.png'),
-        os.path.join(os.path.dirname(__file__), '..', 'assets', 'logo.png'),
-    ]
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
-    return None
-
-def _get_etat_besoin_logo_path() -> str:
-    return os.path.normpath(
-        os.path.join(os.path.dirname(__file__), '..', '..', 'frontend', 'src', 'assets', 'Logo.jpeg')
-    )
-
-def _create_logo_element(logo_path: str, styles, max_width: float = 50, max_height: float = 50):
-    """Crée un logo avec ratio préservé dans une zone max_width x max_height."""
-    try:
-        from reportlab.lib.utils import ImageReader
-        reader = ImageReader(logo_path)
-        iw, ih = reader.getSize()
-        if iw and ih:
-            scale = min(max_width / iw, max_height / ih)
-            return Image(logo_path, width=iw * scale, height=ih * scale)
-        return Image(logo_path, width=max_width, height=max_height)
-    except Exception:
-        return Paragraph("OKAPI", styles['OkapiLogo'])
-
-def _add_header(elements, doc, titre, sous_titre=None, doc_ref=None, logo_path=None):
+def _add_header(elements, doc, titre, sous_titre=None, doc_ref=None, organisation=None):
     styles = _get_styles()
     width = doc.width
     
@@ -133,32 +105,7 @@ def _add_header(elements, doc, titre, sous_titre=None, doc_ref=None, logo_path=N
                           style=TableStyle([('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#1b5e20'))])))
     elements.append(Spacer(1, 12))
 
-    # Gestion propre du branding (Logo)
-    if logo_path is not None:
-        resolved_logo = logo_path if os.path.exists(logo_path) else None
-    else:
-        resolved_logo = _get_logo_path()
-
-    if resolved_logo:
-        logo_element = _create_logo_element(resolved_logo, styles)
-    else:
-        logo_element = Paragraph("OKAPI", styles['OkapiLogo'])
-
-    # Informations légales de l'entreprise
-    company_data = [
-        [logo_element,
-         Paragraph("<font size='14'><b>OKAPI AGROBUSINESS</b></font><br/>"
-                   "<font size='9'>Société Privée à Responsabilité Limitée</font><br/>"
-                   "<font size='7' color='#6b7280'>RCCM: CD/KNG/RCCM/21-B-03234 | Id. Nat.: 01-A0101-N93880K | Impôt: A2283297Q</font>",
-                   styles['Normal'])]
-    ]
-    company_table = Table(company_data, colWidths=[60, width - 60])
-    company_table.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (1, 0), (1, 0), 12),
-    ]))
-    elements.append(company_table)
-    elements.append(Spacer(1, 15))
+    add_organisation_header(elements, width, organisation)
 
     # Titre du document
     titre_para = Paragraph(f"<b>{titre}</b><br/><font size='10' color='#4b5563'>{sous_titre or ''}</font>", styles['OkapiTitle'])
@@ -183,13 +130,14 @@ def _add_header(elements, doc, titre, sous_titre=None, doc_ref=None, logo_path=N
                           style=TableStyle([('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#e5e7eb'))])))
     elements.append(Spacer(1, 15))
 
-def _add_footer(elements, doc):
+def _add_footer(elements, doc, organisation=None):
     styles = _get_styles()
     elements.append(Spacer(1, 25))
     elements.append(Table([['']], colWidths=[doc.width], rowHeights=[0.5],
                           style=TableStyle([('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#e5e7eb'))])))
     elements.append(Spacer(1, 6))
-    footer_text = f"Document généré par OKAPI AGROBUSINESS le {datetime.now().strftime('%d/%m/%Y à %H:%M:%S')}"
+    owner = escape((organisation or {}).get("nom") or "")
+    footer_text = f"Document généré{' pour ' + owner if owner else ''} le {datetime.now().strftime('%d/%m/%Y à %H:%M:%S')}"
     elements.append(Paragraph(footer_text, styles['OkapiFooter']))
 
 def _create_info_table(data: List[List], col_widths: List) -> Table:
@@ -229,7 +177,7 @@ def generate_fiche_bien_pdf(data: Dict[str, Any]) -> bytes:
 
     titre = "FICHE D'IMMOBILISATION"
     sous_titre = f"{type_bien} • {designation}"
-    _add_header(elements, doc, titre, sous_titre, bien.get('qr_code'))
+    _add_header(elements, doc, titre, sous_titre, bien.get('qr_code'), organisation=data.get('organisation'))
 
     elements.append(Paragraph("1. IDENTIFICATION DU BIEN", styles['OkapiSection']))
 
@@ -454,7 +402,7 @@ def generate_fiche_bien_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     elements.append(sig_table)
 
-    _add_footer(elements, doc)
+    _add_footer(elements, doc, data.get("organisation"))
 
     doc.build(elements)
     buffer.seek(0)
@@ -481,7 +429,7 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     
     titre = "FICHE D'AMORTISSEMENT"
     sous_titre = f"{bien.get('type_bien', '').upper()} • {designation}"
-    _add_header(elements, doc, titre, sous_titre, bien.get('qr_code'))
+    _add_header(elements, doc, titre, sous_titre, bien.get('qr_code'), organisation=data.get('organisation'))
     
     # 1. IDENTIFICATION DU BIEN
     elements.append(Paragraph("1. IDENTIFICATION DU BIEN", styles['OkapiSection']))
@@ -662,7 +610,7 @@ def generate_fiche_amortissement_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     elements.append(sig_table)
     
-    _add_footer(elements, doc)
+    _add_footer(elements, doc, data.get("organisation"))
     
     doc.build(elements)
     buffer.seek(0)
@@ -692,7 +640,7 @@ def generate_etat_besoin_pdf(data: Dict[str, Any]) -> bytes:
     sous_titre = f"Panne #{panne.get('id_panne', 'N/A')} • {bien.get('designation', '')}"
     _add_header(
         elements, doc, titre, sous_titre, besoin.get("numero_demande"),
-        logo_path=_get_etat_besoin_logo_path(),
+        organisation=data.get("organisation"),
     )
 
     # 1. INFORMATIONS DE LA DEMANDE
@@ -847,7 +795,7 @@ def generate_etat_besoin_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     elements.append(sig_table)
 
-    _add_footer(elements, doc)
+    _add_footer(elements, doc, data.get("organisation"))
     doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()
@@ -865,7 +813,7 @@ def generate_fiche_panne_pdf(data: Dict[str, Any]) -> bytes:
     
     titre = "FICHE DE PANNE"
     sous_titre = f"Panne #{panne.get('id_panne', '')}"
-    _add_header(elements, doc, titre, sous_titre, f"PANNE-{panne.get('id_panne', '')}")
+    _add_header(elements, doc, titre, sous_titre, f"PANNE-{panne.get('id_panne', '')}", organisation=data.get("organisation"))
     
     # 1. INFORMATIONS GENERALES
     elements.append(Paragraph("1. INFORMATIONS GENERALES", styles['OkapiSection']))
@@ -945,7 +893,7 @@ def generate_fiche_panne_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     elements.append(sig_table)
     
-    _add_footer(elements, doc)
+    _add_footer(elements, doc, data.get("organisation"))
     doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()

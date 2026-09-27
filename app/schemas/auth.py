@@ -136,3 +136,7 @@ class ResetPasswordRequest(BaseModel):
 
 class PasswordResetResponse(BaseModel):
     message: str
+
+
+class VerifyResetTokenRequest(BaseModel):
+    token: str

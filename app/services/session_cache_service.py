@@ -215,9 +215,10 @@ class SessionCacheService:
             Tuple[bool, str]: (is_valid, message)
         """
         # 1. Récupérer les données de la session
-        session_data, from_cache = SessionCacheService.get_session_data(
-            db, user_id, session_uuid, check_revoked=True
-        )
+        from .session_service import SessionService
+        session = SessionService.get_session_by_uuid(db, session_uuid, user_id)
+        session_data = {"revoked": session.est_revoquee,
+                        "fingerprint": session.fingerprint} if session else None
 
         if not session_data:
             return False, "Session invalide ou révoquée"
@@ -275,26 +276,9 @@ class SessionCacheService:
         Returns:
             bool: True si active, False sinon
         """
-        # 1. Vérifier en Redis
-        try:
-            cache_data = redis_client.get_session(user_id, session_uuid)
-            if cache_data:
-                return not cache_data.get("revoked", False)
-        except Exception:
-            pass
-
-        # 2. Fallback BDD
-        try:
-            # Import local pour éviter l'importation circulaire
-            from ..services.session_service import SessionService
-
-            session = SessionService.get_session_by_uuid(db, session_uuid, user_id)
-            if session:
-                return not session.est_revoquee
-        except Exception:
-            pass
-
-        return False
+        from .session_service import SessionService
+        session = SessionService.get_session_by_uuid(db, session_uuid, user_id)
+        return bool(session and not session.est_revoquee)
 
     @staticmethod
     def revoke_session_cache(user_id: int, session_uuid: str) -> bool:

@@ -1,3 +1,4 @@
+from .organisation_profil_service import document_identity
 # backend/app/services/mouvement_caisse_service.py
 import os
 from datetime import datetime
@@ -208,10 +209,12 @@ class MouvementCaisseService:
             dg_nom = dg_user.nom_complet if dg_user else "Direction Générale"
         # ═══ FIN 5.22 ═══
 
+        owner_id = mouvement.organisation_id or self._get_organisation_id_caisse(mouvement.id_caisse)
+        organisation = document_identity(self.db, owner_id)
         if mouvement.type_mouvement == "ENTREE":
-            pdf_bytes = generer_bec_pdf(mouvement, caissier, dg_nom)
+            pdf_bytes = generer_bec_pdf(mouvement, caissier, dg_nom, organisation=organisation)
         else:
-            pdf_bytes = generer_bsc_pdf(mouvement, caissier, dg_nom)
+            pdf_bytes = generer_bsc_pdf(mouvement, caissier, dg_nom, organisation=organisation)
 
         upload_dir = os.path.join(os.getcwd(), "static", "bons_caisse")
         os.makedirs(upload_dir, exist_ok=True)

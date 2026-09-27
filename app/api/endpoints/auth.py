@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import func
+from sqlalchemy import func, inspect
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import uuid
@@ -17,9 +17,20 @@ from ...core.security import (
     create_refresh_token,
     decode_token,
     get_current_user,
+    invalidate_user_cache,
     get_token_jti
 )
-from ...core.cookies import REFRESH_COOKIE
+from ...core.cookies import REFRESH_COOKIE, ACCESS_COOKIE
+from ...models.session import SessionUtilisateur
+from ...services.email_service import EmailService
+from ...core.security import (create_password_reset_token, validate_reset_payload,
+                              decode_typed_token, require_unrevoked_token)
+from jose import JWTError
+from urllib.parse import quote
+import time
+import math
+import hmac
+import hashlib
 from ...core.redis_client import redis_client
 from ...schemas.auth import (
     LoginRequest,
@@ -31,6 +42,7 @@ from ...schemas.auth import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
     PasswordResetResponse,
+    VerifyResetTokenRequest,
     ForceChangePasswordRequest,  # ═══════════════ AJOUT 5.7 — schéma force-change ═══════════════
 )
 from ...models.utilisateur import Utilisateur
@@ -156,21 +168,56 @@ async def login(
     - Messages d'erreur pédagogiques pour les caractères ambigus
     - Sécurité inchangée (bcrypt strict)
     """
-    # === 1. NORMALISATION DES ENTRÉES ===
     email_clean = normalize_email(login_data.email)
     password_clean = normalize_password(login_data.mot_de_passe)
 
-    if not email_clean or not password_clean:
+    # Identifiant pseudonymisé : ne pas stocker l'email brut dans Redis.
+    identity = hmac.new(
+        settings.SECRET_KEY.encode(),
+        email_clean.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    login_key = f"login:attempts:{identity}"
+
+    admission = redis_client.admit_login_attempt(
+        login_key,
+        settings.LOGIN_MAX_ATTEMPTS,
+        settings.LOGIN_LOCK_SECONDS
+    )
+
+    # Redis indisponible : ne pas autoriser des essais illimités.
+    if admission is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect"
+            status_code=503,
+            detail="Service de connexion temporairement indisponible"
         )
 
+    allowed, retry_after, remaining = admission
+
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Trop de tentatives. Réessayez après le délai indiqué.",
+                "retry_after": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)}
+        )
+
+    if not email_clean or not password_clean:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "message": "Email ou mot de passe incorrect",
+                "remaining_attempts": remaining
+            }
+        )
     # === 2. RECHERCHE DE L'UTILISATEUR (email insensible à la casse) ===
     user = db.query(Utilisateur).filter(
         func.lower(Utilisateur.email) == email_clean,
         Utilisateur.est_actif == True
-    ).first()
+    ).with_for_update().first()
 
     if not user:
         # Message générique : ne pas révéler que l'email n'existe pas
@@ -190,9 +237,11 @@ async def login(
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect"
+            detail={
+                "message": "Email ou mot de passe incorrect",
+                "remaining_attempts": remaining
+            }
         )
-
     # === 3. VÉRIFICATION DU MOT DE PASSE (STRICT, bcrypt) ===
     if not verify_password(password_clean, user.mot_de_passe):
         # Message enrichi pour guider l'utilisateur
@@ -217,12 +266,14 @@ async def login(
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=detail,
+            detail={
+                "message": detail,
+                "remaining_attempts": remaining
+            },
         )
 
     # === 4. MISE À JOUR DU last_login ===
     user.last_login = datetime.utcnow()
-    db.commit()
 
     # === 5. GÉNÉRATION DES TOKENS (inchangé) ===
     session_uuid = str(uuid.uuid4())
@@ -282,6 +333,20 @@ async def login(
         last_login=user.last_login,
         **saas_fields,
     )
+    # Réinitialiser le compteur après création complète de la session.
+    if not redis_client.clear_login_attempts(login_key):
+        logger.error("Could not clear login limiter after session creation")
+
+        SessionService.revoke_session(
+            db,
+            session_uuid,
+            user.id
+        )
+
+        raise HTTPException(
+            status_code=503,
+            detail="Service de connexion temporairement indisponible"
+        )
 
     # ═══ AJOUT 5.21 — Log LOGIN_SUCCESS ═══
     try:
@@ -303,254 +368,106 @@ async def login(
     )
 
 @router.post("/refresh", response_model=RefreshTokenResponse)
-async def refresh(
-    request: Request,
-    response: Response,
-    db: Session = Depends(get_db)
-):
-    """
-    Rafraîchit l'Access Token en utilisant le Refresh Token.
-    Effectue une rotation du Refresh Token avec validation de session.
-    🔴 NOUVEAU : Blacklist l'ancien Refresh Token.
-    """
-    # 1. Récupération du refresh token depuis le cookie ou le header Authorization
-    refresh_token = request.cookies.get(REFRESH_COOKIE)
-    if not refresh_token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            refresh_token = auth_header.split(" ")[1]
-    
-    if not refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token manquant"
-        )
-    
+async def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
+    token = request.cookies.get(REFRESH_COOKIE)
+    header = request.headers.get("Authorization", "")
+    if not token and header.startswith("Bearer "):
+        token = header[7:].strip()
     try:
-        # 2. Décodage du refresh token
-        payload = decode_token(refresh_token, is_refresh=True)
-        
-        if payload.get("type") != "refresh":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token invalide"
-            )
-        
-        user_id = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token invalide"
-            )
-        
-        # 🔴 NOUVEAU : Récupérer le JTI de l'ancien refresh token
-        old_refresh_jti = payload.get("jti")
-        
-        # 3. Vérification que l'utilisateur existe
-        user = db.query(Utilisateur).filter(
-            Utilisateur.id == int(user_id),
-            Utilisateur.est_actif == True
-        ).first()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Utilisateur introuvable ou désactivé"
-            )
-        
-        # 4. Récupération du session_uuid depuis le token
-        session_uuid = payload.get("sid")
-        
-        if not session_uuid:
-            # Fallback: récupérer la session active la plus récente de l'utilisateur
-            active_sessions = SessionService.get_user_active_sessions(db, int(user_id), limit=1)
-            if active_sessions:
-                session_uuid = str(active_sessions[0].session_uuid)
-        
-        # 5. VALIDATION DE LA SESSION EN BDD
-        if not session_uuid:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session invalide"
-            )
-        
-        # Vérifier que la session existe et est active
-        is_valid = SessionService.validate_session(
-            db, 
-            session_uuid, 
-            refresh_token=refresh_token,
-            user_id=int(user_id)
-        )
-        
-        if not is_valid:
-            logger.warning(f"Session invalide ou révoquée: {session_uuid}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session révoquée ou expirée"
-            )
-        
-        # 6. 🔴 NOUVEAU : BLACKLISTER L'ANCIEN REFRESH TOKEN
-        if old_refresh_jti:
-            # TTL = 7 jours (durée de vie du refresh token)
-            refresh_ttl = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
-            blacklist_success = redis_client.add_to_blacklist(old_refresh_jti, refresh_ttl)
-            if blacklist_success:
-                logger.info(f"Ancien Refresh Token JTI {old_refresh_jti} blacklisté")
-            else:
-                logger.warning(f"Échec blacklist de l'ancien Refresh Token {old_refresh_jti}")
-        
-        # 7. ROTATION : Génération d'un nouveau refresh token avec session_uuid
-        new_refresh_jti = str(uuid.uuid4())
-        new_refresh_token = create_refresh_token(user_id, session_uuid=session_uuid, jti=new_refresh_jti)
-        
-        # 8. ROTATION : Mise à jour de la session en BDD
-        rotation_success = SessionService.rotate_session(
-            db, 
-            session_uuid, 
-            new_refresh_token,
-            user_id=int(user_id)
-        )
-        
-        if not rotation_success:
-            logger.error(f"Échec de rotation pour la session {session_uuid}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Erreur lors de la rotation de session"
-            )
-        
-        # 9. Génération d'un nouveau access token avec session_uuid
-        new_access_jti = str(uuid.uuid4())
-        new_access_token = create_access_token(user_id, session_uuid=session_uuid, jti=new_access_jti)
-        
-        # 10. Mise à jour du cookie avec le nouveau refresh token
-        set_refresh_token_cookie(response, new_refresh_token)
-        
-        # 11. Mise à jour de l'activité de la session
-        SessionService.update_session_activity(db, session_uuid)
-        
-        return RefreshTokenResponse(
-            access_token=new_access_token,
-            session_uuid=str(session_uuid),
-            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
-        )
-        
-    except HTTPException:
+        payload = decode_typed_token(token or "", "refresh")
+        require_unrevoked_token(payload)
+        # Same lock order as login/reset/password change: user, then session.
+        user = (db.query(Utilisateur).filter(Utilisateur.id == int(payload["sub"]))
+                .populate_existing().with_for_update().first())
+        if not user or not user.est_actif:
+            raise HTTPException(status_code=401, detail="Utilisateur introuvable ou desactive")
+        session = (db.query(SessionUtilisateur).filter(
+            SessionUtilisateur.session_uuid == payload["sid"],
+            SessionUtilisateur.user_id == user.id).populate_existing().with_for_update().first())
+        if not session or session.est_revoquee or not SessionService.verify_refresh_token(token, session.refresh_token_hash):
+            raise HTTPException(status_code=401, detail="Session ou refresh token invalide")
+        new_refresh = create_refresh_token(user.id, session_uuid=session.session_uuid)
+        new_access = create_access_token(user.id, session_uuid=session.session_uuid)
+        old_hash = session.refresh_token_hash
+        new_hash = SessionService.hash_refresh_token(new_refresh)
+        metadata = dict(session.session_data or {})
+        history = list(metadata.get("rotation_history", []))
+        history.append({"timestamp": datetime.utcnow().isoformat(), "rotation_number": len(history) + 1})
+        metadata.update(rotation_history=history,
+                        access_jti=decode_typed_token(new_access, "access")["jti"],
+                        refresh_jti=decode_typed_token(new_refresh, "refresh")["jti"])
+        # Compare-and-swap also rejects concurrent replays on databases without row locks.
+        count = db.query(SessionUtilisateur).filter(
+            SessionUtilisateur.id == session.id,
+            SessionUtilisateur.refresh_token_hash == old_hash,
+            SessionUtilisateur.est_revoquee == False).update({
+                SessionUtilisateur.refresh_token_hash: new_hash,
+                SessionUtilisateur.date_derniere_activite: datetime.utcnow(),
+                SessionUtilisateur.session_data: metadata,
+            }, synchronize_session=False)
+        if count != 1:
+            raise HTTPException(status_code=401, detail="Refresh token deja utilise")
+        session_uuid = session.session_uuid
+        db.commit()
+    except JWTError:
+        db.rollback()
+        raise HTTPException(status_code=401, detail="Refresh token invalide ou expire")
+    except Exception:
+        db.rollback()
         raise
-    except Exception as e:
-        logger.error(f"Erreur lors du refresh: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token invalide ou expiré"
-        )
+    # SQL rotation already prevents replay; optional blacklist writes are post-commit.
+    _blacklist_after_commit(payload)
+    set_refresh_token_cookie(response, new_refresh)
+    return RefreshTokenResponse(access_token=new_access, session_uuid=session_uuid,
+                                expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+
+
+def _blacklist_after_commit(payload: dict):
+    ttl = max(0, math.ceil(payload["exp"] - time.time()))
+    try:
+        if ttl and not redis_client.add_to_blacklist(payload["jti"], ttl):
+            logger.warning("SQL revocation/rotation committed; blacklist update failed")
+    except Exception:
+        logger.warning("SQL revocation/rotation committed; blacklist unavailable")
 
 
 @router.post("/logout", response_model=LogoutResponse)
-async def logout(
-    response: Response,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """
-    Déconnecte l'utilisateur en supprimant le cookie refresh token
-    et en révoquant la session en base de données.
-    🔴 NOUVEAU : Ajoute l'Access Token à la blacklist pour une révocation instantanée.
-    """
-    # 1. Récupérer le session_uuid depuis le refresh token ou le payload
-    refresh_token = request.cookies.get(REFRESH_COOKIE)
-    session_uuid = None
-    user_id = None
-    access_jti = None
-    
-    # 2. Récupérer le JTI de l'Access Token depuis request.state
-    if hasattr(request.state, 'jti') and request.state.jti:
-        access_jti = request.state.jti
-        logger.debug(f"JTI de l'Access Token récupéré: {access_jti}")
-    else:
-        # Essayer de récupérer depuis le header Authorization
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            try:
-                token = auth_header.split(" ")[1]
-                payload = decode_token(token, is_refresh=False)
-                access_jti = payload.get("jti")
-                user_id = payload.get("sub")
-                logger.debug(f"JTI extrait du token: {access_jti}")
-            except Exception as e:
-                logger.warning(f"Impossible d'extraire le JTI: {e}")
-    
-    if refresh_token:
-        try:
-            # Extraire le session_uuid du token (si stocké)
-            payload = decode_token(refresh_token, is_refresh=True)
-            session_uuid = payload.get("sid")
-            if not user_id:
-                user_id = payload.get("sub")
-        except Exception as e:
-            logger.warning(f"Impossible de décoder le refresh token: {e}")
-    
-    # 3. Si session_uuid non trouvé, essayer de récupérer par hash
-    if not session_uuid and refresh_token:
-        refresh_hash = SessionService.hash_refresh_token(refresh_token)
-        session = SessionService.get_session_by_refresh_token_hash(db, refresh_hash)
-        if session:
-            session_uuid = session.session_uuid
-            if not user_id:
-                user_id = session.user_id
-    
-    # 4. 🔴 NOUVEAU : BLACKLISTER L'ACCESS TOKEN
-    if access_jti:
-        # Calculer le TTL restant (durée de vie de l'Access Token)
-        # Par défaut, on utilise la durée de vie configurée
-        remaining_ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # 15 min
-        
-        # Si on a l'expiration réelle, on peut calculer le TTL exact
-        if hasattr(request.state, 'token_exp') and request.state.token_exp:
-            now = datetime.utcnow().timestamp()
-            remaining_ttl = max(0, int(request.state.token_exp - now))
-        
-        if remaining_ttl > 0:
-            blacklist_success = redis_client.add_to_blacklist(access_jti, remaining_ttl)
-            if blacklist_success:
-                logger.info(f"Access Token JTI {access_jti} blacklisté (TTL: {remaining_ttl}s)")
-            else:
-                logger.warning(f"Échec blacklist de l'Access Token {access_jti}")
-        else:
-            logger.debug(f"Access Token JTI {access_jti} déjà expiré, pas de blacklist")
-    
-    # 5. RÉVOCATION DE LA SESSION EN BDD ET REDIS
-    if session_uuid and user_id:
-        # Révocation en BDD
-        revoked = SessionService.revoke_session(
-            db, 
-            session_uuid, 
-            user_id=int(user_id) if user_id else None,
-            reason="Logout explicite"
-        )
-        if revoked:
-            logger.info(f"Session {session_uuid} révoquée (logout)")
-        
-        # Révocation en Redis
-        try:
-            SessionCacheService.revoke_session_cache(int(user_id), session_uuid)
-            logger.debug(f"Session {session_uuid} révoquée en Redis")
-        except Exception as e:
-            logger.warning(f"Erreur révocation Redis pour {session_uuid}: {e}")
-    
-    # 6. Nettoyer le cookie refresh token
-    clear_refresh_token_cookie(response)
-
-    # ═══ AJOUT 5.21 — Log LOGOUT ═══
+async def logout(response: Response, request: Request, db: Session = Depends(get_db)):
+    # Bearer identifies the intended session even when a different refresh cookie exists.
+    header = request.headers.get("Authorization", "")
+    token = header[7:].strip() if header.startswith("Bearer ") else request.cookies.get(ACCESS_COOKIE)
+    token_type = "access"
+    if not token:
+        token, token_type = request.cookies.get(REFRESH_COOKIE), "refresh"
+    if not token:
+        clear_refresh_token_cookie(response)
+        response.delete_cookie(ACCESS_COOKIE, path="/")
+        return LogoutResponse(message="D\u00e9connexion r\u00e9ussie")
     try:
-        if user_id:
-            AuditService(db).log_logout(
-                user_id=int(user_id),
-                request=request,
-            )
-    except Exception as e:
-        logger.warning(f"Échec log audit LOGOUT : {e}")
-    # ═══ FIN AJOUT 5.21 ═══
-    
-    return LogoutResponse(message="Déconnexion réussie")
+        payload = decode_typed_token(token, token_type)
+        uid, sid = int(payload["sub"]), payload["sid"]
+        session = (db.query(SessionUtilisateur).filter(
+            SessionUtilisateur.session_uuid == sid, SessionUtilisateur.user_id == uid)
+            .populate_existing().with_for_update().first())
+        if not session:
+            raise HTTPException(status_code=401, detail="Session introuvable")
+        session.revoke()
+        db.commit()
+    except JWTError:
+        db.rollback()
+        raise HTTPException(status_code=401, detail="Token invalide ou expire")
+    except Exception:
+        db.rollback()
+        raise
+    SessionService.invalidate_session_cache(uid, sid)
+    _blacklist_after_commit(payload)
+    clear_refresh_token_cookie(response)
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    try:
+        AuditService(db).log_logout(user_id=uid, request=request)
+    except Exception:
+        logger.warning("Logout committed; audit unavailable")
+    return LogoutResponse(message="D\u00e9connexion r\u00e9ussie")
 
 
 @router.get("/me")
@@ -600,16 +517,72 @@ async def get_me(
     }
 
 
+def _password_user(db: Session, current_user: Utilisateur) -> Utilisateur:
+    """Relire la ligne courante, sans recopier les attributs du cache.
+
+    Le verrou sérialise les changements concurrents jusqu'au commit/rollback.
+    populate_existing rafraîchit aussi une instance déjà dans l'identity map.
+    """
+    user = (
+        db.query(Utilisateur)
+        .filter(Utilisateur.id == current_user.id)
+        .populate_existing()
+        .with_for_update(of=Utilisateur)
+        .first()
+    )
+    if user is None:
+        raise HTTPException(status_code=401, detail="Identifiants invalides ou token expiré")
+    if not user.est_actif:
+        raise HTTPException(status_code=403, detail="Compte utilisateur désactivé")
+    return user
+
+
+def _save_password(db: Session, user: Utilisateur, password: str, keep_session_uuid: str = None):
+    """Vérifier les deux champs en base avant de valider leur transaction."""
+    user_id = user.id
+    try:
+        state = inspect(user)
+        if not state.persistent or state.session is not db:
+            raise RuntimeError("Utilisateur non persistant dans la session courante")
+        if keep_session_uuid:
+            active = (db.query(SessionUtilisateur).filter(
+                SessionUtilisateur.session_uuid == keep_session_uuid,
+                SessionUtilisateur.user_id == user_id).populate_existing().with_for_update().first())
+            if not active or active.est_revoquee:
+                raise HTTPException(status_code=401, detail="Session révoquée")
+        password_hash = get_password_hash(password)
+        user.mot_de_passe = password_hash
+        user.doit_changer_mot_de_passe = False
+        db.flush()
+        db.refresh(user, attribute_names=["mot_de_passe", "doit_changer_mot_de_passe"])
+        if user.mot_de_passe != password_hash or user.doit_changer_mot_de_passe is not False:
+            raise RuntimeError("Changement de mot de passe non persisté")
+        SessionService.revoke_sessions_in_transaction(db, user_id, keep_session_uuid)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    # La transaction est déjà validée : une panne de cache ne l'annule pas.
+    try:
+        if invalidate_user_cache(user_id) is False:
+            logger.warning("Mot de passe enregistré ; invalidation du cache incomplète pour #%s", user_id)
+    except Exception:
+        logger.warning("Mot de passe enregistré ; échec d'invalidation du cache pour #%s", user_id)
+
+
 @router.post("/change-password")
 async def change_password(
     request: ChangePasswordRequest,
+    http_request: Request,
     current_user: Utilisateur = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Change le mot de passe de l'utilisateur.
     """
-    # Vérification de l'ancien mot de passe
+    current_user = _password_user(db, current_user)
+    # Vérification de l'ancien mot de passe depuis la base, jamais depuis le cache.
     if not verify_password(request.ancien_mot_de_passe, current_user.mot_de_passe):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -617,109 +590,63 @@ async def change_password(
         )
     
     # Mise à jour du mot de passe
-    current_user.mot_de_passe = get_password_hash(request.nouveau_mot_de_passe)
-    db.commit()
+    _save_password(db, current_user, request.nouveau_mot_de_passe,
+                   getattr(http_request.state, "session_uuid", None))
     
     return {"message": "Mot de passe modifié avec succès"}
 
 @router.post("/forgot-password")
-async def forgot_password(
-    request: ForgotPasswordRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Génère un token de réinitialisation et le renvoie pour l'affichage direct.
-    """
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(Utilisateur).filter(
-        Utilisateur.email == request.email
-    ).first()
-    
-    if not user:
-        return {"message": "Si un compte existe, un email de réinitialisation a été envoyé"}
-    
-    # Génération du token
-    reset_token = create_access_token(
-        user.id,
-        jti=f"reset_{uuid.uuid4()}"
-    )
-    
-    logger.info(f"Reset token pour {user.email}: {reset_token}")
-    
-    # 👈 ON RENVOIE LE TOKEN DANS LA RÉPONSE
-    return {
-        "message": "Si un compte existe, un email de réinitialisation a été envoyé",
-        "reset_token": reset_token
-    }
+        func.lower(Utilisateur.email) == normalize_email(request.email),
+        Utilisateur.est_actif == True).first()
+    if user:
+        if EmailService.is_configured():
+            token = create_password_reset_token(user)
+            link = settings.FRONTEND_URL.rstrip("/") + "/reset-password?token=" + quote(token, safe="")
+            try:
+                if not EmailService.send_password_reset_email(user.email, link):
+                    logger.warning("Password reset delivery failed")
+            except Exception:
+                logger.warning("Password reset delivery unavailable")
+        else:
+            logger.warning("Password reset requires configured SMTP; no token delivered")
+    return {"message": "Si un compte existe, un email de r\u00e9initialisation a \u00e9t\u00e9 envoy\u00e9"}
 
-@router.get("/verify-token/{token}")
-async def verify_reset_token(
-    token: str
-):
-    """
-    Vérifie si un token de réinitialisation est valide.
-    """
+
+@router.post("/verify-token")
+async def verify_reset_token(request: VerifyResetTokenRequest, response: Response,
+                             db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store"
     try:
-        payload = decode_token(token, is_refresh=False)
-        if payload.get("type") != "access":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token invalide"
-            )
-        return {"valid": True, "user_id": payload.get("sub")}
-    except Exception:
-        return {"valid": False}
+        payload = decode_typed_token(request.token, "password_reset")
+        require_unrevoked_token(payload)
+        user = db.query(Utilisateur).filter(Utilisateur.id == int(payload["sub"])).first()
+        if validate_reset_payload(payload, user):
+            return {"valid": True, "user_id": user.id}
+    except JWTError:
+        pass
+    return {"valid": False}
 
 
 @router.post("/reset-password")
-async def reset_password(
-    request: ResetPasswordRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Réinitialise le mot de passe avec un token valide.
-    """
+async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     try:
-        # Vérification du token
-        payload = decode_token(request.token, is_refresh=False)
-        
-        if payload.get("type") != "access":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token invalide"
-            )
-        
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token invalide"
-            )
-        
-        # Récupération de l'utilisateur
-        user = db.query(Utilisateur).filter(
-            Utilisateur.id == int(user_id)
-        ).first()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Utilisateur introuvable"
-            )
-        
-        # Mise à jour du mot de passe
-        user.mot_de_passe = get_password_hash(request.nouveau_mot_de_passe)
-        db.commit()
-        
-        return {"message": "Mot de passe réinitialisé avec succès"}
-        
-    except HTTPException:
+        payload = decode_typed_token(request.token, "password_reset")
+        require_unrevoked_token(payload)
+        user = (db.query(Utilisateur).filter(Utilisateur.id == int(payload["sub"]))
+                .populate_existing().with_for_update().first())
+        if not validate_reset_payload(payload, user):
+            raise HTTPException(status_code=400, detail="Token invalide, expire ou deja utilise")
+        # Changing the hash consumes every reset token issued against the previous hash.
+        _save_password(db, user, request.nouveau_mot_de_passe)
+    except JWTError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Token invalide ou expire")
+    except Exception:
+        db.rollback()
         raise
-    except Exception as e:
-        logger.error(f"Erreur lors de la réinitialisation: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Token invalide ou expiré"
-        )
+    return {"message": "Mot de passe r\u00e9initialis\u00e9 avec succ\u00e8s"}
 
 
 @router.post("/token")
@@ -768,6 +695,7 @@ async def login_oauth2_for_swagger(
 @router.post("/force-change-password")
 async def force_change_password(
     request: ForceChangePasswordRequest,
+    http_request: Request,
     current_user: Utilisateur = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -785,7 +713,8 @@ async def force_change_password(
     - Au moins 1 minuscule
     - Au moins 1 chiffre
     """
-    # 1. Vérifier que le changement est bien requis
+    current_user = _password_user(db, current_user)
+    # 1. Vérifier en base que le changement est bien requis
     if not getattr(current_user, "doit_changer_mot_de_passe", False):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -811,10 +740,8 @@ async def force_change_password(
         )
 
     # 3. Mettre à jour le mot de passe + retirer le flag
-    current_user.mot_de_passe = get_password_hash(nouveau)
-    current_user.doit_changer_mot_de_passe = False
-    db.commit()
-    db.refresh(current_user)
+    _save_password(db, current_user, nouveau,
+                   getattr(http_request.state, "session_uuid", None))
 
     logger.info(
         f"Mot de passe forcé changé avec succès pour l'utilisateur "

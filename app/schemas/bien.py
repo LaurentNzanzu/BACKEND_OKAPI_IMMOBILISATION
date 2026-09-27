@@ -199,7 +199,11 @@ class TypeBienBrief(BaseModel):
         from_attributes = True
 
 
+from .organisation_profil import OrganisationProfilResponse
+
+
 class BienResponse(BienBase):
+    organisation: Optional[OrganisationProfilResponse] = None
     """Schéma de réponse pour un bien."""
     id_bien: int
     qr_code: Optional[str] = None

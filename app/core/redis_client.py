@@ -105,6 +105,81 @@ class RedisClient:
             return True
         except Exception:
             return False
+    _LOGIN_ATTEMPT_SCRIPT = """
+    local now = tonumber(redis.call('TIME')[1])
+    local max_attempts = tonumber(ARGV[1])
+    local cooldown = tonumber(ARGV[2])
+    local lock_until = tonumber(redis.call('HGET', KEYS[1], 'lock_until') or '0')
+
+    if lock_until > now then
+        return {0, lock_until - now, 0}
+    end
+
+    local phase = redis.call('HGET', KEYS[1], 'phase')
+
+    if phase == 'cooldown' then
+        -- Une seule tentative autorisée après chaque blocage.
+        redis.call('HSET', KEYS[1], 'lock_until', now + cooldown)
+        redis.call('EXPIRE', KEYS[1], 86400)
+        return {1, 0, 0}
+    end
+
+    local count = redis.call('HINCRBY', KEYS[1], 'count', 1)
+
+    if count >= max_attempts then
+        redis.call(
+            'HSET', KEYS[1],
+            'phase', 'cooldown',
+            'lock_until', now + cooldown
+        )
+        redis.call('EXPIRE', KEYS[1], 86400)
+        return {1, 0, 0}
+    end
+
+    redis.call('EXPIRE', KEYS[1], cooldown)
+    return {1, 0, max_attempts - count}
+    """
+
+    def admit_login_attempt(
+        self,
+        identity_key: str,
+        max_attempts: int,
+        cooldown: int
+    ):
+        """Admission atomique. None signifie Redis indisponible."""
+        try:
+            client = self._get_client()
+
+            if client is None:
+                return None
+
+            result = client.eval(
+                self._LOGIN_ATTEMPT_SCRIPT,
+                1,
+                identity_key,
+                max_attempts,
+                cooldown
+            )
+
+            return tuple(int(value) for value in result)
+
+        except Exception:
+            logger.exception("Login rate limiter unavailable")
+            return None
+
+    def clear_login_attempts(self, identity_key: str) -> bool:
+        try:
+            client = self._get_client()
+
+            return bool(
+                client is not None
+                and client.delete(identity_key) >= 0
+            )
+
+        except Exception:
+            logger.exception("Login rate limiter reset unavailable")
+            return False
+
     
     # ============================================================
     # MÉTHODES DE SESSIONS (Phase 3)
@@ -316,8 +391,8 @@ class RedisClient:
         logger.info(f"JTI {jti} ajouté à la blacklist (TTL: {ttl}s)")
         return True
     
-    @handle_redis_errors(default_return=False)
-    def is_blacklisted(self, jti: str) -> bool:
+    @handle_redis_errors(default_return=None)
+    def is_blacklisted(self, jti: str) -> Optional[bool]:
         """
         Vérifie si un JTI est dans la blacklist.
         
@@ -329,14 +404,12 @@ class RedisClient:
         """
         if not jti:
             logger.warning("Vérification de blacklist avec un JTI vide")
-            return False
+            return None
         
         client = self._get_client()
         if client is None:
-            # Si Redis est down, on considère que le token n'est pas blacklisté
-            # (fallback de sécurité pour ne pas bloquer tous les tokens)
-            logger.warning("Redis indisponible, vérification blacklist ignorée")
-            return False
+            logger.warning("Redis indisponible, statut de révocation inconnu")
+            return None
         
         key = f"blacklist:{jti}"
         exists = client.exists(key)

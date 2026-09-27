@@ -30,7 +30,9 @@ def get_optional_user(
     """
     try:
         return get_current_user(request, db, token)
-    except HTTPException:
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            raise
         return None
 
 

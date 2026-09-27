@@ -1,5 +1,6 @@
 import logging
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from typing import Optional
 
@@ -19,7 +20,7 @@ class EmailService:
         body = (
             "Bonjour,\n\n"
             "Vous avez demandé la réinitialisation de votre mot de passe.\n"
-            f"Cliquez sur le lien suivant (valide 1 heure) :\n{reset_link}\n\n"
+            f"Cliquez sur le lien suivant (valide 5 minutes) :\n{reset_link}\n\n"
             "Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.\n"
         )
 
@@ -34,11 +35,12 @@ class EmailService:
             msg["From"] = settings.MAIL_FROM
             msg["To"] = to_email
 
-            with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT) as server:
-                server.starttls()
+            with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT, timeout=10) as server:
+                server.starttls(context=ssl.create_default_context())
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.sendmail(settings.MAIL_FROM, [to_email], msg.as_string())
             return True
-        except Exception as exc:
-            logger.error("Échec envoi email reset à %s: %s", to_email, exc)
+        except Exception:
+            # Une exception SMTP peut contenir le message et donc le lien secret.
+            logger.error("Échec envoi email reset")
             return False
