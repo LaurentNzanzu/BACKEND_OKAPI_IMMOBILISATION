@@ -1,3 +1,4 @@
+from ...services.organisation_profil_service import document_identity
 # backend/app/api/endpoints/rapports.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -255,7 +256,7 @@ async def exporter_rapport(
                 {"titre": f"2. Liste des biens ({len(biens_data)} biens)", "en_tetes": ["ID", "QR Code", "Date acquisition", "Prix", "État", "Localisation", "Type"], "donnees": biens_data},
                 {"titre": f"3. Pannes sur la période ({len(pannes_data)} pannes)", "en_tetes": ["ID", "Bien ID", "Date", "Type", "Priorité", "Statut", "Coût"], "donnees": pannes_data}
             ]
-            content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
+            content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True, organisation=document_identity(db, current_user.organisation_id))
             media_type = "application/pdf"
             filename = f"rapport_financier_{timestamp}.pdf"
         
@@ -317,7 +318,7 @@ async def exporter_rapport(
                 {"titre": "3. Pannes par type", "en_tetes": ["Type de panne", "Nombre"], "donnees": pannes_type_data},
                 {"titre": "4. Top 5 biens les plus en panne", "en_tetes": ["Bien ID", "QR Code", "Nombre de pannes"], "donnees": top_biens_data}
             ]
-            content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
+            content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True, organisation=document_identity(db, current_user.organisation_id))
             media_type = "application/pdf"
             filename = f"rapport_technique_{timestamp}.pdf"
         
@@ -380,7 +381,7 @@ async def exporter_rapport(
                  "en_tetes": ["Bien ID", "QR Code", "Type", "Méthode", "Valeur origine", "Valeur résiduelle", "Annuite (USD)"], 
                  "donnees": amortissements_data + total_data}
             ]
-            content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
+            content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True, organisation=document_identity(db, current_user.organisation_id))
             media_type = "application/pdf"
             filename = f"rapport_amortissements_{annee}_{timestamp}.pdf"
         
@@ -486,7 +487,7 @@ async def exporter_rapport_ohada(
     
     if format == "pdf":
         sections = _prepare_pdf_sections_ohada(data, exercice)
-        content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
+        content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True, organisation=document_identity(db, current_user.organisation_id))
         media_type = "application/pdf"
         filename = f"rapport_financier_ohada_{timestamp}.pdf"
         
@@ -626,7 +627,7 @@ async def export_tableau8_pdf(
         }
     ]
     
-    pdf_content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True)
+    pdf_content = generer_pdf_rapport_avec_sections(titre, sections, format_paysage=True, organisation=document_identity(db, current_user.organisation_id))
     
     return StreamingResponse(
         io.BytesIO(pdf_content if isinstance(pdf_content, bytes) else pdf_content.encode('utf-8')),

@@ -9,7 +9,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from ..core.redis_client import redis_client
-from ..core.security import decode_token
+from ..core.security import decode_token, decode_typed_token, validate_access_session
+from ..core.cookies import ACCESS_COOKIE
+from jose import JWTError
 from ..core.config import settings
 from ..services.session_cache_service import SessionCacheService
 from ..services.session_service import SessionService
@@ -20,14 +22,15 @@ logger = logging.getLogger(__name__)
 
 class SessionValidationMiddleware(BaseHTTPMiddleware):
     """
-    Middleware de validation des sessions avec vérifications en cascade.
-    Ordre des vérifications : JWT → Blacklist → Session → Fingerprint
-    Performance cible : < 2ms par requête
+    Validation JWT → blacklist Redis → session SQL → fingerprint.
+    Les snapshots Redis ne peuvent pas réactiver une session révoquée en SQL.
     """
     
     # Routes exclues du middleware
     EXCLUDED_PATHS = [
         "/api/v1/auth/login",
+        "/api/v1/auth/token",
+        "/api/v1/auth/logout",
         "/api/v1/auth/refresh",
         "/api/v1/auth/forgot-password",
         "/api/v1/auth/reset-password",
@@ -46,177 +49,44 @@ class SessionValidationMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.excluded_paths = self.EXCLUDED_PATHS
     
+    @staticmethod
+    def is_excluded(path: str) -> bool:
+        return any(path == item or (item != "/" and path.startswith(item.rstrip("/") + "/"))
+                   for item in SessionValidationMiddleware.EXCLUDED_PATHS)
+
     async def dispatch(self, request: Request, call_next):
-        """
-        Exécute la validation de session pour chaque requête.
-        """
-        start_time = time.time()
-        path = request.url.path
-        
-        # 1. Vérifier si la route est exclue
-        if any(path.startswith(exclude) for exclude in self.excluded_paths):
+        if request.method == "OPTIONS" or self.is_excluded(request.url.path):
             return await call_next(request)
-        
-        # 2. Ignorer les requêtes OPTIONS (CORS)
-        if request.method == "OPTIONS":
+        header = request.headers.get("Authorization", "")
+        token = header[7:].strip() if header.startswith("Bearer ") else request.cookies.get(ACCESS_COOKIE)
+        # Public routes remain public. Protected routes also enforce their own dependency.
+        if not token:
             return await call_next(request)
-        
-        # 3. Initialiser request.state
-        request.state.user_id = None
-        request.state.session_uuid = None
-        request.state.jti = None
-        request.state.token_exp = None
-        request.state.fingerprint = None
-        
         try:
-            # ============================================================
-            # ÉTAPE 1 : VÉRIFICATION DU JWT
-            # ============================================================
-            auth_header = request.headers.get("Authorization")
-            if not auth_header or not auth_header.startswith("Bearer "):
-                logger.warning(f"Token manquant pour {path}")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Token d'authentification manquant"}
-                )
-            
-            token = auth_header.split(" ")[1]
-            
-            try:
-                payload = decode_token(token, is_refresh=False)
-            except Exception as e:
-                logger.warning(f"Token invalide pour {path}: {e}")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Token invalide ou expiré"}
-                )
-            
-            # Vérifier le type du token
-            if payload.get("type") != "access":
-                logger.warning(f"Token de type incorrect pour {path}: {payload.get('type')}")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Token invalide"}
-                )
-            
-            # Extraire les données
-            user_id = payload.get("sub")
-            jti = payload.get("jti")
-            exp = payload.get("exp")
-            
-            if not user_id or not jti:
-                logger.warning(f"Token sans sub ou jti pour {path}")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Token invalide (données manquantes)"}
-                )
-            
-            # Stocker dans request.state
-            request.state.user_id = int(user_id)
-            request.state.jti = jti
-            request.state.token_exp = exp
-            
-            # ============================================================
-            # ÉTAPE 2 : VÉRIFICATION DE LA BLACKLIST
-            # ============================================================
-            is_blacklisted = redis_client.is_blacklisted(jti)
-            if is_blacklisted:
-                logger.warning(f"Token JTI {jti} blacklisté pour {path}")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Token révoqué (blacklist)"}
-                )
-            
-            # ============================================================
-            # ÉTAPE 3 : RÉCUPÉRATION DU SESSION_UUID
-            # ============================================================
-            session_uuid = request.headers.get("X-Session-ID")
-            fingerprint = request.headers.get("X-Fingerprint")
-            request.state.fingerprint = fingerprint
-            
-            if not session_uuid:
-                # Essayer de récupérer depuis le token (si stocké)
-                session_uuid = payload.get("sid")
-            
-            if not session_uuid:
-                logger.warning(f"Session ID manquant pour {path}")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Session ID manquant"}
-                )
-            
-            request.state.session_uuid = session_uuid
-            
-            # ============================================================
-            # ÉTAPE 4 : VÉRIFICATION DE LA SESSION (Redis → BDD)
-            # ============================================================
-            # Créer une session BDD pour la validation
-            db = SessionLocal()
-            try:
-                # Valider la session via le cache
-                is_valid, message = SessionCacheService.validate_session(
-                    db=db,
-                    user_id=int(user_id),
-                    session_uuid=session_uuid,
-                    fingerprint=fingerprint
-                )
-                
-                if not is_valid:
-                    logger.warning(f"Session invalide pour {path}: {message}")
-                    return JSONResponse(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        content={"detail": message}
-                    )
-                
-                # ============================================================
-                # ÉTAPE 5 : VÉRIFICATION DU FINGERPRINT (déjà faite dans validate_session)
-                # ============================================================
-                # La vérification du fingerprint est déjà faite dans validate_session
-                # Si mismatch, elle retourne False avec message "Session compromise détectée"
-                
-                # ============================================================
-                # ÉTAPE 6 : MISE À JOUR DE L'ACTIVITÉ (ASYNCHRONE)
-                # ============================================================
-                # Planifier la mise à jour en arrière-plan
-                asyncio.create_task(
-                    self._update_activity_async(int(user_id), session_uuid)
-                )
-                
-                # ============================================================
-                # ÉTAPE 7 : CONTINUER LE TRAITEMENT
-                # ============================================================
-                elapsed = (time.time() - start_time) * 1000
-                logger.debug(
-                    f"Session validée: {session_uuid} pour user {user_id} "
-                    f"(Temps: {elapsed:.2f}ms)"
-                )
-                
-                # Ajouter des informations à request.state pour les routes
-                request.state.is_validated = True
-                request.state.validation_time_ms = elapsed
-                
-                # Continuer vers la route
-                response = await call_next(request)
-                
-                # Ajouter des headers de performance (optionnel)
-                if settings.DEBUG:
-                    response.headers["X-Validation-Time"] = f"{elapsed:.2f}ms"
-                    response.headers["X-Session-UUID"] = session_uuid[:8]
-                
-                return response
-                
-            finally:
-                db.close()
-                
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Erreur inattendue dans le middleware: {e}", exc_info=True)
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"detail": "Erreur interne du serveur"}
-            )
-    
+            payload = decode_typed_token(token, "access")
+            supplied_sid = request.headers.get("X-Session-ID")
+            if supplied_sid and supplied_sid != payload["sid"]:
+                raise HTTPException(status_code=401, detail="Session incoherente avec le token")
+            with SessionLocal() as db:
+                session = validate_access_session(db, payload)
+                fingerprint = request.headers.get("X-Fingerprint")
+                if fingerprint and session.fingerprint and fingerprint != session.fingerprint:
+                    SessionService.revoke_all_sessions(db, session.user_id)
+                    raise HTTPException(status_code=401, detail="Session compromise detectee")
+            request.state.user_id = int(payload["sub"])
+            request.state.session_uuid = payload["sid"]
+            request.state.jti = payload["jti"]
+            request.state.token_exp = payload["exp"]
+        except JWTError:
+            return JSONResponse(status_code=401, content={"detail": "Token invalide ou expire"})
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        except Exception:
+            logger.error("Session validation unavailable")
+            return JSONResponse(status_code=503, content={"detail": "Validation de session indisponible"})
+        asyncio.create_task(self._update_activity_async(int(payload["sub"]), payload["sid"]))
+        return await call_next(request)
+
     async def _update_activity_async(self, user_id: int, session_uuid: str):
         """
         Met à jour l'activité de la session en arrière-plan.
@@ -251,7 +121,7 @@ class TokenValidationMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         
         # Ignorer les chemins exclus
-        if any(path.startswith(exclude) for exclude in self.excluded_paths):
+        if SessionValidationMiddleware.is_excluded(path):
             return await call_next(request)
         
         # Ignorer les requêtes OPTIONS
@@ -268,7 +138,7 @@ class TokenValidationMiddleware(BaseHTTPMiddleware):
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header.split(" ")[1]
             try:
-                payload = decode_token(token, is_refresh=False)
+                payload = decode_typed_token(token, "access")
                 jti = payload.get("jti")
                 user_id = payload.get("sub")
                 if jti and user_id:

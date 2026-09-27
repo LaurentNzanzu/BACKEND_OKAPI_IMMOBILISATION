@@ -28,7 +28,7 @@ def workflow(monkeypatch):
     @event.listens_for(engine, "connect")
     def enable_foreign_keys(connection, _):
         connection.execute("PRAGMA foreign_keys=ON")
-    names = ["organisations", "roles", "permissions", "role_permissions", "utilisateurs", "audit_logs"]
+    names = ["organisations", "roles", "permissions", "role_permissions", "utilisateurs", "audit_logs", "sessions_utilisateurs"]
     Base.metadata.create_all(engine, tables=[Base.metadata.tables[name] for name in names])
     with Session(engine, expire_on_commit=False) as db:
         db.add_all([Role(id_role=1, nom="ADMIN"), Role(id_role=2, nom="COMPTABLE")])

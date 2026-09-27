@@ -1,38 +1,48 @@
 import pytest
+import sys
+from pathlib import Path
+from unittest.mock import patch
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+with patch("redis.Redis.ping", return_value=True):
+    from app.services.session_service import SessionService
 from app.models.utilisateur import Utilisateur
+from app.models.role import Role
 from app.models.session import SessionUtilisateur
 from app.services.session_service import SessionService
 from app.core.database import Base
 from app.core.security import create_refresh_token
 
-# Configuration de test
-SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
 @pytest.fixture
-def db_session():
+def db_session(tmp_path, monkeypatch):
+    from app.core.redis_client import redis_client
+    monkeypatch.setattr(redis_client, "set_session", lambda **kwargs: True)
+    monkeypatch.setattr(redis_client, "revoke_session", lambda *args: True)
+    engine = create_engine("sqlite:///" + str(tmp_path / "sessions.db"))
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
-    Base.metadata.drop_all(bind=engine)
+    engine.dispose()
 
 
 @pytest.fixture
 def test_user(db_session):
+    role = Role(id_role=1, nom="USER")
+    db_session.add(role)
+    db_session.flush()
     user = Utilisateur(
         email="test@example.com",
         nom="Test",
         prenom="User",
-        mot_de_passe="hashed_password"
+        mot_de_passe="hashed_password",
+        role_id=role.id_role,
     )
     db_session.add(user)
     db_session.commit()

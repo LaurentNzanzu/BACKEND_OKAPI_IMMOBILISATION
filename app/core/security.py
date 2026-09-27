@@ -8,21 +8,26 @@ from sqlalchemy.orm import Session, joinedload
 from .config import settings
 from .cookies import ACCESS_COOKIE
 from ..models.utilisateur import Utilisateur
+from ..models.role import Role
+from ..models.permission import Permission
 from ..core.database import get_db
 import logging
 import uuid
+import hashlib
+import hmac
+from .redis_client import redis_client
+from ..models.session import SessionUtilisateur
 
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# ✅ PHASE 5 — Versioning du cache utilisateur
-# Incrémenter cette version invalide automatiquement les anciennes entrées
-# (utile quand la structure de user_dict change)
+# Anciennes clés utilisateur, conservées uniquement pour leur nettoyage.
+# get_current_user ne lit ni ne remplit plus ces snapshots d'autorisation.
 # ============================================================================
 USER_CACHE_VERSION = 2
 
 # Configuration OAuth2 pour extraire le token depuis le header Authorization
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 # Configuration du hachage des mots de passe (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -100,13 +105,75 @@ def decode_token(token: str, is_refresh: bool = False) -> dict:
     """Décode et vérifie un token JWT."""
     try:
         secret_key = settings.REFRESH_SECRET_KEY if is_refresh else settings.SECRET_KEY
-        return jwt.decode(token, secret_key, algorithms=[settings.ALGORITHM])
+        return jwt.decode(token, secret_key, algorithms=[settings.ALGORITHM],
+                          options={"require_exp": True, "require_sub": True, "require_jti": True})
     except jwt.ExpiredSignatureError:
         logger.warning("Token JWT expiré")
         raise JWTError("Token expiré")
-    except jwt.JWTError as e:
-        logger.error(f"Erreur décodage token JWT : {e}")
-        raise JWTError(f"Token invalide : {str(e)}")
+    except jwt.JWTError:
+        raise JWTError("Token invalide")
+
+
+def _reset_password_stamp(user: Utilisateur) -> str:
+    # L'empreinte ne divulgue pas le hash ; le domaine distingue cet usage des JWT.
+    value = f"password-reset:{user.id}:{user.mot_de_passe}".encode()
+    return hmac.new(settings.SECRET_KEY.encode(), value, hashlib.sha256).hexdigest()
+
+
+def create_password_reset_token(user: Utilisateur) -> str:
+    return jwt.encode({"sub": str(user.id), "type": "password_reset",
+                       "jti": str(uuid.uuid4()), "pwd": _reset_password_stamp(user),
+                       "exp": datetime.utcnow() + timedelta(minutes=5)},
+                      settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def validate_reset_payload(payload: dict, user: Utilisateur) -> bool:
+    return bool(user and user.est_actif and payload.get("type") == "password_reset"
+                and payload.get("sub") == str(user.id)
+                and isinstance(payload.get("pwd"), str)
+                and hmac.compare_digest(payload["pwd"], _reset_password_stamp(user)))
+
+
+def require_unrevoked_token(payload: dict):
+    """Une blacklist inconnue n'est pas une blacklist vide."""
+    try:
+        revoked = redis_client.is_blacklisted(payload.get("jti"))
+    except Exception:
+        revoked = None
+    if revoked is None:
+        raise HTTPException(status_code=503, detail="Vérification de révocation indisponible")
+    if revoked is not False:
+        raise HTTPException(status_code=401, detail="Token révoqué")
+
+
+def decode_typed_token(token: str, token_type: str) -> dict:
+    payload = decode_token(token, is_refresh=token_type == "refresh")
+    if payload.get("type") != token_type or not payload.get("jti"):
+        raise JWTError("Type de token invalide")
+    try:
+        if int(payload["sub"]) <= 0:
+            raise ValueError()
+    except (KeyError, ValueError, TypeError):
+        raise JWTError("Sujet invalide")
+    if token_type in ("access", "refresh") and not payload.get("sid"):
+        raise JWTError("Session manquante")
+    return payload
+
+
+def validate_access_session(db: Session, payload: dict) -> SessionUtilisateur:
+    if payload.get("type") != "access" or not payload.get("sid"):
+        raise HTTPException(status_code=401, detail="Token ou session invalide")
+    require_unrevoked_token(payload)
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Token invalide")
+    session = (db.query(SessionUtilisateur).filter(
+        SessionUtilisateur.session_uuid == payload["sid"],
+        SessionUtilisateur.user_id == user_id).populate_existing().first())
+    if session is None or session.est_revoquee:
+        raise HTTPException(status_code=401, detail="Session révoquée ou introuvable")
+    return session
 
 
 def get_token_subject(token: str) -> Optional[str]:
@@ -146,18 +213,25 @@ def _build_cache_key_legacy(user_id: Union[str, int]) -> str:
     return f"user:{user_id}"
 
 
-def invalidate_user_cache(user_id: int):
+def invalidate_user_cache(user_id: int) -> bool:
     """
     Invalide le cache utilisateur (mémoire + Redis).
     ✅ Supprime AUSSI les anciennes clés (sans version) par sécurité.
+    Retourne False si une suppression échoue, sans interrompre les suivantes.
+    Les caches locaux des autres workers expirent par TTL et ne sont plus lus
+    par get_current_user. Une panne Redis n'affecte pas l'autorité de la base.
     """
-    # Nouvelle clé versionnée
-    LocalCache.delete(_build_cache_key(user_id))
-    CacheService.delete(_build_cache_key(user_id))
-
-    # Ancienne clé (nettoyage résidus)
-    LocalCache.delete(_build_cache_key_legacy(user_id))
-    CacheService.delete(_build_cache_key_legacy(user_id))
+    success = True
+    for key in (_build_cache_key(user_id), _build_cache_key_legacy(user_id)):
+        for cache in (LocalCache, CacheService):
+            try:
+                if cache.delete(key) is False:
+                    logger.warning("Invalidation incomplète du cache utilisateur : %s", key)
+                    success = False
+            except Exception:
+                logger.warning("Échec d'invalidation du cache utilisateur : %s", key)
+                success = False
+    return success
 
 
 def get_current_user(
@@ -166,15 +240,11 @@ def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
 ) -> Utilisateur:
     """
-    Dépendance FastAPI pour récupérer l'utilisateur authentifié.
-    ZÉRO requête BDD si l'utilisateur est présent dans le cache.
+    Retourne l'utilisateur persistant dans la session courante.
 
-    ✅ PHASE 5 — Le cache contient maintenant :
-    - id, email, nom, prenom, post_nom
-    - role_id, role_nom
-    - organisation_id  ← CRITIQUE pour le multi-tenant
-    - doit_changer_mot_de_passe
-    - est_actif
+    La base est l'autorité pour le statut, le rôle et l'organisation, même si
+    un ancien snapshot subsiste dans Redis ou dans un autre worker. Aucun
+    objet ORM ni secret n'est reconstruit depuis ou publié dans ce cache.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -191,7 +261,7 @@ def get_current_user(
         raise credentials_exception
 
     try:
-        payload = decode_token(token, is_refresh=False)
+        payload = decode_typed_token(token, "access")
         if payload.get("type") != "access":
             raise credentials_exception
         user_id = payload.get("sub")
@@ -200,26 +270,23 @@ def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    # ✅ Clé de cache VERSIONNÉE
-    cache_key = _build_cache_key(user_id)
+    session = validate_access_session(db, payload)
+    if request is not None:
+        request.state.session_uuid = session.session_uuid
+        request.state.user_id = session.user_id
+        request.state.jti = payload["jti"]
+        request.state.token_exp = payload["exp"]
 
-    # OPTIMISATION LATENCE : Restitution depuis le cache
-    cached_user = LocalCache.get(cache_key) or CacheService.get(cache_key)
-    if cached_user:
-        user = Utilisateur()
-        for k, v in cached_user.items():
-            if k == "role_nom" and v:
-                from ..models.role import Role
-                user.role = Role(nom=v)
-            elif hasattr(user, k):
-                setattr(user, k, v)
-        if getattr(user, 'est_actif', True):
-            return user
-
-    # === Chargement BDD (cache miss ou cache expiré) ===
+    # Relire aussi une éventuelle instance déjà présente dans l'identity map.
+    # Les permissions servent aux gardes existants ; les relations inverses
+    # (tous les utilisateurs du rôle, rôles des permissions) restent paresseuses.
     user = (
         db.query(Utilisateur)
-        .options(joinedload(Utilisateur.role))
+        .options(
+            joinedload(Utilisateur.role).lazyload(Role.utilisateurs),
+            joinedload(Utilisateur.role).selectinload(Role.permissions).lazyload(Permission.roles),
+        )
+        .populate_existing()
         .filter(Utilisateur.id == int(user_id))
         .first()
     )
@@ -232,21 +299,6 @@ def get_current_user(
             detail="Compte utilisateur désactivé",
         )
 
-    # ✅ user_dict COMPLET (tous les champs critiques)
-    user_dict = {
-        "id": user.id,
-        "email": user.email,
-        "nom": user.nom,
-        "prenom": user.prenom,
-        "post_nom": user.post_nom,
-        "role_id": user.role_id,
-        "role_nom": user.role.nom if user.role else None,
-        "organisation_id": user.organisation_id,                              # ✅ CRITIQUE
-        "doit_changer_mot_de_passe": getattr(user, "doit_changer_mot_de_passe", False),  # ✅
-        "est_actif": user.est_actif,
-    }
-    LocalCache.set(cache_key, user_dict, 600)
-    CacheService.set(cache_key, user_dict, ttl=600)
     return user
 
 

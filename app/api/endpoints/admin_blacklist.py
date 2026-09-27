@@ -6,6 +6,7 @@ from typing import List, Optional
 import logging
 
 from ...core.database import get_db
+from ...core.config import settings
 from ...core.security import get_current_user
 from ...core.redis_client import redis_client
 from ...models.utilisateur import Utilisateur
@@ -34,7 +35,7 @@ def require_admin(current_user: Utilisateur = Depends(get_current_user)):
 @router.post("/token")
 async def add_token_to_blacklist(
     jti: str = Query(..., description="JWT ID du token à blacklister"),
-    ttl: Optional[int] = Query(None, description="TTL en secondes (défaut: 900 = 15 min)"),
+    ttl: Optional[int] = Query(None, description="TTL en secondes, au moins la durée maximale des JWT"),
     db: Session = Depends(get_db),
     admin: Utilisateur = Depends(require_admin)
 ):
@@ -58,7 +59,9 @@ async def add_token_to_blacklist(
             detail="TTL doit être supérieur à 0"
         )
     
-    # Ajouter à la blacklist
+    # A JTI alone carries no expiry: cover the longest supported token lifetime.
+    ttl = max(ttl, settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+              settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400, 3600)
     success = redis_client.add_to_blacklist(jti, ttl)
     
     if not success:
@@ -104,20 +107,17 @@ async def blacklist_all_user_tokens(
         if session.session_data and "access_jti" in session.session_data:
             jtis.append(session.session_data["access_jti"])
     
-    if not jtis:
-        return {
-            "message": f"Aucun token actif trouvé pour l'utilisateur {user.email}",
-            "user_id": user_id,
-            "tokens_blacklisted": 0
-        }
-    
     # Ajouter tous les JTI à la blacklist
-    ttl = 900  # 15 minutes
-    count = redis_client.bulk_add_to_blacklist(jtis, ttl)
-    
-    # Révoquer toutes les sessions en BDD et Redis
+    ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
     revoked_count = SessionService.revoke_all_sessions(db, user_id)
-    
+    try:
+        count = redis_client.bulk_add_to_blacklist(jtis, ttl) if jtis else 0
+        if count != len(jtis):
+            logger.warning("SQL sessions revoked; partial blacklist update")
+    except Exception:
+        count = 0
+        logger.warning("SQL sessions revoked; blacklist unavailable")
+
     logger.info(
         f"Admin {admin.id} a blacklisté {count} tokens de l'utilisateur {user.email} "
         f"({revoked_count} sessions révoquées)"

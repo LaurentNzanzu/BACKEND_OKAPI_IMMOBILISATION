@@ -1,3 +1,4 @@
+from .organisation_pdf import add_organisation_header
 # backend/app/utils/pdf_generator.py
 import io
 from datetime import datetime
@@ -15,7 +16,8 @@ def generer_pdf_rapport(
     en_tetes: List[str],
     donnees: List[List[Any]],
     sous_titre: str = None,
-    format_paysage: bool = False
+    format_paysage: bool = False,
+    organisation=None
 ) -> bytes:
     """
     Génère un rapport PDF à partir des données fournies.
@@ -85,6 +87,7 @@ def generer_pdf_rapport(
     
     # Éléments du document
     elements = []
+    add_organisation_header(elements, doc.width, organisation)
     
     # Titre
     elements.append(Paragraph(titre, style_titre))
@@ -175,7 +178,8 @@ def generer_pdf_rapport(
 def generer_pdf_rapport_avec_sections(
     titre: str,
     sections: List[Dict[str, Any]],
-    format_paysage: bool = False
+    format_paysage: bool = False,
+    organisation=None
 ) -> bytes:
     """
     Génère un rapport PDF avec plusieurs sections.
@@ -237,6 +241,7 @@ def generer_pdf_rapport_avec_sections(
     )
     
     elements = []
+    add_organisation_header(elements, doc.width, organisation)
     
     # Titre principal
     elements.append(Paragraph(titre, style_titre))
@@ -301,10 +306,13 @@ def generer_pdf_rapport_avec_sections(
     return buffer.getvalue()
 
 
-def generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif: str = "") -> bytes:
+def generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif: str = "", organisation=None) -> bytes:
     """
     Génère un bon de décaissement officiel au format PDF signé par la Direction Générale.
     """
+    if organisation is None and getattr(bien, "organisation", None) is not None:
+        from ..schemas.organisation_profil import OrganisationProfilResponse
+        organisation = OrganisationProfilResponse.model_validate(bien.organisation).model_dump()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -337,9 +345,9 @@ def generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif: str = "") 
     )
 
     elements = []
+    add_organisation_header(elements, doc.width, organisation)
     
     # En-tête
-    elements.append(Paragraph("OKAPI IMMOBILISATIONS", ParagraphStyle('SubHeader', parent=styles['Heading2'], alignment=TA_CENTER, textColor=colors.HexColor('#475569'))))
     elements.append(Paragraph("BON DE DÉCAISSEMENT OFFICIEL", style_titre))
     elements.append(Paragraph(f"Réf: BD-AMORT-{amortissement.id_amortissement:05d} | Date: {datetime.now().strftime('%d/%m/%Y')}", ParagraphStyle('Ref', parent=styles['Normal'], alignment=TA_CENTER, textColor=colors.gray)))
     elements.append(Spacer(1, 20))
@@ -388,7 +396,7 @@ def generer_bon_decaissement_pdf(amortissement, bien, dg_user, motif: str = "") 
     return buffer.getvalue()
 
 
-def generer_bec_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> bytes:
+def generer_bec_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "", organisation=None) -> bytes:
     """Génère un Bon d'Entrée en Caisse (BEC) au format PDF."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -413,7 +421,7 @@ def generer_bec_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> byte
     style_val = ParagraphStyle('BecVal', parent=styles['Normal'], fontSize=11)
     
     elements = []
-    elements.append(Paragraph("OKAPI IMMOBILISATIONS", ParagraphStyle('SubHeader', parent=styles['Heading2'], alignment=TA_CENTER, textColor=colors.HexColor('#475569'))))
+    add_organisation_header(elements, doc.width, organisation)
     elements.append(Paragraph("BON D'ENTRÉE EN CAISSE", style_titre))
     elements.append(Paragraph(f"N° : {mouvement.numero_piece} | Date : {mouvement.date_mouvement.strftime('%d/%m/%Y')}", ParagraphStyle('Ref', parent=styles['Normal'], alignment=TA_CENTER, textColor=colors.gray)))
     elements.append(Spacer(1, 20))
@@ -459,7 +467,7 @@ def generer_bec_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> byte
     return buffer.getvalue()
 
 
-def generer_bsc_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> bytes:
+def generer_bsc_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "", organisation=None) -> bytes:
     """Génère un Bon de Sortie de Caisse (BSC) au format PDF."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -484,7 +492,7 @@ def generer_bsc_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> byte
     style_val = ParagraphStyle('BscVal', parent=styles['Normal'], fontSize=11)
     
     elements = []
-    elements.append(Paragraph("OKAPI IMMOBILISATIONS", ParagraphStyle('SubHeader', parent=styles['Heading2'], alignment=TA_CENTER, textColor=colors.HexColor('#475569'))))
+    add_organisation_header(elements, doc.width, organisation)
     elements.append(Paragraph("BON DE SORTIE DE CAISSE", style_titre))
     elements.append(Paragraph(f"N° : {mouvement.numero_piece} | Date : {mouvement.date_mouvement.strftime('%d/%m/%Y')}", ParagraphStyle('Ref', parent=styles['Normal'], alignment=TA_CENTER, textColor=colors.gray)))
     elements.append(Spacer(1, 20))
@@ -528,4 +536,4 @@ def generer_bsc_pdf(mouvement, caissier_nom: str = "", dg_nom: str = "") -> byte
     
     doc.build(elements)
     buffer.seek(0)
-    return buffer.getvalue()
+    return buffer.getvalue()

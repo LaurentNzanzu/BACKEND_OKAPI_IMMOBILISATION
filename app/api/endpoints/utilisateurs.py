@@ -3,7 +3,7 @@
 Endpoints CRUD pour la gestion des utilisateurs.
 Phase 5 — Isolation stricte par ONG.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional, Any
 from datetime import datetime
@@ -18,12 +18,13 @@ from ...schemas.utilisateur import (
     UtilisateurProfilUpdate,
 )
 from ...services.auth_service import AuthService
+from ...services.session_service import SessionService
 from ...services.organisation_service import _generer_mot_de_passe_temporaire
 from ...services.audit_service import AuditService
 from ...api.dependencies import get_current_user, is_admin
 from ...models.utilisateur import Utilisateur as UtilisateurModel
 from ...models.role import Role
-from ...core.security import get_password_hash, verify_password
+from ...core.security import get_password_hash, verify_password, invalidate_user_cache
 from ...utils.search import ilike_pattern
 import logging
 
@@ -336,6 +337,8 @@ def update_utilisateur(
 
     # Gestion mot de passe
     if "mot_de_passe" in update_data and update_data["mot_de_passe"]:
+        db_user = (db.query(UtilisateurModel).filter(UtilisateurModel.id == user_id)
+                   .populate_existing().with_for_update().one())
         update_data["mot_de_passe"] = get_password_hash(update_data["mot_de_passe"])
 
     # Appliquer
@@ -343,7 +346,10 @@ def update_utilisateur(
         if value is not None or field == "telephone":
             setattr(db_user, field, value)
 
+    if "mot_de_passe" in update_data:
+        SessionService.revoke_sessions_in_transaction(db, user_id)
     db.commit()
+    invalidate_user_cache(user_id)
     db.refresh(db_user)
 
     audit_service.log_action(
@@ -363,6 +369,7 @@ def update_utilisateur(
 def update_profil(
     user_id: int,
     profil: UtilisateurProfilUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: UtilisateurModel = Depends(get_current_user),
 ) -> Any:
@@ -373,12 +380,16 @@ def update_profil(
         )
 
     if profil.ancien_mot_de_passe and profil.nouveau_mot_de_passe:
+        current_user = (db.query(UtilisateurModel).filter(UtilisateurModel.id == user_id)
+                        .populate_existing().with_for_update().one())
         if not verify_password(profil.ancien_mot_de_passe, current_user.mot_de_passe):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="L'ancien mot de passe est incorrect",
             )
         current_user.mot_de_passe = get_password_hash(profil.nouveau_mot_de_passe)
+        SessionService.revoke_sessions_in_transaction(
+            db, user_id, getattr(request.state, "session_uuid", None))
 
     if profil.nom:
         current_user.nom = profil.nom
@@ -390,6 +401,7 @@ def update_profil(
         current_user.telephone = profil.telephone
 
     db.commit()
+    invalidate_user_cache(user_id)
     db.refresh(current_user)
 
     return _serialize(current_user)
@@ -447,6 +459,7 @@ def delete_utilisateur(
 
     db.delete(db_user)
     db.commit()
+    invalidate_user_cache(user_id)
 
 
 @router.patch("/{user_id}/toggle-actif", response_model=UtilisateurResponse)
@@ -484,6 +497,7 @@ def toggle_utilisateur_actif(
     db_user.est_actif = not db_user.est_actif
 
     db.commit()
+    invalidate_user_cache(user_id)
     db.refresh(db_user)
 
     audit_service.log_action(

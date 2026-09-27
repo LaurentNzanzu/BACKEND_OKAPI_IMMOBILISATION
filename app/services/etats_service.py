@@ -13,6 +13,7 @@ from ..models.ligne_besoin import LigneBesoin
 from ..models.validation import Validation
 from ..models.utilisateur import Utilisateur
 from ..models.localisation import Localisation
+from .organisation_profil_service import document_identity
 
 
 class EtatsService:
@@ -104,6 +105,7 @@ class EtatsService:
         localisation_nom = self._get_localisation_nom(bien)
 
         return {
+            "organisation": document_identity(self.db, bien.organisation_id),
             "bien": {
                 "id_bien": bien.id_bien,
                 "qr_code": bien.qr_code,
@@ -230,6 +232,7 @@ class EtatsService:
         vnc_actuelle = amortissement.valeur_nette_comptable if hasattr(amortissement, 'valeur_nette_comptable') else valeur_origine
         
         return {
+            "organisation": document_identity(self.db, bien.organisation_id),
             "bien": {
                 "id_bien": bien.id_bien,
                 "qr_code": bien.qr_code,
@@ -449,6 +452,7 @@ class EtatsService:
             })
 
         return {
+            "organisation": document_identity(self.db, besoin.organisation_id),
             "besoin": {
                 "id_besoin": besoin.id_besoin,
                 "numero_demande": besoin.numero_demande,

@@ -59,13 +59,16 @@ class CacheService:
         _in_memory_cache[key] = (value, time.time() + ttl)
 
     @staticmethod
-    def delete(key: str):
+    def delete(key: str) -> bool:
+        success = True
         if REDIS_AVAILABLE and redis_client:
             try:
                 redis_client.delete(key)
             except Exception:
-                pass
+                logger.warning("Échec suppression Redis : %s", key)
+                success = False
         _in_memory_cache.pop(key, None)
+        return success
 
     @staticmethod
     def delete_pattern(pattern: str):
