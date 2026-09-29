@@ -9,7 +9,8 @@ class Vehicule(Bien):
     type_vehicule = Column(String(100))  # Voiture, Moto, Camion, etc.
     marque = Column(String(100))
     modele = Column(String(100))
-    immatriculation = Column(String(50), unique=True)
+    # Scoped uniqueness is enforced transactionally with the parent Bien's organisation.
+    immatriculation = Column(String(50))
     poids = Column(Float)  # en kg
     dimension = Column(String(100))  # L x l x h
     type_carburant = Column(String(50))  # Essence, Diesel, Electrique, etc.

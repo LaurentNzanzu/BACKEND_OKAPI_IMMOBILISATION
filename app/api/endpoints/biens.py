@@ -157,14 +157,10 @@ async def create_bien(
     service = BienService(db)
     
     try:
-        bien = service.create_bien(bien_data)
-
-        # ═══ MODIF 5.13 — Injection organisation_id ═══
-        if getattr(bien, "organisation_id", None) is None and not _is_platform_admin(current_user):
-            bien.organisation_id = current_user.organisation_id
-            db.commit()
-            db.refresh(bien)
-        # ═══ FIN MODIF 5.13 ═══
+        bien = service.create_bien(
+            bien_data,
+            organisation_id=current_user.organisation_id,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -203,14 +199,11 @@ async def create_bien_with_images(
 
     service = BienService(db)
     try:
-        bien = service.create_bien(bien_data, images=bien_data.images)
-
-        # ═══ MODIF 5.13 — Injection organisation_id ═══
-        if getattr(bien, "organisation_id", None) is None and not _is_platform_admin(current_user):
-            bien.organisation_id = current_user.organisation_id
-            db.commit()
-            db.refresh(bien)
-        # ═══ FIN MODIF 5.13 ═══
+        bien = service.create_bien(
+            bien_data,
+            images=bien_data.images,
+            organisation_id=current_user.organisation_id,
+        )
     except HTTPException:
         raise
     except Exception as e:

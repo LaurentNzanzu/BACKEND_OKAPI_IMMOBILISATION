@@ -1,1 +1,13 @@
 Generic single-database configuration.
+
+The file `versions/fa0b1c2d3e4f_sprint0_fondations_multitenant.py.disabled` is
+an incomplete planning script, not an Alembic revision. It is intentionally
+excluded from Alembic discovery: it has no Python `revision`/`down_revision`
+identifiers and its upgrade body does not create the tables described in its
+docstring. Do not generate dependent migrations until the Sprint 0 schema
+history has been reconstructed and reviewed.
+
+The repository's existing schema bootstrap entry point is `create_tables.py`,
+which imports the models and calls `Base.metadata.create_all`. This is a
+bootstrap mechanism, not a replacement for a complete, reversible Alembic
+history.

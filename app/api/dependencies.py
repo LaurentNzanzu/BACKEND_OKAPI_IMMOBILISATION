@@ -128,6 +128,19 @@ def require_any_roles(allowed_roles: List[str]):
     return role_checker
 
 
+def get_current_organisation_id(
+    current_user: Utilisateur = Depends(get_current_user),
+) -> int:
+    """Return the authenticated user's tenant, rejecting platform-only users."""
+    organisation_id = getattr(current_user, "organisation_id", None)
+    if organisation_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Une organisation est requise pour cette opération",
+        )
+    return organisation_id
+
+
 # Rôles autorisés à consulter les immobilisations / sous-types
 BIENS_VIEW_ROLES = ["ADMIN", "DG", "COMPTABLE", "TECHNICIEN", "CAISSE", "MAGASINIER", "GESTIONNAIRE"]
 

@@ -80,11 +80,15 @@ from app.api.endpoints import (
     import_csv,
     modules,
     permissions_organisation,
-    organisations
-    
-    
+    organisations,
+    chauffeurs_router,
+    mission_router,
+    affectations_router,
+    trajets_router,
+    planning_router,
 
 )
+
 
 # Import des tâches CRON
 from .tasks import (
@@ -480,6 +484,11 @@ app.include_router(organisations.router, prefix=API_V1_PREFIX)
 app.include_router(modules.router, prefix=API_V1_PREFIX)
 app.include_router(permissions_organisation.router, prefix=API_V1_PREFIX)
 
+app.include_router(chauffeurs_router, prefix=API_V1_PREFIX)
+app.include_router(mission_router, prefix=API_V1_PREFIX)
+app.include_router(affectations_router, prefix=API_V1_PREFIX)
+app.include_router(trajets_router, prefix=API_V1_PREFIX)
+app.include_router(planning_router, prefix=API_V1_PREFIX)
 
 
 

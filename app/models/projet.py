@@ -1,5 +1,5 @@
 # app/models/projet.py
-from sqlalchemy import Column, Integer, String, Date, DateTime, Boolean, ForeignKey, Numeric
+from sqlalchemy import Column, Integer, String, Date, DateTime, Boolean, ForeignKey, Numeric, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
@@ -26,13 +26,11 @@ class Projet(Base):
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     organisation = relationship("Organisation", back_populates="projets")
-    #missions = relationship("Mission", back_populates="projet")
+    missions = relationship("Mission", back_populates="projet")
     #approvisionnements = relationship("ApprovisionnementCarburant", back_populates="projet")
 
     __table_args__ = (
-        # Un code projet unique par organisation
-        # (à décommenter si vous utilisez UniqueConstraint)
-        # UniqueConstraint("organisation_id", "code", name="uq_projet_code_org"),
+        UniqueConstraint("organisation_id", "code", name="uq_projet_code_org"),
     )
 
     @property

@@ -12,6 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 # Importer vos modèles
 from app.core.database import Base
+import app.models  # Register all ORM models before exposing metadata to Alembic.
 from app.models.bien import Bien
 from app.models.panne import Panne
 from app.models.maintenance import Maintenance

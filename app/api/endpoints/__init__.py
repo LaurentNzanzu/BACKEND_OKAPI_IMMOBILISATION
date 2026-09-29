@@ -43,6 +43,11 @@ from .organisations import router as organisations_router
 from .modules import router as modules_router
 from .permissions_organisation import router as permissions_organisation_router
 from .organisations import router as organisations_router
+from .chauffeurs import router as chauffeurs_router
+from .mission import router as mission_router
+from .affectations import router as affectations_router
+from .trajets import router as trajets_router
+from .planning import router as planning_router
 
 
 
@@ -89,7 +94,12 @@ AVAILABLE_ROUTERS: list[str] = [
     "organisations",
     "modules",
     "permissions_organisation",
-    "organisations"
+    "organisations",
+    "chauffeurs",
+    "missions",
+    "affectations",
+    "trajets",
+    "planning",
     
 ]
 
@@ -143,7 +153,12 @@ def get_router(name: str):
         "organisations": organisations_router,
         "modules": modules_router,
         "permissions_organisation": permissions_organisation_router,
-        "organisations": organisations_router
+        "organisations": organisations_router,
+        "chauffeurs": chauffeurs_router,
+        "missions": mission_router,
+        "affectations": affectations_router,
+        "trajets": trajets_router,
+        "planning": planning_router,
     }
     return routers.get(name)
 
@@ -219,5 +234,10 @@ __all__ = [
     "organisations_router",
     "modules_router",
     "permissions_organisation_router",
-    "organisations_router"
+    "organisations_router",
+    "chauffeurs_router",
+    "mission_router",
+    "affectations_router",
+    "trajets_router",
+    "planning_router",
 ]

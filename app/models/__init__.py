@@ -64,6 +64,10 @@ from .workflow_etape import WorkflowEtape, TypeWorkflow
 # ✅ PHASE 3 — Modèle override des permissions par ONG
 from .organisation_role_permission import OrganisationRolePermission
 from .taux_change import TauxChange
+from .chauffeur import Chauffeur
+from .mission import Mission
+from .affectation_mission import AffectationMission
+from .trajet import Trajet
 
 
 __all__ = [
@@ -171,5 +175,9 @@ __all__ = [
 
     # ===================== PHASE 3 — Override permissions =====================
     "OrganisationRolePermission",
-    "TauxChange"
+    "TauxChange",
+    "Chauffeur",
+    "Mission",
+    "AffectationMission",
+    "Trajet",
 ]

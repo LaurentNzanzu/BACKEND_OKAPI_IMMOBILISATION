@@ -15,12 +15,14 @@ from ..models.composant import Composant
 from ..models.localisation import Localisation
 from ..models.panne import Panne
 from ..models.vehicule import Vehicule
+from ..models.organisation import Organisation
 from ..models.machine import Machine
 from ..models.ordinateur import Ordinateur
 from ..models.maintenance import Maintenance
 from ..schemas.bien import BienCreate, BienUpdate
 from .qr_code_service import QRCodeService
 from .config_inventaire_service import ConfigInventaireService
+from .organisation_service import OrganisationService
 
 
 
@@ -137,8 +139,7 @@ class BienService:
         # Génération du QR code dynamique
         qr_code = self._generate_qr_code_dynamique(type_bien)
 
-        # Création du bien - TOUJOURS "bien" comme identité polymorphique !
-        bien = Bien(
+        parent_fields = dict(
             qr_code=qr_code,
             date_acquisition=bien_data.date_acquisition,
             prix_acquisition=bien_data.prix_acquisition,
@@ -147,8 +148,6 @@ class BienService:
             date_fin_garantie=bien_data.date_fin_garantie,
             description=bien_data.libelle,
             image=None,
-            # ✅ FIX : TOUJOURS "bien" - jamais le code du type !
-            type_bien="bien",  # <--- CRITIQUE : NE PAS UTILISER type_bien.code
             statut_comptable="ACTIF",
             cumul_amortissement=Decimal('0'),
             cumul_depreciation=Decimal('0'),
@@ -159,6 +158,18 @@ class BienService:
             numero_inventaire=numero_inventaire,
             images=images or []
         )
+        if type_bien.code == "VEHICULE":
+            vehicle_fields = {
+                name: attributs.get(name)
+                for name in (
+                    "type_vehicule", "marque", "modele", "immatriculation", "poids",
+                    "dimension", "type_carburant", "consommation_carburant",
+                    "consommation_huile", "type_propulsion",
+                )
+            }
+            bien = Vehicule(**parent_fields, **vehicle_fields)
+        else:
+            bien = Bien(**parent_fields, type_bien="bien")
 
         # Gestion des composants pour les machines
         if bien_data.composants and type_bien.code == "MACHINE":
@@ -180,7 +191,12 @@ class BienService:
     # CRUD PRINCIPAL AVEC TYPES DYNAMIQUES
     # ============================================================
 
-    def create_bien(self, bien_data: BienCreate, images: Optional[List[dict]] = None) -> Bien:
+    def create_bien(
+        self,
+        bien_data: BienCreate,
+        images: Optional[List[dict]] = None,
+        organisation_id: Optional[int] = None,
+    ) -> Bien:
         """
         Crée un nouveau bien avec gestion des types dynamiques.
         
@@ -206,6 +222,27 @@ class BienService:
                     detail="Type de bien 'AUTRE' non trouvé. Veuillez configurer les types de biens."
                 )
 
+        if type_bien.code == "VEHICULE":
+            if organisation_id is None:
+                raise HTTPException(status_code=400, detail="Une organisation est requise pour un véhicule")
+            organisation = (
+                self.db.query(Organisation)
+                .filter(Organisation.id == organisation_id)
+                .with_for_update()
+                .one_or_none()
+            )
+            if not organisation:
+                raise HTTPException(status_code=404, detail="Organisation introuvable")
+            quota = OrganisationService(self.db).verifier_quota(organisation_id, "vehicules")
+            if not quota["est_disponible"]:
+                raise HTTPException(status_code=409, detail=quota["message"])
+            localisation = self.db.query(Localisation.id_localisation).filter(
+                Localisation.id_localisation == bien_data.id_localisation,
+                Localisation.organisation_id == organisation_id,
+            ).first()
+            if not localisation:
+                raise HTTPException(status_code=400, detail="Localisation introuvable dans cette organisation")
+
         # Pour les machines, le prix est calculé automatiquement
         if type_bien.code == "MACHINE":
             prix_base = bien_data.prix_base or Decimal("0")
@@ -225,6 +262,15 @@ class BienService:
 
         # Créer le bien
         bien = self._create_bien_from_type(bien_data, type_bien, images=images)  # <--- images passé
+        bien.organisation_id = organisation_id
+
+        if type_bien.code == "VEHICULE":
+            immatriculation = (bien.attributs_specifiques or {}).get("immatriculation")
+            if immatriculation and self.db.query(Vehicule.id_bien).filter(
+                Vehicule.organisation_id == organisation_id,
+                Vehicule.immatriculation == immatriculation,
+            ).first():
+                raise HTTPException(status_code=409, detail="Immatriculation déjà utilisée pour cette organisation")
 
         self.db.add(bien)
         self.db.commit()
@@ -270,9 +316,17 @@ class BienService:
             if not type_bien:
                 raise HTTPException(status_code=400, detail="Type de bien invalide")
 
+            is_vehicle = isinstance(bien, Vehicule)
+            if is_vehicle != (type_bien.code == "VEHICULE"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Le type VEHICULE ne peut être ni ajouté ni retiré d'un bien existant",
+                )
+
             # Mettre à jour le type
             bien.id_type_bien = type_bien.id
-            bien.type_bien = type_bien.code.lower()
+            if not is_vehicle:
+                bien.type_bien = "bien"
 
         
         if "images" in update_data and update_data["images"] is not None:
@@ -286,6 +340,30 @@ class BienService:
             attributs = update_data["attributs_specifiques"]
             if bien.id_type_bien:
                 self._validate_attributs_by_type(bien.id_type_bien, attributs)
+            if isinstance(bien, Vehicule):
+                organisation_id = bien.organisation_id
+                if organisation_id is None:
+                    raise HTTPException(status_code=400, detail="Organisation du véhicule manquante")
+                self.db.query(Organisation).filter(
+                    Organisation.id == organisation_id
+                ).with_for_update().one_or_none()
+                immatriculation = (attributs or {}).get("immatriculation")
+                if immatriculation and self.db.query(Vehicule.id_bien).filter(
+                    Vehicule.organisation_id == organisation_id,
+                    Vehicule.immatriculation == immatriculation,
+                    Vehicule.id_bien != bien.id_bien,
+                ).first():
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Immatriculation déjà utilisée pour cette organisation",
+                    )
+                for field in (
+                    "type_vehicule", "marque", "modele", "immatriculation", "poids",
+                    "dimension", "type_carburant", "consommation_carburant",
+                    "consommation_huile", "type_propulsion",
+                ):
+                    if field in (attributs or {}):
+                        setattr(bien, field, attributs[field])
             bien.attributs_specifiques = attributs
 
         # Valider la localisation
