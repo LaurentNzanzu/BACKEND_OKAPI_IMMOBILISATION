@@ -277,19 +277,19 @@ def main() -> dict:
 
         # Rapport final
         print("\n" + "=" * 60)
-        print("✅ SEED SPRINT 0 — TERMINÉ AVEC SUCCÈS")
+        print("[OK] SEED SPRINT 0 - TERMINE AVEC SUCCES")
         print("=" * 60)
         print(f"Permissions disponibles : {stats['permissions_total']}")
-        print(f"Rôles créés             : {len(stats['roles_crees'])} "
+        print(f"Roles crees             : {len(stats['roles_crees'])} "
               f"({', '.join(stats['roles_crees']) or 'aucun'})")
-        print(f"Attributions effectuées : {stats['attributions_effectuees']}")
+        print(f"Attributions effectuees : {stats['attributions_effectuees']}")
         print("=" * 60)
 
         return stats
 
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Erreur fatale : {e}", exc_info=True)
+        logger.error(f"[ERREUR] Erreur fatale : {e}", exc_info=True)
         raise
     finally:
         db.close()

@@ -30,10 +30,12 @@ def check_type_bien_permission(user: Utilisateur, action: str = "view") -> bool:
     if not user:
         return False
     role = user.role.nom.upper() if user.role else "USER"
-    if role in ["ADMIN","COMPTABLE"] and action in ["view", "create", "update", "delete"]:
+    if role in ["ADMIN", "COMPTABLE", "GESTIONNAIRE"] and action in ["view", "create", "update", "delete"]:
         return True
-    if role in ["DG", "COMPTABLE"] and action in ["view"]:
-        return True
+    if action == "view":
+        if role in ["DG", "COMPTABLE", "GESTIONNAIRE", "LOGISTICIEN", "CHEF_PROJET", "TECHNICIEN", "MAGASINIER", "CAISSE", "USER"]:
+            return True
+        return can_view_biens(user)
     return False
 
 

@@ -95,3 +95,31 @@ def run_detection_biens_eligibles():
         logger.error(f"Erreur détection biens éligibles: {e}")
     finally:
         db.close()
+
+
+def run_chauffeur_expiration_check():
+    """Vérification quotidienne de l'expiration des permis de conduire des chauffeurs."""
+    db = SessionLocal()
+    try:
+        from .chauffeur_service import ChauffeurService
+        service = ChauffeurService(db)
+        notifs = service.verifier_expirations()
+        logger.info(f"Vérification permis terminée : {len(notifs)} alerte(s) envoyée(s)")
+    except Exception as e:
+        logger.error(f"Erreur vérification expiration permis chauffeurs: {e}")
+    finally:
+        db.close()
+
+
+def run_vehicule_expiration_check():
+    """Vérification quotidienne de l'expiration des assurances et contrôles techniques."""
+    db = SessionLocal()
+    try:
+        from .vehicule_service import verifier_expirations_vehicules
+        notifs = verifier_expirations_vehicules(db)
+        logger.info(f"Vérification véhicules terminée : {len(notifs)} alerte(s) envoyée(s)")
+    except Exception as e:
+        logger.error(f"Erreur vérification expiration documents véhicules: {e}")
+    finally:
+        db.close()
+

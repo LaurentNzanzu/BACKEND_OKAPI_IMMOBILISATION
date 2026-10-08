@@ -22,3 +22,13 @@ def get_planning(
     organisation_id: int = Depends(get_current_organisation_id),
 ):
     return planning_service.get_planning(db, organisation_id, date_debut, date_fin)
+
+
+@router.get("/gantt", dependencies=[Depends(require_permission("VEHICULE_VOIR"))])
+def get_gantt_planning(
+    date_debut: datetime = Query(...),
+    date_fin: datetime = Query(...),
+    db: Session = Depends(get_db),
+    organisation_id: int = Depends(get_current_organisation_id),
+):
+    return planning_service.get_gantt_planning(db, organisation_id, date_debut, date_fin)

@@ -41,6 +41,7 @@ class UserAuthResponse(BaseModel):
     prenom: str
     telephone: Optional[str] = None
     roles: List[str] = []
+    permissions: List[str] = []
     est_actif: bool
     last_login: Optional[datetime] = None
 

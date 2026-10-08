@@ -15,11 +15,23 @@ VEHICULE_FIELDS = {
 }
 
 
+from app.models.amortissement import Amortissement
+from app.models.ecriture_comptable import EcritureComptable
+from app.models.affectation_mission import AffectationMission
+from app.models.trajet import Trajet
+from app.models.mouvement_bien import MouvementBien
+from app.models.maintenance import Maintenance
+
+
 class VehiculeQuotaExceeded(ValueError):
     pass
 
 
 class ImmatriculationConflict(ValueError):
+    pass
+
+
+class VehiculeHasHistoryConflict(ValueError):
     pass
 
 
@@ -143,9 +155,81 @@ def delete_vehicule(db: Session, id_bien: int, organisation_id: int):
         vehicle = get_vehicule(db, id_bien, organisation_id)
         if not vehicle:
             return False
+
+        has_history = (
+            db.query(Amortissement.id_amortissement).filter(Amortissement.id_bien == id_bien).first() is not None
+            or db.query(EcritureComptable.id_ecriture).filter(EcritureComptable.id_bien == id_bien).first() is not None
+            or db.query(AffectationMission.id).filter(AffectationMission.vehicule_id == id_bien).first() is not None
+            or db.query(Trajet.id).filter(Trajet.vehicule_id == id_bien).first() is not None
+            or db.query(MouvementBien.id_mouvement).filter(MouvementBien.id_bien == id_bien).first() is not None
+            or db.query(Maintenance.id_maintenance).filter(Maintenance.id_bien == id_bien).first() is not None
+        )
+        if has_history:
+            raise VehiculeHasHistoryConflict(
+                "Suppression refusée : ce véhicule possède un historique comptable, opérationnel ou patrimonial. "
+                "Veuillez procéder à une mise au rebut ou une cession (REFORME)."
+            )
+
         db.delete(vehicle)
         db.commit()
         return True
     except Exception:
         db.rollback()
         raise
+
+
+def verifier_expirations_vehicules(db: Session, jours_preavis: int = 15, organisation_id: int | None = None) -> list:
+    """Contrôle automatique de l'expiration imminente des assurances et contrôles techniques."""
+    from datetime import date, timedelta
+    from app.models.notification import TypeNotificationEnum
+    from app.services.notification_service import NotificationService
+
+    limite = date.today() + timedelta(days=jours_preavis)
+    query = db.query(Vehicule)
+    if organisation_id is not None:
+        query = query.filter(Vehicule.organisation_id == organisation_id)
+
+    vehicules = query.all()
+    notif_service = NotificationService(db)
+    notifs_creees = []
+
+    for v in vehicules:
+        # Assurance
+        if v.date_expiration_assurance and v.date_expiration_assurance <= limite:
+            jours_restants = (v.date_expiration_assurance - date.today()).days
+            titre = f"Assurance expire bientôt : {v.immatriculation or v.designation}"
+            contenu = (
+                f"L'assurance du véhicule {v.immatriculation} expire le {v.date_expiration_assurance.isoformat()} "
+                f"({jours_restants} jour(s) restant(s))."
+            )
+            n = notif_service.envoyer_notification_par_role_avec_ong(
+                role_nom="LOGISTICIEN",
+                organisation_id=v.organisation_id,
+                type_notif=TypeNotificationEnum.ASSURANCE_EXPIRE_BIENTOT,
+                titre=titre,
+                contenu=contenu,
+                lien=f"/vehicules/{v.id_bien}",
+            )
+            if n:
+                notifs_creees.append(n)
+
+        # Contrôle technique / Visite technique
+        if v.date_expiration_visite_technique and v.date_expiration_visite_technique <= limite:
+            jours_restants = (v.date_expiration_visite_technique - date.today()).days
+            titre = f"Visite technique expire bientôt : {v.immatriculation or v.designation}"
+            contenu = (
+                f"Le contrôle technique du véhicule {v.immatriculation} expire le {v.date_expiration_visite_technique.isoformat()} "
+                f"({jours_restants} jour(s) restant(s))."
+            )
+            n = notif_service.envoyer_notification_par_role_avec_ong(
+                role_nom="LOGISTICIEN",
+                organisation_id=v.organisation_id,
+                type_notif=TypeNotificationEnum.VISITE_TECHNIQUE_BIENTOT,
+                titre=titre,
+                contenu=contenu,
+                lien=f"/vehicules/{v.id_bien}",
+            )
+            if n:
+                notifs_creees.append(n)
+
+    return notifs_creees

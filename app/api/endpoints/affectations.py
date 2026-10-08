@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.api.dependencies import get_current_organisation_id
+from app.core.security import get_current_user
+from app.models.utilisateur import Utilisateur
 from app.core.dependencies_modules import require_module
 from app.core.dependencies_permissions import require_permission
 from pydantic import BaseModel, ConfigDict
@@ -39,9 +41,15 @@ def create_affectation(
     payload: AffectationCreate,
     db: Session = Depends(get_db),
     organisation_id: int = Depends(get_current_organisation_id),
+    current_user: Utilisateur = Depends(get_current_user),
 ):
     try:
-        return affectation_service.create_affectation(db, payload.model_dump(), organisation_id)
+        return affectation_service.create_affectation(
+            db=db,
+            data=payload.model_dump(),
+            organisation_id=organisation_id,
+            user_id=current_user.id,
+        )
     except affectation_service.AffectationConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
@@ -54,7 +62,13 @@ def delete_affectation(
     affectation_id: int,
     db: Session = Depends(get_db),
     organisation_id: int = Depends(get_current_organisation_id),
+    current_user: Utilisateur = Depends(get_current_user),
 ):
-    ok = affectation_service.delete_affectation(db, affectation_id, organisation_id)
+    ok = affectation_service.delete_affectation(
+        db=db,
+        affectation_id=affectation_id,
+        organisation_id=organisation_id,
+        user_id=current_user.id,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Affectation introuvable")

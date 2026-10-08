@@ -10,7 +10,7 @@ from ...core.dependencies_permissions import require_permission
 from ...schemas.vehicule import VehiculeCreate, VehiculeRead, VehiculeUpdate
 from ...services import vehicule_service
 from ...services.organisation_service import OrganisationService
-from ...services.vehicule_service import ImmatriculationConflict, VehiculeQuotaExceeded
+from ...services.vehicule_service import ImmatriculationConflict, VehiculeQuotaExceeded, VehiculeHasHistoryConflict
 
 router = APIRouter(
     prefix="/vehicules",
@@ -97,5 +97,8 @@ def delete_vehicule(
     db: Session = Depends(get_db),
     organisation_id: int = Depends(get_current_organisation_id),
 ):
-    if not vehicule_service.delete_vehicule(db, bien_id, organisation_id):
-        raise HTTPException(status_code=404, detail="Véhicule non trouvé")
+    try:
+        if not vehicule_service.delete_vehicule(db, bien_id, organisation_id):
+            raise HTTPException(status_code=404, detail="Véhicule non trouvé")
+    except VehiculeHasHistoryConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))

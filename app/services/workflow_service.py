@@ -436,7 +436,9 @@ class WorkflowService:
 
         logger.info(f"Workflow par défaut créé pour organisation #{organisation_id}")
         return workflows_crees
-    
+
+    initialiser_etapes_par_defaut = initialiser_workflow_par_defaut
+
     def compter_etapes(self, type_workflow: str, organisation_id: int) -> int:
         """Compte les étapes actives d'un workflow."""
         return len(self.obtenir_etapes(type_workflow, organisation_id))

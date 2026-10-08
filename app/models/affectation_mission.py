@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 
@@ -14,6 +15,10 @@ class AffectationMission(Base):
     date_fin = Column(DateTime, nullable=False)
     statut = Column(String(50), default="PLANIFIEE")
     commentaire = Column(Text)
+    affecte_par = Column(Integer, ForeignKey("utilisateurs.id", ondelete="SET NULL"), nullable=True, index=True)
+    date_affectation = Column(DateTime, default=datetime.utcnow)
+
     mission = relationship("Mission", back_populates="affectations")
     vehicule = relationship("Vehicule")
     chauffeur = relationship("Chauffeur")
+    utilisateur_affecteur = relationship("Utilisateur", foreign_keys=[affecte_par])

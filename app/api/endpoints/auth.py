@@ -55,8 +55,8 @@ from ...core.text_normalization import (
     normalize_password,
     detect_ambiguous_chars,
 )
-# ═══ AJOUT 5.21 — Import AuditService ═══
 from ...services.audit_service import AuditService
+from ...services.permission_service import PermissionService
 from ...models.organisation import Organisation
 # ═══ FIN AJOUT 5.21 ═══
 
@@ -68,9 +68,10 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 # ════════════════════════════════════════════════════════════════
 def _resolve_saas_fields(db: Session, user: Utilisateur) -> dict:
     """
-    Résout les 5 champs SaaS de UserAuthResponse :
+    Résout les 6 champs SaaS de UserAuthResponse :
     - organisation_id, is_platform_admin, is_org_admin
     - modules_actifs (depuis organisation.parametres_json)
+    - permissions (liste effective des permissions RBAC)
     - doit_changer_mot_de_passe
 
     Retourne un dict prêt à passer à UserAuthResponse(**).
@@ -89,11 +90,19 @@ def _resolve_saas_fields(db: Session, user: Utilisateur) -> dict:
                 if isinstance(raw, list):
                     modules = [str(m) for m in raw if m]
 
+    # Résolution des permissions effectives
+    perms = []
+    try:
+        perms = PermissionService(db).lister_permissions_utilisateur(user)
+    except Exception as e:
+        logger.warning(f"Impossible de lister les permissions utilisateur : {e}")
+
     return {
         "organisation_id": org_id,
         "is_platform_admin": is_platform,
         "is_org_admin": bool(getattr(user, "is_org_admin", False)),
         "modules_actifs": modules,
+        "permissions": perms,
         "doit_changer_mot_de_passe": bool(getattr(user, "doit_changer_mot_de_passe", False)),
     }
 # ═══ FIN AJOUT 5.23 ═══

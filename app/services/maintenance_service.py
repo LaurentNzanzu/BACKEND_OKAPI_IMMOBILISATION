@@ -60,6 +60,19 @@ class MaintenanceService:
         # Déterminer le technicien assigné
         technicien_assigne = getattr(data, 'id_technicien', None) or id_technicien
 
+        # Vérification bidirectionnelle : conflit si véhicule déjà affecté sur cette période
+        from ..models.affectation_mission import AffectationMission
+        duree = getattr(data, "periodicite_jours", None) or 1
+        maint_fin = date_planifiee + timedelta(days=duree)
+        aff_conflict = self.db.query(AffectationMission).filter(
+            AffectationMission.vehicule_id == data.id_bien,
+            ~AffectationMission.statut.in_(["ANNULEE", "REJETEE"]),
+            AffectationMission.date_debut < maint_fin,
+            AffectationMission.date_fin > date_planifiee,
+        ).first()
+        if aff_conflict:
+            raise ValueError(f"Conflit de planning : ce véhicule est déjà affecté à la mission #{aff_conflict.mission_id} du {aff_conflict.date_debut} au {aff_conflict.date_fin}")
+
         try:
             maintenance = Maintenance(
                 id_bien=data.id_bien,

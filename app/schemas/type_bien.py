@@ -1,6 +1,6 @@
 # backend/app/schemas/type_bien.py
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 import json
 
@@ -28,7 +28,7 @@ class TypeBienBase(BaseModel):
     libelle: str = Field(..., min_length=2, max_length=100)
     code: str = Field(..., min_length=2, max_length=20, pattern=r'^[A-Z0-9_]+$')
     compte_comptable: str = Field(default="2440", min_length=3, max_length=10)
-    champs_specifiques: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    champs_specifiques: Optional[Union[List[Any], Dict[str, Any], str]] = Field(default_factory=list)
     description: Optional[str] = Field(None, max_length=500)
     est_actif: bool = True
 
@@ -46,14 +46,13 @@ class TypeBienCreate(TypeBienBase):
     @field_validator('champs_specifiques')
     @classmethod
     def validate_champs(cls, v):
-        if v:
+        if v and isinstance(v, list):
             for champ in v:
-                if not isinstance(champ, dict):
-                    raise ValueError("Chaque champ doit être un dictionnaire")
-                if 'nom' not in champ:
-                    raise ValueError("Chaque champ doit avoir un 'nom'")
-                if 'type' not in champ:
-                    raise ValueError("Chaque champ doit avoir un 'type'")
+                if isinstance(champ, dict):
+                    if 'nom' not in champ:
+                        raise ValueError("Chaque champ doit avoir un 'nom'")
+                    if 'type' not in champ:
+                        raise ValueError("Chaque champ doit avoir un 'type'")
         return v
 
 
@@ -62,28 +61,27 @@ class TypeBienUpdate(BaseModel):
     libelle: Optional[str] = Field(None, min_length=2, max_length=100)
     code: Optional[str] = Field(None, min_length=2, max_length=20, pattern=r'^[A-Z0-9_]+$')
     compte_comptable: Optional[str] = Field(None, min_length=3, max_length=10)
-    champs_specifiques: Optional[List[Dict[str, Any]]] = None
+    champs_specifiques: Optional[Union[List[Any], Dict[str, Any], str]] = None
     description: Optional[str] = Field(None, max_length=500)
     est_actif: Optional[bool] = None
 
     @field_validator('champs_specifiques')
     @classmethod
     def validate_champs_update(cls, v):
-        if v is not None:
+        if v is not None and isinstance(v, list):
             for champ in v:
-                if not isinstance(champ, dict):
-                    raise ValueError("Chaque champ doit être un dictionnaire")
-                if 'nom' not in champ:
-                    raise ValueError("Chaque champ doit avoir un 'nom'")
-                if 'type' not in champ:
-                    raise ValueError("Chaque champ doit avoir un 'type'")
+                if isinstance(champ, dict):
+                    if 'nom' not in champ:
+                        raise ValueError("Chaque champ doit avoir un 'nom'")
+                    if 'type' not in champ:
+                        raise ValueError("Chaque champ doit avoir un 'type'")
         return v
 
 
 class TypeBienResponse(TypeBienBase):
     """Schéma de réponse pour un type de bien"""
     id: int
-    date_creation: datetime
+    date_creation: Optional[datetime] = None
     date_modification: Optional[datetime] = None
 
     class Config:

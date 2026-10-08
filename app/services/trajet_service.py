@@ -48,6 +48,10 @@ def create_trajet(db: Session, data: TrajetCreate, organisation_id: int):
     try:
         values = data.model_dump()
         _verify_references(db, values, organisation_id)
+        km_deb = values.get("kilometrage_debut")
+        km_fin = values.get("kilometrage_fin")
+        if km_deb is not None and km_fin is not None and values.get("distance_km") is None:
+            values["distance_km"] = round(max(0.0, float(km_fin) - float(km_deb)), 2)
         obj = Trajet(**values, organisation_id=organisation_id)
         db.add(obj)
         db.commit()
@@ -67,6 +71,8 @@ def update_trajet(db: Session, trajet_id: int, data: TrajetUpdate, organisation_
         _verify_references(db, changes, organisation_id)
         for key, value in changes.items():
             setattr(obj, key, value)
+        if obj.kilometrage_debut is not None and obj.kilometrage_fin is not None and "distance_km" not in changes:
+            obj.distance_km = round(max(0.0, float(obj.kilometrage_fin) - float(obj.kilometrage_debut)), 2)
         db.commit()
         db.refresh(obj)
         return obj

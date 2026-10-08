@@ -38,6 +38,8 @@ def flotte_db():
                 quota_missions_mois=10,
                 parametres_json={"modules_actifs": ["VEHICULE", "CHAUFFEUR", "MISSION", "TRAJET"]},
             ))
+        from app.models.role import Role
+        db.add(Role(id_role=1, nom="ADMIN", description="Administrateur"))
         db.add(TypeBien(libelle="Véhicule", code="VEHICULE"))
         db.flush()
         for org_id in (1, 2):

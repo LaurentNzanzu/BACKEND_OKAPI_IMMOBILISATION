@@ -14,6 +14,7 @@ router = APIRouter(
 )
 
 
+@router.get("", response_model=list[TrajetRead], dependencies=[Depends(require_permission("TRAJET_GERER"))], include_in_schema=False)
 @router.get("/", response_model=list[TrajetRead], dependencies=[Depends(require_permission("TRAJET_GERER"))])
 def list_trajets(
     db: Session = Depends(get_db),
@@ -36,6 +37,8 @@ def get_trajet(
     return obj
 
 
+@router.post("", response_model=TrajetRead, status_code=201,
+             dependencies=[Depends(require_permission("TRAJET_GERER"))], include_in_schema=False)
 @router.post("/", response_model=TrajetRead, status_code=201,
              dependencies=[Depends(require_permission("TRAJET_GERER"))])
 def create_trajet(

@@ -163,6 +163,16 @@ class OrganisationService:
                 user_id_creator=user_id,
             )
 
+        # --- Initialisation des étapes de workflow par défaut
+        try:
+            from .workflow_service import WorkflowService
+            WorkflowService(self.db).initialiser_workflow_par_defaut(
+                organisation_id=organisation.id,
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.warning(f"Initialisation workflow par défaut échouée pour organisation {organisation.id} : {e}")
+
         if user_id:
             try:
                 self.audit_service.log_create(

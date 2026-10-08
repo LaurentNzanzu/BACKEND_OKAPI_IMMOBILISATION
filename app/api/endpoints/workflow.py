@@ -80,6 +80,11 @@ def _verifier_isolation(etape_organisation_id: int, current_user: Utilisateur) -
     response_model=List[WorkflowEtapeResponse],
     summary="Lister les étapes d'un workflow",
 )
+@router.get(
+    "/{type_workflow}/",
+    response_model=List[WorkflowEtapeResponse],
+    include_in_schema=False,
+)
 def lister_etapes(
     type_workflow: str,
     db: Session = Depends(get_db),
@@ -109,6 +114,12 @@ def lister_etapes(
     response_model=WorkflowEtapeResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Créer une étape de workflow",
+)
+@router.post(
+    "/{type_workflow}/etapes/",
+    response_model=WorkflowEtapeResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
 )
 def creer_etape(
     type_workflow: str,
@@ -169,6 +180,11 @@ def creer_etape(
     response_model=WorkflowEtapeResponse,
     summary="Modifier une étape de workflow",
 )
+@router.put(
+    "/etapes/{etape_id}/",
+    response_model=WorkflowEtapeResponse,
+    include_in_schema=False,
+)
 def modifier_etape(
     etape_id: int,
     payload: WorkflowEtapeUpdate = Body(...),
@@ -224,6 +240,11 @@ def modifier_etape(
     "/etapes/{etape_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Supprimer une étape de workflow",
+)
+@router.delete(
+    "/etapes/{etape_id}/",
+    status_code=status.HTTP_204_NO_CONTENT,
+    include_in_schema=False,
 )
 def supprimer_etape(
     etape_id: int,

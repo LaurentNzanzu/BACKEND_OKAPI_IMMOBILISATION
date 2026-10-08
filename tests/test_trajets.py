@@ -15,3 +15,28 @@ def test_trajet_list_is_tenant_scoped(flotte_db):
         rows = list_trajets(db, organisation_id=1)
         assert len(rows) == 1
         assert rows[0].organisation_id == 1
+
+
+def test_trajet_validation_rejects_inverted_km():
+    import pytest
+    from app.schemas.trajet import TrajetCreate
+    with pytest.raises(ValueError, match="inférieur au kilométrage de début"):
+        TrajetCreate(kilometrage_debut=100.0, kilometrage_fin=50.0)
+
+
+def test_trajet_validation_rejects_inverted_dates():
+    import pytest
+    from datetime import datetime, timedelta
+    from app.schemas.trajet import TrajetCreate
+    now = datetime(2026, 10, 1, 10, 0)
+    with pytest.raises(ValueError, match="antérieure à la date de début"):
+        TrajetCreate(date_debut=now, date_fin=now - timedelta(hours=1))
+
+
+def test_trajet_auto_calculates_distance_km(flotte_db):
+    from app.schemas.trajet import TrajetCreate
+    from app.services.trajet_service import create_trajet
+    with flotte_db() as db:
+        trajet = create_trajet(db, TrajetCreate(kilometrage_debut=1500.0, kilometrage_fin=1625.5), organisation_id=1)
+        assert trajet.distance_km == 125.5
+

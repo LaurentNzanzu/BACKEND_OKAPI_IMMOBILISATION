@@ -119,6 +119,56 @@ class PermissionService:
             return False
         return permission_code.strip().upper() in role_permissions_noms
 
+    def lister_permissions_utilisateur(self, user: Optional[Utilisateur]) -> List[str]:
+        """
+        Calcule la liste effective des codes de permission accordés à l'utilisateur.
+        Prend en compte :
+        - Super ADMIN / ADMIN d'organisation : toutes les permissions actives
+        - Rôle de l'utilisateur (global role_permissions)
+        - Overrides spécifiques à l'organisation (OrganisationRolePermission)
+        """
+        if not user:
+            return []
+
+        role = getattr(user, "role", None)
+        if not role and getattr(user, "role_id", None):
+            role = self.db.query(Role).filter(Role.id_role == user.role_id).first()
+        if not role:
+            return []
+
+        role_nom = (getattr(role, "nom", "") or "").strip().upper()
+        org_id = getattr(user, "organisation_id", None)
+
+        if role_nom == "ADMIN":
+            all_perms = self.db.query(Permission.nom).filter(Permission.actif == True).all()
+            return sorted([p[0].strip().upper() for p in all_perms if p[0]])
+
+        base_perms = {
+            (p.nom or "").strip().upper()
+            for p in (role.permissions or [])
+            if getattr(p, "actif", True)
+        }
+
+        if org_id and getattr(role, "id_role", None):
+            overrides = (
+                self.db.query(OrganisationRolePermission, Permission.nom)
+                .join(Permission, Permission.id_permission == OrganisationRolePermission.id_permission)
+                .filter(
+                    OrganisationRolePermission.organisation_id == org_id,
+                    OrganisationRolePermission.id_role == role.id_role,
+                    Permission.actif == True,
+                )
+                .all()
+            )
+            for ov, perm_nom in overrides:
+                code = (perm_nom or "").strip().upper()
+                if ov.accorde:
+                    base_perms.add(code)
+                else:
+                    base_perms.discard(code)
+
+        return sorted(list(base_perms))
+
     def resoudre_permission_ong(
         self, organisation_id: int, id_role: int, permission_code: str
     ) -> Dict[str, Any]:

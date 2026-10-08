@@ -57,7 +57,34 @@ class ConfigInventaireService:
         regle = regle.replace("{YEAR}", now.strftime("%Y"))
         regle = regle.replace("{MONTH}", now.strftime("%m"))
         regle = regle.replace("{DAY}", now.strftime("%d"))
-        regle = regle.replace("{SEQ}", seq_str)
+    def generer_numero_mission(self, organisation_id: int) -> str:
+        """
+        Génère le prochain numéro de mission au format MIS-AAAA-0001,
+        séquentiel par organisation et par année en cours.
+        Sécurisé pour la concurrence avec verrouillage transactionnel.
+        """
+        from ..models.mission import Mission
+        now = datetime.utcnow()
+        annee = now.year
+        prefixe = f"MIS-{annee}-"
 
-        return regle
-    
+        derniere_mission = (
+            self.db.query(Mission.numero_mission)
+            .filter(
+                Mission.organisation_id == organisation_id,
+                Mission.numero_mission.like(f"{prefixe}%"),
+            )
+            .order_by(Mission.numero_mission.desc())
+            .with_for_update()
+            .first()
+        )
+
+        sequence = 1
+        if derniere_mission and derniere_mission[0]:
+            try:
+                seq_str = derniere_mission[0].split("-")[-1]
+                sequence = int(seq_str) + 1
+            except (ValueError, IndexError):
+                sequence = 1
+
+        return f"{prefixe}{str(sequence).zfill(4)}"
