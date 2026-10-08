@@ -24,6 +24,8 @@ from ...services.audit_service import AuditService
 from ...api.dependencies import get_current_user, is_admin
 from ...models.utilisateur import Utilisateur as UtilisateurModel
 from ...models.role import Role
+from ...services.email_service import EmailService
+from ...core.config import settings
 from ...core.security import get_password_hash, verify_password, invalidate_user_cache
 from ...utils.search import ilike_pattern
 import logging
@@ -256,6 +258,30 @@ def create_utilisateur(
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+     # ✅ NOUVEAU : Envoi des identifiants par email
+    try:
+        EmailService.send_new_user_credentials(
+            to_email=new_user.email,
+            prenom=new_user.prenom,
+            nom=new_user.nom,
+            email=new_user.email,
+            mot_de_passe_temporaire=temporary_password,
+            login_url=f"{settings.FRONTEND_URL}/login",
+            org_nom=(
+                new_user.organisation.nom
+                if new_user.organisation
+                else None
+            ),
+        )
+    except Exception as e:
+        logger.warning(
+            "Envoi email identifiants utilisateur #%s échoué : %s",
+            new_user.id, e,
+        )
+
+
+    
 
     # Audit
     audit_service.log_action(

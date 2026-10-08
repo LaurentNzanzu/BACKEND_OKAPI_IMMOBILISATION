@@ -11,6 +11,8 @@ from datetime import datetime, date
 import logging
 import secrets
 import string
+from app.services.email_service import EmailService
+from app.core.config import settings
 
 from ..models.organisation import Organisation, PlanAbonnement, StatutOrganisation
 from ..models.utilisateur import Utilisateur
@@ -239,6 +241,20 @@ class OrganisationService:
         )
         self.db.add(admin)
         self.db.flush()
+        # ✅ Envoi automatique des identifiants à l'admin de l'organisation
+        try:
+            EmailService.send_organisation_admin_credentials(
+                to_email=admin.email,
+                org_nom=organisation.nom,
+                login_url=f"{settings.FRONTEND_URL}/login",
+                email=admin.email,
+                mot_de_passe_temporaire=mot_de_passe_temp,
+            )
+        except Exception as e:
+            logger.warning(
+                "Envoi email identifiants admin ONG #%s échoué : %s",
+                organisation.id, e,
+            )
 
         if user_id_creator:
             try:
