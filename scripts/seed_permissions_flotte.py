@@ -10,10 +10,14 @@ Usage :
 import sys
 from pathlib import Path
 
-# Ajout de la racine du projet au PYTHONPATH avant les imports 'app'
-project_root = Path(__file__).resolve().parent.parent.parent
+# ✅ Ajouter la racine au PYTHONPATH AVANT les imports 'app'
+project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+from sqlalchemy.orm import Session
+from app.core.database import SessionLocal
+
 
 import logging
 
